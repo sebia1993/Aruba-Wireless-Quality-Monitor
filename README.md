@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.13.0-dev — 현장 승인 기반 단말 정밀 조회. 운영 배포 금지.**
+**현재 단계: v0.14.0-dev — 단말 정밀 조회 및 RF Neighbor 분석 기반. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -52,6 +52,10 @@ Windows EXE에서도 동일하게 `AWQM.exe --validate-cli radio local-output.tx
 ## 현장 승인 기반 단말 정밀 조회 (기본 비활성)
 
 별도 client-validation.json으로 Radio 검증 및 Client Table 지표 의미·개인정보 처리 승인을 연결해야 합니다. 지속적인 Radio 혼잡 AP만 자동 정밀 조회 대상으로 선정합니다. 임시 식별자 기반 단말 품질 관측을 제공하며 MAC·SSID 원문은 단말 이력 DB에 저장하지 않습니다. 재전송·Airtime·실제 원인 기여는 아직 산정하지 않습니다. [단말 상세 수집 안내](docs/CLIENT_VALIDATION.md).
+
+## RF Neighbor 오프라인 검증
+
+`AWQM.exe --validate-cli neighbors local-arm-neighbors.txt`로 AOS 8.9+ 형식의 저장된 ARM Neighbor 결과를 로컬에서 검사합니다. 채널 블록 중첩과 상관관계는 명시적으로 검증된 채널 구성과 직접 관측을 요구합니다. 현재 실제 Neighbor 자동 수집 및 장애 후보 통합은 활성화하지 않습니다. [RF 분석 계약](docs/RF_NEIGHBORS.md).
 
 ## Windows 빌드
 ```powershell
