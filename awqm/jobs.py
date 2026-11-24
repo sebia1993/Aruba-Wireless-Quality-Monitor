@@ -1,0 +1,112 @@
+"""Bounded in-memory, idempotent diagnostic reservations.
+
+A reservation is not a command result. Job state is independent of HTTP or
+browser connections. Persistence across restarts is a later service task.
+"""
+from collections import OrderedDict
+from dataclasses import dataclass, replace
+from threading import RLock
+import re
+from uuid import uuid4
+from .collector import command
+
+DETAIL_COMMANDS={"show ap debug client-table","show ap debug client-stats"}
+TERMINAL={"completed","failed","cancelled","expired","skipped"}
+
+@dataclass(frozen=True)
+class Job:
+    job_id:str
+    request_id:str
+    name:str
+    target:str
+    created:float
+    deadline:float
+    status:str="queued"
+    reason:str=""
+    started:float|None=None
+    finished:float|None=None
+
+class Jobs:
+    def __init__(self,limit=20,history_limit=500):
+        self.limit=limit
+        self.history_limit=history_limit
+        self.lock=RLock()
+        self.records=OrderedDict()
+        self.requests={}
+        self.active={}
+    def _expire(self,now):
+        for j in list(self.records.values()):
+            if j.status in ("queued","deferred") and now>=j.deadline:
+                self.finish(j.job_id,"expired","deadline_elapsed",now)
+    def _trim(self):
+        while len(self.records)>=self.history_limit:
+            key=next((k for k,j in self.records.items() if j.status in TERMINAL),None)
+            if key is None:break
+            self.records.pop(key)
+            for req,job_id in list(self.requests.items()):
+                if job_id==key:self.requests.pop(req,None)
+    def submit(self,request_id,name,target,now,ttl=300):
+        if not isinstance(request_id,str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,96}",request_id):
+            raise ValueError("invalid request ID")
+        if name not in DETAIL_COMMANDS or not 1<=ttl<=600:
+            raise ValueError("detail command or TTL not allowed")
+        command(name,target)
+        if name.endswith("client-stats"):target=target.lower()
+        key=(name,target)
+        with self.lock:
+            self._expire(now)
+            if request_id in self.requests:
+                old=self.records[self.requests[request_id]]
+                if (old.name,old.target)!=key:raise ValueError("request ID conflict")
+                return old
+            existing=self.active.get(key)
+            if existing:
+                if len(self.requests)>=self.history_limit*4:raise RuntimeError("request index full")
+                self.requests[request_id]=existing
+                return self.records[existing]
+            if len(self.active)>=self.limit:raise RuntimeError("detail queue full")
+            self._trim()
+            if len(self.records)>=self.history_limit or len(self.requests)>=self.history_limit*4:
+                raise RuntimeError("job history full")
+            j=Job(uuid4().hex,request_id,name,target,now,now+ttl)
+            self.records[j.job_id]=j;self.requests[request_id]=j.job_id;self.active[key]=j.job_id
+            return j
+    def get(self,job_id):
+        with self.lock:return self.records.get(job_id)
+    def by_request(self,request_id):
+        with self.lock:return self.records.get(self.requests.get(request_id))
+    def pending(self,now):
+        with self.lock:
+            self._expire(now)
+            return [j for j in self.records.values() if j.status in ("queued","deferred")]
+    def defer(self,job_id,reason):
+        with self.lock:
+            j=self.records[job_id]
+            if j.status in ("queued","deferred"):
+                self.records[job_id]=replace(j,status="deferred",reason=reason)
+    def start(self,job_id,now):
+        with self.lock:
+            self._expire(now)
+            j=self.records[job_id]
+            if j.status not in ("queued","deferred"):return None
+            if any(x.status=="running" for x in self.records.values()):return None
+            j=replace(j,status="running",reason="",started=now);self.records[job_id]=j
+            return j
+    def finish(self,job_id,status,reason,now):
+        if status not in TERMINAL:raise ValueError("not terminal")
+        with self.lock:
+            j=self.records[job_id]
+            if j.status in TERMINAL:return j
+            j=replace(j,status=status,reason=reason,finished=now)
+            self.records[job_id]=j;self.active.pop((j.name,j.target),None)
+            return j
+    def cancel(self,job_id,now):
+        with self.lock:
+            j=self.records[job_id]
+            if j.status in ("queued","deferred"):
+                return self.finish(job_id,"cancelled","operator_cancel",now)
+            return j
+    def list(self,now):
+        with self.lock:
+            self._expire(now)
+            return list(self.records.values())

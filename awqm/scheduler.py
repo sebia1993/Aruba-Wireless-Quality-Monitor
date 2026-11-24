@@ -65,7 +65,7 @@ class Protection:
         level=self.effective(now)
         if level=="critical":
             return poll.name=="show lc-cluster group-membership"
-        if poll.detail and (level!="normal" or self.budget(now,60,True)>=10):
+        if poll.detail and (level!="normal" or self.last_cpu is None or self.last_cpu>=70 or self.budget(now,60,True)>=10):
             return False
         return self.budget(now,300)<150
 
@@ -91,7 +91,7 @@ class Scheduler:
     def next(self,now):
         if self.running or self.paused:
             return None
-        ready=sorted((p for p in self.polls.values() if self.due[p.name]<=now),key=lambda p:(p.priority,self.due[p.name]))
+        ready=sorted((p for p in self.polls.values() if self.due[p.name]<=now),key=lambda p:(0 if p.priority==0 else max(1,p.priority-int(max(0,now-self.due[p.name])//120)),self.due[p.name],p.priority))
         for p in ready:
             if not self.protection.allowed(p,now):
                 self.due[p.name]=now+self.interval(p,now)

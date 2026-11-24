@@ -10,7 +10,9 @@ import re
 import time
 from .aos8 import (radio_summary,inventory,active_details,associations,cpu_load,
                    ControllerSnapshot,ParseError,merge_radios,merge_associations)
-from .scheduler import Scheduler,DEFAULT_POLLS
+from .scheduler import Scheduler,DEFAULT_POLLS,Poll
+from .jobs import Jobs
+from .client import client_table,station_stats,bss_table
 
 PARSERS={
     "show cpuload":cpu_load,
@@ -18,7 +20,9 @@ PARSERS={
     "show ap active details":active_details,
     "show ap database long":inventory,
     "show ap association":associations,
+    "show ap bss-table":bss_table,
 }
+DETAIL_PARSERS={"show ap debug client-table":client_table,"show ap debug client-stats":station_stats}
 DENIED=re.compile(r"(?im)^\s*(?:%\s*)?(?:permission denied|access denied|not authorized|authorization failed)")
 UNSUPPORTED=re.compile(r"(?im)^\s*(?:%\s*)?(?:invalid (?:input|command)|unknown command|command not found|unrecognized command|ambiguous command|incomplete command)")
 AUTH_ERRORS={"AuthenticationException","BadAuthenticationType","PasswordRequiredException","BadHostKeyException"}
@@ -34,20 +38,25 @@ class Reading:
     generation: int=0
 
 class ControllerWorker:
-    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0):
+    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False):
         self.controller=controller;self.session_factory=session_factory
         self.clock=clock;self.wall=wall
-        self.schedule=Scheduler(start=clock(),offset=offset,polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS),mode=mode)
+        self.schedule=Scheduler(start=clock(),offset=offset,polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and (enable_bss or p.name!="show ap bss-table")),mode=mode)
         self.session=None;self.next_connect=clock()+offset;self.failures=0
         self.blocked=None;self.disabled=set();self.latest={};self.outcomes={}
         self.generation=0
         self.lock=Lock()
+        self.jobs=Jobs()
+        self.detail_latest={}
+        self.detail_disabled=set()
+        self.last_heartbeat=self.clock()
     def _close(self):
         if self.session is not None:
             try:self.session.close()
             finally:self.session=None
     def _failed(self,reason):
         self._close()
+        self.detail_latest.clear()
         now=self.clock();self.failures+=1
         self.next_connect=now+BACKOFF[min(self.failures-1,len(BACKOFF)-1)]
         self.schedule.reconnect(now)
@@ -84,7 +93,7 @@ class ControllerWorker:
                 self.schedule.reconnect(self.clock())
                 for k in self.disabled:self.schedule.due[k]=float("inf")
             p=self.schedule.next(self.clock())
-            if p is None:return None
+            if p is None:return self._detail_tick()
             try:
                 raw=self.session.run(p.name,timeout=p.timeout)
             except Exception as exc:
@@ -115,7 +124,62 @@ class ControllerWorker:
                 if p.name in self.disabled:
                     self.schedule.due[p.name]=float("inf")
             return r
-        finally:self.lock.release()
+        finally:
+            self.last_heartbeat=self.clock()
+            self.lock.release()
+    def submit_detail(self,request_id,name,target,ttl=300):
+        # Separate queue lock allows reservation even while the worker awaits SSH.
+        return self.jobs.submit(request_id,name,target,self.clock(),ttl)
+    def _detail_target(self,job):
+        now=int(self.wall())
+        if job.name.endswith("client-table"):
+            r=self.latest.get("show ap active details")
+            if not r or r.generation!=self.generation or self.outcomes[r.command].status!="success" or not 0<=now-r.observed_at<=150:
+                return False
+            return sum(a["name"]==job.target and "A" in a["roles"] for a in r.data)==1
+        r=self.latest.get("show ap association")
+        a=self.latest.get("show ap active details")
+        if not r or not a or any(x.generation!=self.generation or self.outcomes[x.command].status!="success" or not 0<=now-x.observed_at<=150 for x in (r,a)):
+            return False
+        claims=[x for x in r.data if x["client_mac"]==job.target and x["active"]]
+        return len(claims)==1 and sum(x["name"]==claims[0]["ap_name"] and "A" in x["roles"] for x in a.data)==1
+    def _detail_tick(self):
+        now=self.clock()
+        for job in self.jobs.pending(now):
+            if job.name in self.detail_disabled:
+                self.jobs.finish(job.job_id,"skipped","command_unavailable",now);continue
+            if not self._detail_target(job):
+                self.jobs.defer(job.job_id,"target_anchor_unverified");continue
+            poll=Poll(job.name,60,10,3,True)
+            available=min(10-self.schedule.protection.budget(now,60,True),150-self.schedule.protection.budget(now,300))
+            if not self.schedule.protection.allowed(poll,now) or available<1:
+                self.jobs.defer(job.job_id,"controller_protection");continue
+            if not self.jobs.start(job.job_id,now):continue
+            try:
+                raw=self.session.run(job.name,target=job.target,timeout=min(10,available),idle_timeout=min(10,available))
+                if DENIED.search(raw) or UNSUPPORTED.search(raw):
+                    self.detail_disabled.add(job.name)
+                    self.jobs.finish(job.job_id,"skipped","permission_denied_or_unsupported",self.clock())
+                    return Reading(job.name,"unsupported",int(self.wall()),generation=self.generation)
+                try:
+                    value=DETAIL_PARSERS[job.name](raw)
+                except (ValueError,TypeError):
+                    self.jobs.finish(job.job_id,"failed","parse_error",self.clock())
+                    return Reading(job.name,"parse_error",int(self.wall()),generation=self.generation)
+                reading=Reading(job.name,"success",int(self.wall()),value,generation=self.generation)
+                # Bounded cache; full historical client persistence is not yet enabled.
+                key=(job.name,job.target)
+                self.detail_latest.pop(key,None);self.detail_latest[key]=reading
+                while len(self.detail_latest)>100:self.detail_latest.pop(next(iter(self.detail_latest)))
+                self.jobs.finish(job.job_id,"completed","field_validation_pending",self.clock())
+                return reading
+            except Exception as exc:
+                self.jobs.finish(job.job_id,"failed",type(exc).__name__,self.clock())
+                self._failed(type(exc).__name__)
+                return Reading(job.name,"transport_error",int(self.wall()),generation=self.generation)
+            finally:
+                self.schedule.protection.account(now,self.clock(),True)
+        return None
     def close(self):
         with self.lock:
             self._close()
@@ -135,7 +199,9 @@ class ControllerWorker:
             # Inventory and physical anchor metadata have slower approved poll periods.
             # Never use future data or a failed refresh as authoritative current data.
             ages=[now-t for t in times]
-            limits=(660,150,max_skew+45)
+            # Safe mode intentionally polls radio/association more slowly.
+            radio_limit=360 if self.schedule.mode=="safe" else max_skew+45
+            limits=(660,150,radio_limit)
             if any(age<0 or age>limit for age,limit in zip(ages,limits)):return None
             if abs(times[0]-radio_t)>660 or abs(times[1]-radio_t)>150:return None
             a=self.latest.get("show ap association")
