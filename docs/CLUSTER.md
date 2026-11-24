@@ -22,3 +22,5 @@ peer disagreement or incompatible membership cannot prove WLC Hang/Down,
 AP loss or service impact. All observations remain field-unvalidated.
 Offline commands: AWQM.exe --validate-cli cluster / ap-load / client-load
 with the appropriate local output file. No actual WLC access performed.
+
+Collection defaults to safe startup. Protected config/collection.json may contain {"version":1,"profile":"standard","authorized":true} after site approval to use the 60-second Radio target; {"version":1,"profile":"safe"} restores safe mode after restart. Adaptive CPU protection remains active. Independently fresh WLC snapshots are reconciled; duplicate physical wired-MAC owners remain unresolved.

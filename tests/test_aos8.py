@@ -75,3 +75,16 @@ class ParserTests(unittest.TestCase):
         s=ControllerSnapshot("WLC-1",120,inventory(inv),a,radio_summary(rf),associations(assoc))
         rows,issues=merge_radios([s])
         self.assertEqual(len(rows),1);self.assertEqual(len(issues),1)
+
+    def test_independently_fresh_radios_and_physical_owner_conflict(self):
+        inv,act,rf,assoc=sample()
+        s=ControllerSnapshot("WLC-1",120,inventory(inv),active_details(act),radio_summary(rf),associations(assoc))
+        inv2=inv.replace("DEMO-AP","DEMO-BB").replace("192.0.2.10","192.0.2.11").replace("02:00:00:00:00:10","02:00:00:00:00:20")
+        act2=act.replace("DEMO-AP","DEMO-BB").replace("192.0.2.10","192.0.2.11")
+        rf2=rf.replace("DEMO-AP","DEMO-BB").replace("192.0.2.10","192.0.2.11")
+        t=ControllerSnapshot("WLC-2",30,inventory(inv2),active_details(act2),radio_summary(rf2))
+        self.assertEqual(len(merge_radios([s,t])[0]),2)
+        self.assertEqual(len(merge_radios([s,t],max_skew=None)[0]),4)
+        t=replace(t,inventory=inventory(inv2.replace("02:00:00:00:00:20","02:00:00:00:00:10")))
+        rows,issues=merge_radios([s,t],max_skew=None)
+        self.assertEqual(rows,[]);self.assertTrue(issues)

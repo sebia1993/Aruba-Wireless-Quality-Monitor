@@ -68,3 +68,14 @@ class ConfigTests(unittest.TestCase):
             pump(e,None,Stop(),status,usage=lambda p:U(100*10**9,96*10**9,4*10**9),wall=lambda:1000)
             self.assertTrue(e.closed)
             self.assertEqual(json.loads(status.read_text())["state"],"stopped")
+
+    def test_explicit_collection_profile(self):
+        from awqm.service_config import load_profile
+        with tempfile.TemporaryDirectory() as root:
+            p,c=self.make(root);cfg=load_config(p)
+            self.assertEqual(load_profile(cfg),"safe")
+            f=p/"config/collection.json"
+            f.write_text(json.dumps({"version":1,"profile":"standard"}))
+            with self.assertRaises(ValueError):load_profile(cfg)
+            f.write_text(json.dumps({"version":1,"profile":"standard","authorized":True}))
+            self.assertEqual(load_profile(cfg),"standard")

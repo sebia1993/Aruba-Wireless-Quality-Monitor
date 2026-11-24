@@ -110,6 +110,9 @@ class ClusterMonitor:
             if frame.get("connected") and cpu and cpu.data<70 and membership:
                 self_rows=[x for x in membership.data if x["type"]=="self" and x["address"]==self.targets[source] and x["state"]=="CONNECTED"]
                 if len(self_rows)!=1 or any(cmd in frame.get("disabled",()) for cmd in LOAD_COMMANDS):continue
+                if any(r and r.status in ("parse_error","transport_error","unsupported","permission_denied")
+                    and 0<=now-r.observed_at<=120 for cmd in LOAD_COMMANDS for r in (frame.get("readings",{}).get(cmd),)):
+                    continue
                 candidates.append(source)
         if not candidates:return self.representative
         old=self.representative

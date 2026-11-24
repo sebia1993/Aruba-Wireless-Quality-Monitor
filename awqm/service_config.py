@@ -106,3 +106,13 @@ def secret(target,decrypt=unprotect):
         raise ValueError("credential target binding mismatch")
     if not isinstance(data["password"],str) or not 1<=len(data["password"])<=1024:raise ValueError("invalid credential")
     return data["password"]
+
+def load_profile(cfg):
+    """Safe startup unless the protected local profile is explicitly enabled."""
+    p=safe_path(cfg.root,"config/collection.json")
+    if not p.exists():return "safe"
+    if p.stat().st_size>4096:raise ValueError("collection profile too large")
+    d=json.loads(p.read_text(encoding="utf-8"))
+    if d=={"version":1,"profile":"safe"}:return "safe"
+    if d=={"version":1,"profile":"standard","authorized":True}:return "standard"
+    raise ValueError("unsupported or unauthorized collection profile")

@@ -22,7 +22,7 @@ from .worker import ControllerWorker
 from .storage import Store,disk_level
 from .engine import Engine
 from .maintenance import Maintenance,write_json
-from .service_config import load_config,secret,safe_path
+from .service_config import load_config,secret,safe_path,load_profile
 from .windows_security import check_identity,check_layout
 
 class SharedCredentialRejected(RuntimeError):pass
@@ -105,6 +105,7 @@ def run_service(root,stop):
     cfg=load_config(root)
     check_identity(cfg.account);check_layout(cfg)
     web=load_web_config(cfg)
+    profile=load_profile(cfg)
     approvals=load_approvals(cfg)
     client_approvals=load_client_approvals(cfg,approvals)
     station_approvals=load_station_approvals(cfg,client_approvals)
@@ -117,7 +118,7 @@ def run_service(root,stop):
     with exclusive(cfg.root):
         store=Store(safe_path(cfg.root,"data"),mode="diagnostic")
         gate=ConnectionGate(cfg.known_hosts,stop=stop)
-        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode="safe",offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True) for i,t in enumerate(cfg.targets)]
+        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode=profile,offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True) for i,t in enumerate(cfg.targets)]
         # Always open the local history ledger so old incidents remain
         # inspectable after an attestation is revoked or expires.
         quality=QualityLedger(store)

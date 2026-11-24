@@ -96,9 +96,13 @@ class Engine:
                 if not 0<=wall-s.observed_at<=max_radio:continue
                 if s.anchor_at is None or not 0<=wall-s.anchor_at<=150:continue
                 if s.inventory_at is None or not 0<=wall-s.inventory_at<=660:continue
+                if s.associations is not None and (s.association_at is None or not 0<=wall-s.association_at<=150):
+                    s=replace(s,associations=None,association_at=None)
                 active.append(s)
-            radios,unresolved=merge_radios(active,self.site)
-            clients,conflicts=merge_associations(active)
+            # Staggered WLC polls are independently freshness-checked above.
+            # Conflicting ownership remains unresolved.
+            radios,unresolved=merge_radios(active,self.site,max_skew=None)
+            clients,conflicts=merge_associations(active,max_skew=None)
             if self.simulation:radios=[replace(r,source="synthetic") for r in radios]
             fresh=[r for r in radios if r.observed_at>self.accepted.get(r.radio_id,-1)]
             if not self.error:

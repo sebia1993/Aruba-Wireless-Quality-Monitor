@@ -201,7 +201,8 @@ def merge_radios(snapshots, site="default", max_skew=45):
     if not snapshots:
         return [],[]
     newest=max(s.observed_at for s in snapshots)
-    fresh=[s for s in snapshots if newest-s.observed_at<=max_skew]
+    # Coordinator supplies individually freshness-checked snapshots.
+    fresh=[s for s in snapshots if max_skew is None or newest-s.observed_at<=max_skew]
     inventory_by_name={}
     for s in fresh:
         for a in s.inventory:
@@ -211,6 +212,11 @@ def merge_radios(snapshots, site="default", max_skew=45):
         for a in s.active:
             if "A" in a["roles"]:
                 owners.setdefault((a["name"],a["ip"]),[]).append((s,a))
+    # Reject competing AAC claims for the same physical MAC across name/IP changes.
+    physical_owners={}
+    for key,claims in owners.items():
+        for ident in inventory_by_name.get(key,set()):
+            physical_owners.setdefault(ident,[]).extend((s.controller,key) for s,_ in claims)
     result=[]; unresolved=[]
     for s in fresh:
         for r in s.radios:
@@ -222,7 +228,7 @@ def merge_radios(snapshots, site="default", max_skew=45):
             why=None
             if len(macs)!=1:
                 why="inventory identity ambiguous"
-            elif len(claims)!=1:
+            elif len(claims)!=1 or len(physical_owners.get(next(iter(macs)),()))!=1:
                 why="AAC unknown or conflicting"
             elif claims[0][0].controller!=s.controller:
                 # A standby/UAC observation is not a second physical radio.
@@ -255,7 +261,7 @@ def merge_associations(snapshots,max_skew=45):
     newest=max(s.observed_at for s in snapshots)
     candidates={}
     for s in snapshots:
-        if newest-s.observed_at>max_skew or s.associations is None:
+        if (max_skew is not None and newest-s.observed_at>max_skew) or s.associations is None:
             continue
         for a in s.associations:
             if a["active"]:

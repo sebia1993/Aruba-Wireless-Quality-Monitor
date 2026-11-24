@@ -90,7 +90,7 @@ class ClusterParserTests(unittest.TestCase):
         workers=[]
         for idx,name in enumerate(IPS,1):
             s=FixtureSession(idx)
-            s.responses.update({MEMBERSHIP:membership(name),AP_LOAD:load(name),CLIENT_LOAD:load(name,"Clients")})
+            s.responses.update({MEMBERSHIP:membership(name),AP_LOAD:load(name),CLIENT_LOAD:load(name,"Clients",counts=(100,200))})
             orig=s.run
             def run(cmd,*a,source=name,original=orig,**kw):
                 calls[source].append(cmd);return original(cmd,*a,**kw)
