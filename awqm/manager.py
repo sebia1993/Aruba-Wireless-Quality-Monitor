@@ -152,6 +152,13 @@ def main():
         q=sub.add_parser(action,help="record desired state, not immediate drain")
         q.add_argument("controller",help="configured WLC ID or all")
         q.add_argument("--revision",type=int,required=True)
+    q=sub.add_parser("prepare-update",help="verify candidate and stopped-service rollback bundle; no installation")
+    q.add_argument("--id",required=True);q.add_argument("--archive",type=Path,required=True)
+    q.add_argument("--sha256",required=True);q.add_argument("--include-association-history",action="store_true")
+    q=sub.add_parser("verify-update",help="verify local prepared bundle")
+    q.add_argument("--id",required=True)
+    q=sub.add_parser("restore-update-copy",help="verify rollback files into a new protected directory")
+    q.add_argument("--id",required=True);q.add_argument("--output-id",required=True)
     sub.add_parser("provision-history-key",help="create a protected local history pseudonym key")
     sub.add_parser("smoke-test",help="verify imports only; no service change")
     a=p.parse_args()
@@ -162,6 +169,9 @@ def main():
             print("AWQM manager imports passed (no SCM operation)")
         elif a.action=="provision":provision(load_config(default_root()),a.controller,a.replace)
         elif a.action=="provision-history-key":provision_history_key(load_config(default_root()))
+        elif a.action in ("prepare-update","verify-update","restore-update-copy"):
+            from .windows_update import manage_update
+            manage_update(load_config(default_root()),a)
         elif a.action.startswith("collection-"):collection_control(load_config(default_root()),a.action,getattr(a,"controller",None),getattr(a,"revision",None))
         elif a.action=="install":install(load_config(default_root()),a.auto_start)
         else:control(a.action)
