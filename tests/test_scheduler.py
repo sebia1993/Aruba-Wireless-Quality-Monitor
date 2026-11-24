@@ -46,6 +46,11 @@ class SchedulerTests(unittest.TestCase):
         s.open();c.chunks=[b"show cpuload\r\nuser 1%, system 2%, idle 97%\r\n(demo) [node] # "]
         self.assertEqual(s.run("show cpuload"),"user 1%, system 2%, idle 97%")
         self.assertEqual(c.sent,["show cpuload\n"])
+    def test_prompt_with_trailing_newline(self):
+        c=Channel([b"(demo) # \r\n"]);clock=Clock()
+        s=ShellSession(Transport(c),clock.now,clock.sleep);s.open()
+        c.chunks=[b"show version\r\nversion fixture\r\n(demo) # \r\n"]
+        self.assertEqual(s.run("show version"),"version fixture")
     def test_timeout_closes(self):
         c=Channel([b"(demo) # "]);clock=Clock()
         s=ShellSession(Transport(c),clock.now,clock.sleep);s.open()

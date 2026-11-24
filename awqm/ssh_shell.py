@@ -46,7 +46,8 @@ class ShellSession:
                         self.prompt=line.strip()
                     elif line.strip()!=self.prompt:
                         raise ShellError("CLI prompt changed")
-                    return clean.rsplit("\n",1)[0] if "\n" in clean else ""
+                    body=clean.rstrip().rsplit("\n",1)
+                    return body[0] if len(body)==2 else ""
             elif self.channel.closed:
                 raise ShellError("SSH channel closed")
             else:

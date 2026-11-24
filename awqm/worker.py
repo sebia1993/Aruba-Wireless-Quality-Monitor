@@ -92,6 +92,8 @@ class ControllerWorker:
                 if DENIED.search(raw) or UNSUPPORTED.search(raw):
                     status="permission_denied" if DENIED.search(raw) else "unsupported"
                     self.disabled.add(p.name)
+                    if p.name=="show cpuload":
+                        self.schedule.protection.cpu(None,self.clock())
                     r=self._record(p.name,status)
                 else:
                     try:

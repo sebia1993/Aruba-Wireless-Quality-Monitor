@@ -55,6 +55,14 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(w.tick().status,"unsupported")
         self.assertIn("show ap radio-summary",w.disabled)
         self.assertEqual(w.schedule.due["show ap radio-summary"],float("inf"))
+    def test_cpu_denied_invalidates_protection(self):
+        clock,session,w=setup()
+        self.assertEqual(w.tick().status,"success")
+        self.assertEqual(w.schedule.protection.level,"normal")
+        clock.t=31
+        session.responses["show cpuload"]="Permission denied"
+        self.assertEqual(w.tick().status,"permission_denied")
+        self.assertEqual(w.schedule.protection.level,"unknown")
     def test_transport_backoff(self):
         clock,session,w=setup()
         session.responses["show cpuload"]=TimeoutError()

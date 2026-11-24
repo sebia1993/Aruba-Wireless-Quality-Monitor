@@ -45,7 +45,24 @@ class ParserTests(unittest.TestCase):
         for bad in (rf.replace("Total Radios:2","Total Radios:3"),rf.replace("Total Radios:2",""),
                     rf.replace("-94/ 91/ 5","-94/ 191/5"),rf+"\n--More--"):
             with self.assertRaises(ParseError):radio_summary(bad)
-        self.assertEqual(radio_summary(rf.replace("-94/ 91/ 5","N/A/ N/A/ N/A"))[0]["utilization"],None)
+        # Missing markers are formatted in a new aligned table, not inserted into
+        # an existing fixed-width output where they could shift following fields.
+        fields=["Name","Group","AP Type","IP Address","Band","Mode","EIRP/MaxEIRP","NF/U/I","TD","TM","TC"]
+        for raw,expected in (("N/A/ N/A/ N/A",(None,None,None)),
+                             ("-94/ N/A/ 5",(-94,None,5)),
+                             ("-94/ 0/ 0",(-94,0,0)),
+                             ("-94/ -/ NA",(-94,None,None))):
+            fixture=table("APs Radios information",fields,
+                [["DEMO-AP","demo","535","192.0.2.10","5","AP:44+","18/24",raw,
+                  "1/2/3/4/5/6","0/0/0/0/0/0","0/0/0/0/0/0"]],"Total Radios:1")
+            row=radio_summary(fixture)[0]
+            self.assertEqual((row["noise"],row["utilization"],row["interference"]),expected)
+            self.assertEqual(row["td"],"1/2/3/4/5/6")
+        for malformed in ("-94/ N/ 5","-94/ 191/ 5","-94/ 10/ 5/ 1","-94/ N/A"):
+            fixture=table("APs Radios information",fields,
+                [["DEMO-AP","demo","535","192.0.2.10","5","AP:44+","18/24",malformed,
+                  "0","0","0"]],"Total Radios:1")
+            with self.assertRaises(ParseError):radio_summary(fixture)
     def test_cpu(self):
         self.assertEqual(cpu_load("user 6.9%, system 7.7%, idle 85.4%"),14.6)
         with self.assertRaises(ParseError):cpu_load("user 50%, system 50%, idle 85%")

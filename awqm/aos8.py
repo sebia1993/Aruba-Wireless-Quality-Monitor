@@ -117,10 +117,12 @@ def radio_summary(text):
         ch=None; width=None
         if active:
             ch,width=channel_info(mode.rsplit(":",1)[1])
-        parts=r["nf/u/i"].split("/")
-        if len(parts)!=3:
-            raise ParseError("NF/U/I triplet missing")
-        nf,u,i=(field_num(v,*limits) for v,limits in zip(parts,((-130,0),(0,100),(0,100))))
+        # N/A contains a slash itself. Parse complete tokens, not slash fragments.
+        token=r"(N/A|NA|[+-]?(?:\d+(?:\.\d*)?|\.\d+)|-)"
+        match=re.fullmatch(r"\s*"+token+r"\s*/\s*"+token+r"\s*/\s*"+token+r"\s*",r["nf/u/i"],re.I)
+        if not match:
+            raise ParseError("NF/U/I triplet missing or malformed")
+        nf,u,i=(field_num(v,*limits) for v,limits in zip(match.groups(),((-130,0),(0,100),(0,100))))
         out.append(dict(name=r["name"],group=r["group"],model=r["ap type"],ip=ip(r["ip address"]),
                         band=band(r["band"]),mode=mode,channel=ch,width=width,service=active,
                         noise=nf,utilization=u,interference=i,eirp_raw=r["eirp/maxeirp"],
