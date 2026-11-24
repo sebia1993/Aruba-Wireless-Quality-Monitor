@@ -1,4 +1,4 @@
-# AWQM development progress (v0.10.0-dev)
+# AWQM development progress (v0.11.0-dev)
 
 Planning is approved and complete. This is a provisional engineering estimate,
 not a measured test-pass percentage or field readiness claim. Each of the ten
@@ -12,16 +12,16 @@ actual 72-hour soak and Windows service lifecycle checks.
 |---|---|---:|---|
 | 01 | Foundation | 100% | Maintain contracts and fixtures |
 | 02 | Collector and scheduling | 70% | Complete CLI catalog and validated adaptive detail workflow |
-| 03 | CLI and cluster integration | 55% | Peer/load, UAC/BSSID/session/roaming coverage and provenance |
+| 03 | CLI and cluster integration | 60% | Peer/load, UAC/BSSID/session/roaming coverage and provenance |
 | 04 | Database lifecycle | 65% | Privacy/evidence retention, full backup and operational scale |
-| 05 | Analysis | 45% | Full cause catalog, validated input gates and incident review |
-| 06 | Dashboard | 60% | Full client/incident views, WebSocket and end-to-end operation |
+| 05 | Analysis | 55% | Full cause catalog, validated input gates and incident review |
+| 06 | Dashboard | 65% | Full client/incident views, WebSocket and end-to-end operation |
 | 07 | Security | 65% | Full audit lifecycle, hardening, production authorization tests |
 | 08 | Windows operation | 65% | Actual SCM lifecycle, installer/update/rollback and offline verification |
 | 09 | Validation | 25% | Full regression, load, security and 72-hour real-time soak |
 | 10 | Distribution | 10% | Qualified release candidate and complete guides |
 
-Arithmetic mean: 56%. These estimates will be updated from verified evidence;
+Arithmetic mean: 58%. These estimates will be updated from verified evidence;
 a successful development build is not a passed production release gate.
-Latest v0.10 development build still requires confirmation. No production
+v0.10 Windows build verified. Latest v0.11 development build requires confirmation. No production
 release or real corporate equipment validation has been performed.

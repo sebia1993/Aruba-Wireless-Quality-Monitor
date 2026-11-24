@@ -14,9 +14,11 @@ from .aos8 import (radio_summary,inventory,active_details,associations,cpu_load,
 from .scheduler import Scheduler,DEFAULT_POLLS,Poll
 from .jobs import Jobs
 from .client import client_table,station_stats,bss_table
+from .field_validation import version_identity,fingerprint
 
 PARSERS={
     "show cpuload":cpu_load,
+    "show version":version_identity,
     "show ap radio-summary":radio_summary,
     "show ap active details":active_details,
     "show ap database long":inventory,
@@ -40,10 +42,13 @@ class Reading:
     target: str|None=None
 
 class ControllerWorker:
-    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False):
+    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None):
         self.controller=controller;self.session_factory=session_factory
         self.clock=clock;self.wall=wall
-        self.schedule=Scheduler(start=clock(),offset=offset,polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and (enable_bss or p.name!="show ap bss-table")),mode=mode)
+        self.field_approval=field_approval
+        polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table"))
+        if field_approval is not None:polls=polls+(Poll("show version",600,30,0),)
+        self.schedule=Scheduler(start=clock(),offset=offset,polls=polls,mode=mode)
         self.session=None;self.next_connect=clock()+offset;self.failures=0
         self.blocked=None;self.disabled=set();self.latest={};self.outcomes={}
         self.generation=0
@@ -209,8 +214,14 @@ class ControllerWorker:
             if abs(times[0]-radio_t)>660 or abs(times[1]-radio_t)>150:return None
             a=self.latest.get("show ap association")
             assoc=a.data if a and a.generation==self.generation and self.outcomes[a.command].status=="success" and 0<=now-a.observed_at<=150 and abs(a.observed_at-radio_t)<=max_skew else None
+            approval=self.field_approval;tag=None;until=None
+            v=self.latest.get("show version")
+            if (approval and v and v.generation==self.generation and self.outcomes[v.command].status=="success"
+                and approval.permits(v.data,fingerprint(self.session),radio_t,now,v.observed_at)):
+                tag=approval.tag;until=min(approval.valid_until,v.observed_at+660)
             return ControllerSnapshot(self.controller,radio_t,readings[0].data,readings[1].data,readings[2].data,assoc,
-                inventory_at=times[0],anchor_at=times[1],association_at=a.observed_at if assoc is not None else None)
+                inventory_at=times[0],anchor_at=times[1],association_at=a.observed_at if assoc is not None else None,
+                field_tag=tag,field_until=until,field_connection=self.instance_id+":"+str(self.generation),field_profile=self.schedule.mode)
 
 class ClusterWorkers:
     def __init__(self,workers):

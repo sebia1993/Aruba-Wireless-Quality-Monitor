@@ -5,8 +5,9 @@ from pathlib import Path
 from .aos8 import radio_summary,inventory,active_details,associations,cpu_load,ParseError
 
 from .client import client_table,station_stats,bss_table
+from .field_validation import version_identity
 PARSERS={"radio":radio_summary,"inventory":inventory,"active":active_details,"association":associations,"cpu":cpu_load,
-         "client":client_table,"stats":station_stats,"bss":bss_table}
+         "client":client_table,"stats":station_stats,"bss":bss_table,"version":version_identity}
 
 def main():
     p=argparse.ArgumentParser(description="Local AOS 8 CLI parser validation (no SSH connection)")
@@ -23,6 +24,8 @@ def main():
     if isinstance(result,list):
         report={"status":"parsed","kind":a.kind,"count":len(result),"field_validated":False}
         if a.detail:report["rows"]=result
+    elif isinstance(result,tuple):
+        report={"status":"parsed","kind":a.kind,"model":result[0],"firmware":result[1],"field_validated":False}
     elif isinstance(result,dict):
         report={"status":"parsed","kind":a.kind,"fields":sorted(result),"field_validated":False}
         if a.detail:report["counters"]=result

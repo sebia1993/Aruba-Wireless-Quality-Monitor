@@ -15,7 +15,7 @@ class DiagnosticView:
         self.lock=RLock();self.rows=[];self.index={};self.meta={}
     def token(self,radio_id):
         return hmac.new(self.key,radio_id.encode("utf-8"),hashlib.sha256).hexdigest()[:32]
-    def publish(self,result,current=(),available=True):
+    def publish(self,result,current=(),available=True,quality=None):
         now=int(self.clock())
         with self.lock:
             if available:
@@ -32,11 +32,17 @@ class DiagnosticView:
                     token=self.token(r["radio_id"])
                     index[token]=r["radio_id"]
                     live=(r["radio_id"],r["observed_at"]) in current
+                    q=(quality or {}).get(r["radio_id"],{})
+                    approved=bool(live and q.get("observed_at")==r["observed_at"] and now<q.get("valid_until",0))
                     rows.append(dict(id=token,ap_name=r["ap_name"],controller=r["controller"],band=r["band"],
                         channel=r["channel"],utilization=r["utilization"],interference=r["interference"],
                         noise=r["noise"],observed_at=r["observed_at"],
                         freshness="observed" if live else "stale_or_unconfirmed",
-                        quality="unvalidated"))
+                        quality="local_operator_attested" if approved else "unvalidated",
+                        quality_score=q.get("score") if approved else None,
+                        risk_status=q.get("status") if approved else "UNKNOWN",
+                        approval=q.get("approval") if approved else None,
+                        approval_until=q.get("valid_until") if approved else None))
                 if available:self.rows=rows;self.index=index
             else:
                 self.rows=[dict(r,freshness="stale_or_unconfirmed") for r in self.rows]
@@ -49,7 +55,7 @@ class DiagnosticView:
                 "client_conflicts":result.get("client_conflicts"),
                 "storage_error":result.get("storage_error"),
                 "paused":bool(result.get("paused")),
-                "available":bool(available)}
+                "available":bool(available),"quality_scope":"locally_attested_radio_only"}
     def page(self,query="",page=1,size=100):
         if not isinstance(query,str) or len(query)>128 or not 1<=page<=10000 or not 1<=size<=100:
             raise ValueError("invalid query")
@@ -58,7 +64,13 @@ class DiagnosticView:
             meta=dict(self.meta);now=int(self.clock())
             stale=not meta.get("available") or not 0<=now-meta.get("published_at",0)<=20
             rows=[r for r in self.rows if any(query in str(r[k]).casefold() for k in ("ap_name","controller","band","channel"))]
-            data=[dict(r,freshness="stale_or_unconfirmed" if stale else r["freshness"]) for r in rows[(page-1)*size:page*size]]
+            data=[]
+            for r in rows[(page-1)*size:page*size]:
+                x=dict(r)
+                if stale:x["freshness"]="stale_or_unconfirmed"
+                if stale or x["freshness"]!="observed" or (x.get("approval_until") or 0)<=now:
+                    x.update(quality="unvalidated",quality_score=None,risk_status="UNKNOWN",approval=None,approval_until=None)
+                data.append(x)
             if stale:
                 for k in ("coherent_controllers","mapped_radios","active_clients","unresolved_radios","client_conflicts"):meta[k]=None
                 meta["available"]=False

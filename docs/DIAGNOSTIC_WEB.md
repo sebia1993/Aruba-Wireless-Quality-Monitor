@@ -2,8 +2,7 @@
 
 This is not an approved production release. The Windows service keeps
 read-only diagnostic collection and optional HTTPS read-only display in
-one process. No live quality score, root-cause attribution, client MAC,
-SSID or user detail is exposed. Browser polling reads published observations
+one process. Radio scores are disabled by default; an explicit local field attestation may enable current Radio policy evaluation (see FIELD_VALIDATION.md). No root-cause attribution, client MAC, SSID or user detail is exposed. Browser polling reads published observations
 and does not start CLI commands. No WebSocket or production device-control
 API is enabled.
 

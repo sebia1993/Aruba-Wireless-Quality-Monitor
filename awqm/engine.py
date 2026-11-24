@@ -15,7 +15,7 @@ from .client_history import ClientHistory,map_samples
 import json
 
 class Engine:
-    def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time,simulation=False,durable_jobs=False,auto=False):
+    def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time,simulation=False,durable_jobs=False,auto=False,quality_ledger=None):
         self.workers={w.controller:w for w in workers}
         if not 1<=len(workers)<=4 or len(self.workers)!=len(workers):
             raise ValueError("one to four unique workers required")
@@ -35,6 +35,7 @@ class Engine:
         self.accepted={};self.last_result={};self.error=None
         self.paused=False;self.closed=False;self.lock=Lock()
         self.published_radios=()
+        self.quality_ledger=quality_ledger;self.field_quality={}
     @staticmethod
     def _step(w):
         r=w.tick()
@@ -161,6 +162,10 @@ class Engine:
                 except (sqlite3.Error,OSError,ValueError,TypeError) as exc:
                     self.error=type(exc).__name__
                     self.active_detail_clients=[]
+            self.field_quality={}
+            if self.quality_ledger and not self.error and not self.simulation:
+                try:self.field_quality=self.quality_ledger.evaluate(radios,active,int(self.wall()),self.accepted)
+                except (sqlite3.Error,OSError,ValueError,TypeError) as exc:self.error=type(exc).__name__
             self.published_radios=tuple((r.radio_id,r.observed_at) for r in radios if not self.error and self.accepted.get(r.radio_id)==r.observed_at)
             self.last_result={"mode":"demo" if self.simulation else "diagnostic","field_validated":False,
                 "coherent_controllers":len(active),"expected_controllers":len(self.workers),
