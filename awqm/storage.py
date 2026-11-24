@@ -302,18 +302,28 @@ class Store:
                 # raw arrival requires rebuild before that day is visible again.
                 with self._db(self.root/"core.db") as c:
                     days=[r[0] for r in c.execute("SELECT day FROM aggregate_manifest WHERE completed_revision=revision AND raw_count IS NOT NULL ORDER BY day")]
+                # Open a monthly partition only once for a contiguous run of
+                # completed days. Never bridge invalidated/missing days.
+                ranges={}
                 for day in days:
                     d=day_start(day)
                     if d>=end or d+86400<=start:continue
-                    path=self.root/f"radio_{resolution}_{day[:6]}.db"
+                    lo=max(start,d);hi=min(end,d+86400)
+                    group=ranges.setdefault(day[:6],[])
+                    if group and group[-1][1]==lo:group[-1]=(group[-1][0],hi)
+                    else:group.append((lo,hi))
+                q="SELECT "+",".join(AGG_COLUMNS)+" FROM radio_aggregate WHERE radio_id=? AND bucket>=? AND bucket<? ORDER BY bucket,epoch,band,channel,source LIMIT ?"
+                for month,intervals in ranges.items():
+                    path=self.root/f"radio_{resolution}_{month}.db"
                     if not path.is_file():continue
                     with self._db(path) as c:
-                        q="SELECT "+",".join(AGG_COLUMNS)+" FROM radio_aggregate WHERE radio_id=? AND bucket>=? AND bucket<? ORDER BY bucket LIMIT ?"
-                        for r in c.execute(q,(radio_id,max(start,d),min(end,d+86400),limit-len(rows))):
-                            row=dict(zip(AGG_COLUMNS,r))
-                            for key in ("utilization","interference","noise"):
-                                row[key+"_avg"]=row[key+"_sum"]/row["valid"] if row["valid"] else None
-                            rows.append(row)
+                        for lo,hi in intervals:
+                            for r in c.execute(q,(radio_id,lo,hi,limit-len(rows))):
+                                row=dict(zip(AGG_COLUMNS,r))
+                                for key in ("utilization","interference","noise"):
+                                    row[key+"_avg"]=row[key+"_sum"]/row["valid"] if row["valid"] else None
+                                rows.append(row)
+                            if len(rows)>=limit:break
                     if len(rows)>=limit:break
             else:raise ValueError("unsupported resolution")
         return rows

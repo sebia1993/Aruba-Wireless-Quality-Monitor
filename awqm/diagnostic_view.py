@@ -6,7 +6,7 @@ No client MAC, username, SSID or raw CLI data is included in this interface.
 """
 import hashlib,hmac,secrets
 from threading import RLock
-from .reporting import csv_report,html_report
+from .reporting import csv_report,html_report,WINDOWS,timestamp
 
 class DiagnosticView:
     def __init__(self,store,clock,key=None,incidents=None,association_history=None):
@@ -102,23 +102,41 @@ class DiagnosticView:
     def association_page(self,ident,page):
         if self.association_history is None:return {"enabled":False,"rows":[],"total":0,"page":page,"size":50}
         return self.association_history.page(int(self.clock()),ident,page)
-    def history(self,token,start,end):
-        if not isinstance(token,str) or len(token)!=32 or not 0<=start<end or end-start>7*86400:
+    def history(self,token,start,end,resolution="raw"):
+        if (not isinstance(token,str) or len(token)!=32 or resolution not in WINDOWS
+            or type(start) is not int or type(end) is not int or not 0<=start<end or end-start>WINDOWS[resolution]):
             raise ValueError("invalid history request")
         with self.lock:rid=self.index.get(token)
         if rid is None:raise ValueError("unknown Radio")
+        # Covers a full ordinary 30-day/365-day series without unbounded
+        # export. Multiple configuration epochs per bucket can hit the cap.
+        limit=2000 if resolution=="raw" else 9000
         if not self.store.lock.acquire(blocking=False):raise RuntimeError("storage busy")
         try:
             if self.store.pending_count():raise RuntimeError("storage pending")
-            raw=self.store.history(rid,start,end,"raw",2001)
+            samples=self.store.history(rid,start,end,resolution,limit+1)
         finally:self.store.lock.release()
-        fields=("ap_name","controller","band","channel","observed_at","utilization","interference","noise","source")
-        if any(r.get("source")!="aos8-cli-unvalidated" for r in raw):raise ValueError("invalid diagnostic provenance")
-        rows=[{k:r.get(k) for k in fields} for r in raw[:2000]]
-        return {"mode":"diagnostic","field_validated":False,"radio_id":token,"start":start,"end":end,"resolution":"raw",
-                "count":len(rows),"limit":2000,"truncated":len(raw)>2000,"fields":list(fields),"rows":rows,
-                "note":"Field-unvalidated diagnostic observations. No verified quality score, downtime, service impact or root cause."}
-
+        if any(r.get("source")!="aos8-cli-unvalidated" for r in samples):raise ValueError("invalid diagnostic provenance")
+        if resolution=="raw":
+            fields=("ap_name","controller","band","channel","observed_at","observed_at_kst","utilization","interference","noise","context_id","source")
+            time_field="observed_at"
+        else:
+            fields=("band","channel","bucket","bucket_kst","observed","valid","risky","utilization_avg","utilization_min","utilization_max","interference_avg","noise_avg","context_id","source")
+            time_field="bucket"
+        rows=[]
+        for sample in samples[:limit]:
+            row={k:sample.get(k) for k in fields}
+            row[time_field+"_kst"]=timestamp(sample[time_field])
+            row["context_id"]=self.token("history-context:"+str(sample.get("epoch","")))[:16]
+            rows.append(row)
+        return {"mode":"diagnostic","field_validated":False,"radio_id":token,"start":start,"end":end,"resolution":resolution,
+                "count":len(rows),"limit":limit,"truncated":len(samples)>limit,"fields":list(fields),"rows":rows,
+                "coverage":{"first_at":rows[0][time_field] if rows else None,"last_at":rows[-1][time_field] if rows else None,
+                            "observed_samples":len(rows) if resolution=="raw" else sum(r["observed"] for r in rows),
+                            "valid_samples":None if resolution=="raw" else sum(r["valid"] for r in rows),
+                            "complete_days_only":resolution!="raw"},
+                "note":"Field-unvalidated observations. Aggregates cover completed, non-invalidated closed days only; missing intervals are not zero or service recovery. Risk counts are threshold-matching samples, not incident counts, durations or confirmed impact."}
+    
     def current_incidents(self):
         with self.lock:
             now=int(self.clock())

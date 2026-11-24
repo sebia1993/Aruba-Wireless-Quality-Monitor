@@ -128,9 +128,10 @@ def handler_for(view,auth,audit,cfg,manual=None):
             q=parse_qs(raw.decode("utf-8"),strict_parsing=True,keep_blank_values=True,max_num_fields=len(fields))
             if set(q)!=fields or any(len(v)!=1 for v in q.values()):raise ValueError("invalid form")
             return {k:v[0] for k,v in q.items()}
-        def _query(self,path,fields):
-            q=parse_qs(path.query,strict_parsing=True,max_num_fields=len(fields),keep_blank_values=True)
-            if set(q)!=fields or any(len(v)!=1 for v in q.values()):raise ValueError("invalid query")
+        def _query(self,path,fields,optional=()):
+            allowed=set(fields)|set(optional)
+            q=parse_qs(path.query,strict_parsing=True,max_num_fields=len(allowed),keep_blank_values=True)
+            if not set(fields)<=set(q)<=allowed or any(len(v)!=1 for v in q.values()):raise ValueError("invalid query")
             return {k:v[0] for k,v in q.items()}
         def do_GET(self):
             if not self._local():self._send(403);return
@@ -155,8 +156,8 @@ def handler_for(view,auth,audit,cfg,manual=None):
                     q=self._query(path,{"q","page"})
                     self._json(200,view.page(q["q"],int(q["page"])))
                 elif path.path in ("/api/history","/api/history.csv","/api/history.html"):
-                    q=self._query(path,{"id","start","end"})
-                    report=view.history(q["id"],int(q["start"]),int(q["end"]))
+                    q=self._query(path,{"id","start","end"},optional=("resolution",))
+                    report=view.history(q["id"],int(q["start"]),int(q["end"]),q.get("resolution","raw"))
                     event={"/api/history":"history","/api/history.csv":"export_csv","/api/history.html":"export_html"}[path.path]
                     audit.record(s.username,event,q["id"])
                     if event=="history":self._json(200,report)

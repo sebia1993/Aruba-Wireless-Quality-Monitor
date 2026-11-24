@@ -94,7 +94,84 @@ function jobsPanel(r=null){
   return panel;
 }
 
-function openHistory(r){incidentPanel=null;selected={id:r.id,name:r.ap_name,band:r.band};$("detail").hidden=false;const d=$("detailBody");d.replaceChildren(el("p",r.ap_name+" · "+r.band+" · 측정값 의미 미검증"));const end=el("input");end.type="datetime-local";end.setAttribute("aria-label","종료 시각 KST");end.value=new Date((Math.ceil(Date.now()/60000)*60+60+32400)*1000).toISOString().slice(0,16);const hours=el("select");for(const v of [1,24,168]){const o=el("option","최근 "+v+"시간");o.value=String(v);hours.append(o);}hours.setAttribute("aria-label","조회 기간");const b=el("button","조회"),output=el("div");b.addEventListener("click",async()=>{const wanted=selected;if(!wanted||expired)return;const e=Date.parse(end.value+":00+09:00")/1000;const start=e-Number(hours.value)*3600;if(!Number.isFinite(e)||start<0){output.textContent="유효한 시간 범위를 입력하세요.";return;}const q=new URLSearchParams({id:wanted.id,start:String(start),end:String(e)});b.disabled=end.disabled=hours.disabled=true;try{const h=await request("/api/history?"+q);if(selected!==wanted||expired)return;output.replaceChildren(el("p",kst(h.start)+" ~ "+kst(h.end)+" · "+h.count+"건"+(h.truncated?" · 상한 도달":"")));if(!h.rows.length)output.append(el("p","저장된 관측 없음. 정상 또는 장애 해제를 의미하지 않습니다."));else {output.append(table(["시각 KST","사용률 %","간섭률 %","NF dBm","채널"],h.rows.map(x=>[kst(x.observed_at),x.utilization,x.interference,x.noise,x.channel])));const links=el("div",null,"pager");for(const fmt of ["csv","html"]){const a=el("a",fmt.toUpperCase()+" 다운로드");a.href="/api/history."+fmt+"?"+q;a.download="awqm-diagnostic-history."+fmt;links.append(a);}output.append(links);}}catch(e){if(!expired)output.textContent="조회 불가 · 잠시 후 다시 시도하세요.";}finally{b.disabled=end.disabled=hours.disabled=false;}});d.append(end,hours,b,output,neighborPanel(r),jobsPanel(r));}
+function historyChart(report){
+  const box=el("section",null,"history-chart");box.append(el("h3","채널 사용률·간섭률 추세"));
+  const ns="http://www.w3.org/2000/svg",svg=document.createElementNS(ns,"svg");
+  svg.setAttribute("viewBox","0 0 800 220");svg.setAttribute("role","img");svg.setAttribute("aria-label","관측 시각별 사용률과 간섭률. 결측 구간은 선을 잇지 않습니다.");
+  function shape(tag,attrs,label){const n=document.createElementNS(ns,tag);for(const [k,v] of Object.entries(attrs))n.setAttribute(k,String(v));if(label!=null)n.textContent=label;svg.append(n);return n;}
+  for(const p of [0,25,50,75,100]){
+    const y=190-p*1.7;shape("line",{x1:44,x2:788,y1:y,y2:y,class:"chart-grid"});
+    shape("text",{x:34,y:y+4,"text-anchor":"end",class:"chart-text"},p+"%");
+  }
+  const raw=report.resolution==="raw",tf=raw?"observed_at":"bucket";
+  const gap=raw?360:report.resolution==="5m"?300:3600;
+  for(const [key,cls] of [[raw?"utilization":"utilization_avg","chart-util"],[raw?"interference":"interference_avg","chart-interf"]]){
+    let path="",dots="",prev=null;
+    for(const row of report.rows){
+      const t=row[tf],value=row[key];
+      if(!Number.isFinite(t)||!Number.isFinite(value)||value<0||value>100){prev=null;continue;}
+      const x=44+744*(t-report.start)/(report.end-report.start),y=190-1.7*value;
+      const join=prev&&t>prev.t&&t-prev.t<=gap&&prev.context===row.context_id;
+      path+=(join?"L":"M")+x.toFixed(2)+","+y.toFixed(2)+" ";
+      if(!join)dots+="M"+x.toFixed(2)+","+y.toFixed(2)+" l0.6,0 ";
+      prev={t,context:row.context_id};
+    }
+    shape("path",{d:path,fill:"none",class:cls,"stroke-width":1.6,"stroke-linejoin":"round"});
+    // Render all isolated observations in a single SVG path.
+    shape("path",{d:dots,fill:"none",class:cls,"stroke-width":3,"stroke-linecap":"round"});
+  }
+  shape("text",{x:44,y:213,class:"chart-text"},kst(report.start));
+  shape("text",{x:788,y:213,"text-anchor":"end",class:"chart-text"},kst(report.end));
+  const legend=el("div",null,"history-legend");legend.append(el("span","● 사용률","legend-util"),el("span","● 간섭률","legend-interf"));
+  box.append(svg,legend,el("p","조회 범위의 실제 저장 관측만 표시합니다. 빈 구간은 미수집·미집계·보존기간 만료 등일 수 있으며 정상 상태로 해석하지 않습니다."));
+  return box;
+}
+function openHistory(r){
+  incidentPanel=null;selected={id:r.id,name:r.ap_name,band:r.band};$("detail").hidden=false;
+  const d=$("detailBody");d.replaceChildren(el("h3",r.ap_name+" · "+r.band),el("p","원본·집계 이력 · 실제 서비스 영향 및 원인 미확인"));
+  const end=el("input");end.type="datetime-local";end.setAttribute("aria-label","종료 시각 KST");
+  end.value=new Date((Math.ceil(Date.now()/60000)*60+60+32400)*1000).toISOString().slice(0,16);
+  const resolution=el("select"),hours=el("select"),button=el("button","이력 조회"),output=el("div");
+  resolution.setAttribute("aria-label","관측 해상도");hours.setAttribute("aria-label","조회 기간");
+  for(const [value,label] of [["raw","원본 관측 (최대 7일)"],["5m","5분 집계 (최대 30일)"],["1h","1시간 집계 (최대 365일)"]]){
+    const o=el("option",label);o.value=value;resolution.append(o);
+  }
+  const periods={raw:[1,24,168],"5m":[24,168,720],"1h":[168,720,8760]};
+  function resetPeriods(){
+    hours.replaceChildren();for(const v of periods[resolution.value]){const o=el("option",v<24?"최근 "+v+"시간":"최근 "+(v/24)+"일");o.value=String(v);hours.append(o);}
+    hours.value=resolution.value==="raw"?"24":resolution.value==="5m"?"720":"720";
+  }
+  resolution.addEventListener("change",resetPeriods);resetPeriods();
+  button.addEventListener("click",async()=>{
+    const wanted=selected;if(!wanted||expired)return;
+    const e=Date.parse(end.value+":00+09:00")/1000,start=e-Number(hours.value)*3600;
+    if(!Number.isFinite(e)||start<0){output.textContent="유효한 시간 범위를 입력하세요.";return;}
+    const q=new URLSearchParams({id:wanted.id,start:String(start),end:String(e),resolution:resolution.value});
+    button.disabled=end.disabled=resolution.disabled=hours.disabled=true;
+    try{
+      const h=await request("/api/history?"+q);if(selected!==wanted||expired)return;
+      const raw=h.resolution==="raw",coverage=h.coverage||{};
+      output.replaceChildren(el("p",kst(h.start)+" ~ "+kst(h.end)+" · "+h.resolution+" · "+h.count+"행"+(h.truncated?" · 조회 상한 도달, 기간을 줄이세요":"")),
+        el("p","저장 관측 "+(coverage.observed_samples??"미확인")+"개"+(raw?"":" · 유효 관측 "+(coverage.valid_samples??"미확인")+"개 · 완료된 과거 일자 집계만 조회")),
+        el("p","자료 범위: "+kst(coverage.first_at)+" ~ "+kst(coverage.last_at)));
+      if(!h.rows.length)output.append(el("p","저장 관측 없음. 미수집·미집계 또는 보존기간 만료일 수 있습니다."));
+      else {
+        output.append(historyChart(h));
+        const show=h.rows.slice(-300);
+        if(h.rows.length>show.length)output.append(el("p","표에는 반환된 "+h.rows.length+"행 중 최근 "+show.length+"행을 표시합니다. 다운로드에는 전체 반환 행을 포함합니다."));
+        const fmt=x=>x==null?"미확인":Number.isFinite(x)?Math.round(x*10)/10:x;
+        output.append(raw?table(["시각 KST","사용률 %","간섭률 %","NF dBm","채널"],show.map(x=>[kst(x.observed_at),fmt(x.utilization),fmt(x.interference),fmt(x.noise),x.channel])):
+          table(["구간 시작 KST","평균 사용률 %","최소 / 최대 %","평균 간섭률 %","평균 NF dBm","관측 / 유효","위험 기준 관측","채널"],show.map(x=>[kst(x.bucket),fmt(x.utilization_avg),fmt(x.utilization_min)+" / "+fmt(x.utilization_max),fmt(x.interference_avg),fmt(x.noise_avg),x.observed+" / "+x.valid,x.risky,x.channel])));
+        const links=el("div",null,"pager");
+        for(const ext of ["csv","html"]){const a=el("a",ext.toUpperCase()+" 다운로드");a.href="/api/history."+ext+"?"+q;a.download="awqm-diagnostic-history."+ext;links.append(a);}
+        output.append(links);
+      }
+    }catch(e){if(!expired&&selected===wanted)output.textContent="조회 불가 · 데이터 유지보수 중이거나 조회 조건을 확인하세요.";}
+    finally{button.disabled=end.disabled=resolution.disabled=hours.disabled=false;}
+  });
+  const controls=el("div",null,"pager");controls.append(end,resolution,hours,button);d.append(controls,output,neighborPanel(r),jobsPanel(r));
+}
+
 const incidentLabels={DETECTED:"최초 위험",PERSISTENT:"지속 위험",RECOVERING:"회복 관측 중",RESOLVED:"RF 정책 정상화",TRANSIENT:"일시 위험",UNCONFIRMED:"현재 확인 불가",CONTEXT_LOST:"관측 조건 변경 · 정상화 아님"};
 const candidateLabels={RF04:"Radio 혼잡 관측",RF05:"동일 채널 경합 후보",RF06:"중첩 채널 경합 후보",UNKNOWN:"원인 미확인"};
 const verdictLabels={supported:"근거 지지",not_supported:"근거 불충분/반대",inconclusive:"판단 보류"};
