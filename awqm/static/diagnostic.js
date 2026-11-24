@@ -2,12 +2,13 @@
 const $=id=>document.getElementById(id);
 const names={overview:"종합 현황",radios:"AP 품질 관측",clients:"사용자 분석",history:"장애 및 이력",admin:"운영 관리"};
 let view="overview",page=1,snapshot=null,selected=null,busy=false,revision=0,expired=false;
+let updateSocket=null,updateTimer=null,lastSignal=0,lastAutomatic=0,lastPublication=null;
 const kst=t=>t==null?"미확인":new Date(t*1000).toLocaleString("ko-KR",{timeZone:"Asia/Seoul"});
 function el(tag,value,cls){const n=document.createElement(tag);if(value!=null)n.textContent=String(value);if(cls)n.className=cls;return n;}
 function table(headers,rows){const wrap=el("div",null,"table-wrap"),t=el("table"),head=el("thead"),tr=el("tr");for(const h of headers)tr.append(el("th",h));head.append(tr);t.append(head);const b=el("tbody");for(const row of rows){const r=el("tr");for(const value of row){const c=el("td");if(value instanceof Node)c.append(value);else c.textContent=value??"미확인";r.append(c);}b.append(r);}t.append(b);wrap.append(t);return wrap;}
 function metric(n,v){const b=el("div",null,"kpi");b.append(el("span",n),el("strong",v??"미확인"));return b;}
 function notice(s){$("notice").textContent=s;}
-function invalidate(){expired=true;snapshot=null;selected=null;incidentPanel=null;$("content").replaceChildren(el("p","인증 만료. 새로고침 후 다시 로그인하세요."));$("detail").hidden=true;$("detailBody").replaceChildren();notice("인증 세션 만료");}
+function invalidate(){expired=true;closeUpdates();snapshot=null;selected=null;incidentPanel=null;$("content").replaceChildren(el("p","인증 만료. 새로고침 후 다시 로그인하세요."));$("detail").hidden=true;$("detailBody").replaceChildren();notice("인증 세션 만료");}
 async function request(path){const r=await fetch(path,{cache:"no-store"});if(r.status===401){invalidate();throw Error("expired");}if(!r.ok)throw Error("unavailable");return r.json();}
 function neighborPanel(r){
   const panel=el("section");panel.append(el("h3","RF Neighbor 관측"),el("p","논리적 RF 관계 · 물리 위치 또는 실제 간섭 원인 확정 아님"));
@@ -384,6 +385,49 @@ function render(){
   prev.addEventListener("click",()=>{page--;refresh(true);});next.addEventListener("click",()=>{page++;refresh(true);});
   pager.append(prev,el("span",page+" / "+Math.max(1,Math.ceil(snapshot.total/snapshot.size))+" · "+snapshot.total+"건"),next);c.append(pager);
 }
-async function refresh(force=false){if(expired||busy&&!force)return;const serial=++revision;busy=true;try{const q=new URLSearchParams({q:$("search").value,page:String(page)});const r=await request("/api/radios?"+q);if(serial!==revision||expired)return;snapshot=r;notice(r.available?"진단 관측 · 현장 승인된 Radio 지표만 정책 점수 제공 · 원인/서비스 장애 확정 금지":"수집 또는 저장 상태 확인 불가 · 마지막 관측을 현재 상태로 해석하지 마십시오.");if(view==="overview"||view==="radios")render();}catch(e){if(!expired&&serial===revision){notice("갱신 실패 · 현재 상태 확인 불가");snapshot=null;if(view==="overview"||view==="radios")render();}}finally{if(serial===revision)busy=false;}}
+async function refresh(force=false){if(expired||busy&&!force)return;const serial=++revision;busy=true;try{const q=new URLSearchParams({q:$("search").value,page:String(page)});const r=await request("/api/radios?"+q);if(serial!==revision||expired)return;snapshot=r;notice(r.available?"진단 관측 · 현장 승인된 Radio 지표만 정책 점수 제공 · 원인/서비스 장애 확정 금지":"수집 또는 저장 상태 확인 불가 · 마지막 관측을 현재 상태로 해석하지 마십시오.");if(view==="overview"||view==="radios"){const offsets=force?[]:[...$("content").querySelectorAll(".table-wrap")].map(n=>[n.scrollLeft,n.scrollTop]);render();if(offsets.length)[...$("content").querySelectorAll(".table-wrap")].forEach((n,i)=>{if(offsets[i]){n.scrollLeft=offsets[i][0];n.scrollTop=offsets[i][1];}});}}catch(e){if(!expired&&serial===revision){notice("갱신 실패 · 현재 상태 확인 불가");snapshot=null;if(view==="overview"||view==="radios")render();}}finally{if(serial===revision)busy=false;}}
 $("nav").addEventListener("click",e=>{const v=e.target.dataset.view;if(!v||expired)return;view=v;for(const b of $("nav").querySelectorAll("button"))b.removeAttribute("aria-current");e.target.setAttribute("aria-current","page");render();});
-$("search").addEventListener("input",()=>{page=1;clientPage=1;if(view==="clients")loadClients();else refresh(true);});$("close").addEventListener("click",()=>{selected=null;incidentPanel=null;$("detail").hidden=true;$("detailBody").replaceChildren();});render();refresh();setInterval(()=>{if(view==="clients")loadClients();else refresh();},10000);
+$("search").addEventListener("input",()=>{page=1;clientPage=1;if(view==="clients")loadClients();else refresh(true);});$("close").addEventListener("click",()=>{selected=null;incidentPanel=null;$("detail").hidden=true;$("detailBody").replaceChildren();});render();refresh();
+function closeUpdates(){
+  if(updateTimer!==null){clearTimeout(updateTimer);updateTimer=null;}
+  if(updateSocket){const s=updateSocket;updateSocket=null;try{s.close();}catch(e){}}
+}
+function automaticRefresh(){
+  if(expired||document.hidden||Date.now()-lastAutomatic<4000)return;
+  lastAutomatic=Date.now();
+  if(view==="clients")loadClients();else refresh();
+}
+function connectUpdates(){
+  if(expired||document.hidden||updateSocket||location.protocol!=="https:"||!("WebSocket" in window))return;
+  let s;
+  try{s=new WebSocket("wss://"+location.host+"/ws/updates");}catch(e){return;}
+  updateSocket=s;lastPublication=null;
+  s.addEventListener("message",e=>{
+    if(updateSocket!==s||expired||typeof e.data!=="string"||e.data.length>256)return;
+    try{
+      const d=JSON.parse(e.data);
+      if(d.type!=="publication"||!Number.isSafeInteger(d.revision)||d.revision<0||typeof d.available!=="boolean")return;
+      lastSignal=Date.now();const key=d.revision+":"+d.available;
+      if(key!==lastPublication){lastPublication=key;automaticRefresh();}
+    }catch(e){}
+  });
+  s.addEventListener("close",()=>{
+    if(updateSocket!==s)return;
+    updateSocket=null;lastSignal=0;
+    if(!expired&&!document.hidden)updateTimer=setTimeout(()=>{updateTimer=null;connectUpdates();},8000);
+  });
+  s.addEventListener("error",()=>{try{s.close();}catch(e){}});
+}
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden)closeUpdates();
+  else{lastSignal=0;automaticRefresh();connectUpdates();}
+});
+window.addEventListener("pagehide",closeUpdates);
+connectUpdates();
+// Independent fallback also enforces expiry/staleness during a stalled WS.
+setInterval(()=>{
+  if(expired||document.hidden)return;
+  if(Date.now()-lastSignal>12000)automaticRefresh();
+  if(!updateSocket&&updateTimer===null)connectUpdates();
+},10000);
+

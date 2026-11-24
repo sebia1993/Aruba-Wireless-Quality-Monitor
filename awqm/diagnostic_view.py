@@ -13,6 +13,7 @@ class DiagnosticView:
         if store.mode!="diagnostic":raise ValueError("diagnostic store required")
         self.store=store;self.clock=clock;self.key=key or secrets.token_bytes(32)
         self.lock=RLock();self.rows=[];self.index={};self.meta={};self.incidents=incidents;self.association_history=association_history;self.client_rows=[];self.client_enabled=False;self.neighbor_views={};self.neighbor_enabled=False
+        self.publication_revision=0
     def token(self,radio_id):
         return hmac.new(self.key,radio_id.encode("utf-8"),hashlib.sha256).hexdigest()[:32]
     def publish(self,result,current=(),available=True,quality=None,client_views=(),client_enabled=False,neighbor_views=None,neighbor_enabled=False):
@@ -61,6 +62,12 @@ class DiagnosticView:
                 "storage_error":result.get("storage_error"),"cluster":result.get("cluster") if available else None,
                 "paused":bool(result.get("paused")),"operations":result.get("operations"),
                 "available":bool(available),"quality_scope":"locally_attested_radio_only"}
+            self.publication_revision+=1
+    def notification(self):
+        with self.lock:
+            at=self.meta.get("published_at");now=int(self.clock())
+            return {"type":"publication","revision":self.publication_revision,
+                    "available":bool(self.meta.get("available") and at is not None and 0<=now-at<=20)}
     def page(self,query="",page=1,size=100):
         if not isinstance(query,str) or len(query)>128 or not 1<=page<=10000 or not 1<=size<=100:
             raise ValueError("invalid query")

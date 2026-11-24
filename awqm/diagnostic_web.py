@@ -17,6 +17,8 @@ from .incidents import ReviewConflict
 from .incident_reports import summary,incident_csv,incident_html
 from .manual_jobs import ManualReservations,ReservationRejected
 from .operations import OperationConflict,OperationRejected
+from .notifications import Notifications,Busy as NotificationBusy
+from wsproto.utilities import LocalProtocolError,RemoteProtocolError
 
 COOKIE="__Host-awqm_session"
 
@@ -55,7 +57,7 @@ class RestrictedTLS(ThreadingHTTPServer):
     daemon_threads=False
     block_on_close=True
     request_queue_size=32
-    def __init__(self,cfg,handler,context,max_connections=16):
+    def __init__(self,cfg,handler,context,max_connections=24):
         self.cfg=cfg;self.context=context;self.capacity=threading.BoundedSemaphore(max_connections)
         super().__init__((cfg.bind,cfg.port),handler)
     def verify_request(self,request,address):
@@ -83,7 +85,8 @@ class RestrictedTLS(ThreadingHTTPServer):
             try:self.shutdown_request(conn if conn is not None else request)
             finally:self.capacity.release()
 
-def handler_for(view,auth,audit,cfg,manual=None,operations=None):
+def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None):
+    notifications=Notifications(view,auth,cfg,stop)
     class Handler(BaseHTTPRequestHandler):
         protocol_version="HTTP/1.0"
         def log_message(self,*a):pass
@@ -103,7 +106,7 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None):
             self.send_header("X-Content-Type-Options","nosniff")
             self.send_header("Referrer-Policy","no-referrer")
             self.send_header("X-Frame-Options","DENY")
-            self.send_header("Content-Security-Policy","default-src 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'")
+            self.send_header("Content-Security-Policy","default-src 'self'; connect-src 'self' wss://"+cfg.authority+"; form-action 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'")
             self.send_header("Connection","close")
             for k,v in headers:self.send_header(k,v)
             self.end_headers()
@@ -138,9 +141,25 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None):
             q=parse_qs(path.query,strict_parsing=True,max_num_fields=len(allowed),keep_blank_values=True)
             if not set(fields)<=set(q)<=allowed or any(len(v)!=1 for v in q.values()):raise ValueError("invalid query")
             return {k:v[0] for k,v in q.items()}
+        def _notifications(self):
+            token=self._token()
+            try:
+                auth.session(token,touch=False)
+                ws,reply=notifications.handshake(self.headers,self.request_version,self.path)
+            except AuthDenied:self._send(401);return
+            except PermissionError:self._send(403);return
+            except (ValueError,LocalProtocolError,RemoteProtocolError):self._send(400);return
+            try:
+                with notifications.slot(token):
+                    self.close_connection=True
+                    # From here onward only WebSocket bytes may be written.
+                    try:notifications.run(self.connection,ws,reply,token)
+                    except (AuthDenied,OSError,ValueError,LocalProtocolError,RemoteProtocolError):pass
+            except NotificationBusy:self._send(503)
         def do_GET(self):
             if not self._local():self._send(403);return
             path=urlsplit(self.path)
+            if path.path=="/ws/updates":self._notifications();return
             # Only non-sensitive stylesheet may be loaded without a session.
             if path.path=="/diagnostic.css" and not path.query:
                 self._send(200,(STATIC/"diagnostic.css").read_bytes(),"text/css; charset=utf-8");return
@@ -277,4 +296,4 @@ def create_listener(cfg,service_cfg,workers,gate,view,stop,manual_enabled=False,
     # Conservative defaults; actual AAA lockout threshold is site-specific.
     auth=Auth(cfg.roles,verifier,user_limit=2,global_limit=20,window=300,audit_sink=audit.auth_event)
     manual=ManualReservations(view,workers,audit,stop,operations=operations) if manual_enabled else None
-    return RestrictedTLS(cfg,handler_for(view,auth,audit,cfg,manual,operations),tls_context(cfg.cert,cfg.key))
+    return RestrictedTLS(cfg,handler_for(view,auth,audit,cfg,manual,operations,stop),tls_context(cfg.cert,cfg.key))
