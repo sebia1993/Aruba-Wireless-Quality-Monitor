@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from threading import Lock
 import re
 import time
+from uuid import uuid4
 from .aos8 import (radio_summary,inventory,active_details,associations,cpu_load,
                    ControllerSnapshot,ParseError,merge_radios,merge_associations)
 from .scheduler import Scheduler,DEFAULT_POLLS,Poll
@@ -36,6 +37,7 @@ class Reading:
     data: object=None
     reason: str=""
     generation: int=0
+    target: str|None=None
 
 class ControllerWorker:
     def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False):
@@ -45,6 +47,7 @@ class ControllerWorker:
         self.session=None;self.next_connect=clock()+offset;self.failures=0
         self.blocked=None;self.disabled=set();self.latest={};self.outcomes={}
         self.generation=0
+        self.instance_id=uuid4().hex
         self.lock=Lock()
         self.jobs=Jobs()
         self.detail_latest={}
@@ -166,7 +169,7 @@ class ControllerWorker:
                 except (ValueError,TypeError):
                     self.jobs.finish(job.job_id,"failed","parse_error",self.wall())
                     return Reading(job.name,"parse_error",int(self.wall()),generation=self.generation)
-                reading=Reading(job.name,"success",int(self.wall()),value,generation=self.generation)
+                reading=Reading(job.name,"success",int(self.wall()),value,generation=self.generation,target=job.target)
                 # Bounded cache; full historical client persistence is not yet enabled.
                 key=(job.name,job.target)
                 self.detail_latest.pop(key,None);self.detail_latest[key]=reading

@@ -4,6 +4,8 @@ from pathlib import Path
 import json, tempfile, threading, time, secrets, hmac, sqlite3
 from .storage import Store
 from .demo import seed, synthetic_rows, synthetic_clients
+from urllib.parse import urlsplit,parse_qs
+from .reporting import history_report,csv_report,html_report
 
 STATIC=Path(__file__).resolve().parent/"static"
 def handler_for(store,engine=None):
@@ -24,11 +26,32 @@ def handler_for(store,engine=None):
             if not self._local():
                 self.send_error(403)
                 return
+            path=urlsplit(self.path)
+            if path.path in ("/api/history","/api/history.csv","/api/history.html"):
+                try:
+                    q=parse_qs(path.query,max_num_fields=4,strict_parsing=True)
+                    if set(q)!={"radio_id","start","end","resolution"} or any(len(v)!=1 for v in q.values()):raise ValueError()
+                    report=history_report(store,q["radio_id"][0],int(q["start"][0]),int(q["end"][0]),q["resolution"][0])
+                    if path.path=="/api/history":
+                        self._json(200,report);return
+                    body=csv_report(report) if path.path.endswith(".csv") else html_report(report)
+                    self.send_response(200)
+                    self.send_header("Content-Type","text/csv; charset=utf-8" if path.path.endswith(".csv") else "text/html; charset=utf-8")
+                    self.send_header("Content-Disposition",'attachment; filename="awqm-demo-history.'+("csv" if path.path.endswith(".csv") else "html")+'"')
+                    self.send_header("Content-Length",str(len(body)))
+                    self.send_header("Cache-Control","no-store")
+                    self.send_header("X-Content-Type-Options","nosniff")
+                    self.send_header("Content-Security-Policy","default-src 'none'; frame-ancestors 'none'")
+                    self.end_headers();self.wfile.write(body);return
+                except (ValueError,TypeError,OverflowError):
+                    self._json(400,{"error":"invalid_history_request"});return
+                except (sqlite3.Error,OSError):
+                    self._json(503,{"error":"history_unavailable"});return
             routes={"/":("index.html","text/html; charset=utf-8"),"/style.css":("style.css","text/css; charset=utf-8"),
                     "/app.js":("app.js","text/javascript; charset=utf-8")}
             if self.path=="/api/snapshot":
                 snapshot=store.snapshot()
-                snapshot["clients"]=synthetic_clients(snapshot["radios"]) if engine is None else []
+                snapshot["clients"]=synthetic_clients(snapshot["radios"]) if engine is None else engine.client_views()
                 if engine is not None:
                     snapshot["engine_demo"]=True
                     snapshot["engine"]=dict(engine.last_result)

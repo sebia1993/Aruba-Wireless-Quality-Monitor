@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.6.0-dev — 자동 조사 선정·영구 예약·모의 수집 화면 연동. 운영 배포 금지.**
+**현재 단계: v0.7.0-dev — 단말 상세 이력·Radio 과거 조회 및 보고서. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -15,7 +15,7 @@ python launcher.py --demo
 
 ## 모의 수집 엔진 화면 (네트워크 접속 없음)
 
-`python launcher.py --engine-demo` 또는 `AWQM.exe --engine-demo` 로 실행합니다. 가상 WLC 4대의 CLI 파서, 수집 Worker, SQLite 저장, 자동/수동 작업 큐를 실제 코드 경로로 연동합니다. 최초 관측 이후 자동 조사는 지속 위험 조건을 충족할 때만 접수합니다. 로컬 임시 DB만 사용하며 종료 시 삭제됩니다. 사용자 상세 시계열은 아직 연동되지 않았습니다.
+`python launcher.py --engine-demo` 또는 `AWQM.exe --engine-demo` 로 실행합니다. 가상 WLC 4대의 CLI 파서, 수집 Worker, SQLite 저장, 자동/수동 작업 큐를 실제 코드 경로로 연동합니다. 최초 관측 이후 자동 조사는 지속 위험 조건을 충족할 때만 접수합니다. 로컬 임시 DB만 사용하며 종료 시 삭제됩니다. 정밀 분석 완료 후 BSSID/SSID/앵커와 연속 관측이 확인된 단말의 상세 품질을 표시합니다. 실측 Airtime 미검증이며 Station Stats 재전송 비율은 별도 구간으로 표시합니다. AP 상세에서 저장 이력 조회와 HTML/CSV 내보내기를 지원합니다.
 
 ## 오프라인 CLI 파서 확인
 ```sh

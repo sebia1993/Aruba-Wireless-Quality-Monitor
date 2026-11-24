@@ -45,5 +45,18 @@ class EngineDemoTests(unittest.TestCase):
                     e.pulse();time.sleep(.015);t[0]+=1
                     if e.workers["WLC-1"].jobs.get(job["job_id"]).status=="completed":break
                 self.assertEqual(e.workers["WLC-1"].jobs.get(job["job_id"]).status,"completed")
+                for _ in range(100):
+                    e.pulse();time.sleep(.015);t[0]+=1
+                    if e.client_views():break
+                self.assertGreaterEqual(len(e.client_views()),1)
+                self.assertTrue(all(x["source"]=="synthetic" and x["airtime"] is None for x in e.client_views()))
+                from urllib.parse import urlencode
+                rid=store.snapshot()["radios"][0]["radio_id"]
+                query=urlencode(dict(radio_id=rid,start=900,end=t[0]+1,resolution="raw"))
+                status,b=req("GET","/api/history?"+query)
+                self.assertEqual(status,200)
+                self.assertGreater(json.loads(b)["count"],0)
+                self.assertEqual(req("GET","/api/history.csv?"+query)[0],200)
+                self.assertEqual(req("GET","/api/history.html?"+query)[0],200)
             finally:
                 http.shutdown();http.server_close();thread.join();e.close()

@@ -11,6 +11,8 @@ import sqlite3
 from .aos8 import merge_radios,merge_associations
 from .durable_jobs import DurableJobs
 from .selection import Selector
+from .client_history import ClientHistory,map_samples
+import json
 
 class Engine:
     def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time,simulation=False,durable_jobs=False,auto=False):
@@ -24,6 +26,10 @@ class Engine:
             for w in workers:
                 w.jobs=DurableJobs(store.root/"jobs.db",w.controller,now=wall())
         self.store=store;self.site=site;self.clock=clock;self.wall=wall
+        self.client_history=ClientHistory(store.root/"client_history.db",simulation=True) if simulation else None
+        self.detail_pending={}
+        self.client_stats_last={}
+        self.active_detail_clients=[]
         self.pool=ThreadPoolExecutor(max_workers=len(workers),thread_name_prefix="awqm-wlc")
         self.inflight={};self.snapshots={};self.outcomes={};self.next_tick={}
         self.accepted={};self.last_result={};self.error=None
@@ -31,7 +37,13 @@ class Engine:
     @staticmethod
     def _step(w):
         r=w.tick()
-        return r,w.snapshot()
+        snapshot=w.snapshot()
+        b=w.latest.get("show ap bss-table")
+        a=w.latest.get("show ap association")
+        # Only a successfully refreshed, same-generation metadata observation.
+        if not b or b.generation!=w.generation or w.outcomes[b.command].status!="success" or not 0<=w.wall()-b.observed_at<=330:b=None
+        if not a or a.generation!=w.generation or w.outcomes[a.command].status!="success" or not 0<=w.wall()-a.observed_at<=150:a=None
+        return r,snapshot,b,a
     def submit(self,controller,request_id,name,target,ttl=300):
         # Caller must authenticate/authorize before using this internal API.
         if self.closed:raise RuntimeError("engine closed")
@@ -53,8 +65,10 @@ class Engine:
                 if not f.done():continue
                 del self.inflight[name]
                 try:
-                    reading,snapshot=f.result()
+                    reading,snapshot,bss,assoc=f.result()
                     self.snapshots[name]=snapshot
+                    if self.client_history and reading and reading.status=="success" and reading.target:
+                        self.detail_pending[name]=(reading,snapshot,bss,assoc)
                     if reading:self.outcomes[name]={"command":reading.command,"status":reading.status,"observed_at":reading.observed_at}
                 except Exception as exc:
                     self.snapshots[name]=None
@@ -93,6 +107,59 @@ class Engine:
                         if (r["radio_id"],r["observed_at"]) in current],self.wall(),self.workers)
                 except (sqlite3.Error,OSError) as exc:
                     self.error=type(exc).__name__
+            if self.client_history and not self.error:
+                try:
+                    current_states={r["radio_id"]:r for r in self.store.snapshot()["radios"]}
+                    persistent={k for k,r in current_states.items() if r["status"]=="PERSISTENT" and r["open_incident"]}
+                    for name,(reading,snap,bss,assoc) in list(self.detail_pending.items()):
+                        if not 0<=self.wall()-reading.observed_at<=90:
+                            del self.detail_pending[name];continue
+                        if not snap or not bss or not assoc:
+                            del self.detail_pending[name];continue
+                        # Association mapping is checked against all current coherent
+                        # controller snapshots; conflicts are not silently resolved.
+                        claims={r["client_mac"]:r for r in assoc.data if r["active"] and r["client_mac"] in clients
+                            and all(r[k]==clients[r["client_mac"]][k] for k in ("ap_name","bssid","ssid"))}
+                        sid=self.workers[name].instance_id+":"+str(reading.generation)
+                        if reading.command=="show ap debug client-table":
+                            mapped=map_samples(reading.data,name,reading.target,sid,reading.observed_at,claims,bss.data,radios)
+                            self.client_history.ingest(mapped,persistent)
+                            # At most three active low-quality clients per AP table
+                            # round, separate Station Stats jobs; do not infer cause.
+                            recent={c["client_mac"]:c for c in self.client_history.latest(self.wall())}
+                            eligible=[s for s,r,_ in mapped if s.radio_id in persistent and recent.get(s.client_mac,{}).get("activity")=="active"
+                                and recent.get(s.client_mac,{}).get("quality") is not None and recent[s.client_mac]["quality"]<50]
+                            w=self.workers[name]
+                            for s in sorted(eligible,key=lambda s:recent[s.client_mac]["quality"])[:3]:
+                                key=(name,s.client_mac)
+                                if self.wall()-self.client_stats_last.get(key,-1e20)<60:continue
+                                try:w.submit_detail("auto-stats-"+str(s.at)+"-"+s.client_mac,"show ap debug client-stats",s.client_mac,ttl=120)
+                                except (RuntimeError,ValueError):continue
+                                self.client_stats_last[key]=self.wall()
+                        elif reading.command=="show ap debug client-stats":
+                            a=claims.get(reading.target)
+                            if a:
+                                from .client import match_bss
+                                rr=[r for r in radios if r.controller==name and r.ap_name==a["ap_name"]]
+                                rid=match_bss(a["bssid"],a["ssid"],bss.data,rr)
+                                r=next((x for x in rr if x.radio_id==rid),None)
+                                if r:
+                                    ctx=json.dumps([sid+"|"+r.epoch,rid,a["bssid"],a["ssid"]],separators=(",",":"))
+                                    self.client_history.station(reading.target,reading.observed_at,ctx,reading.data)
+                        del self.detail_pending[name]
+                    radio_map={r.radio_id:r for r in radios}
+                    self.client_stats_last={k:v for k,v in self.client_stats_last.items() if self.wall()-v<=3600}
+                    def current_client(c):
+                        a=clients.get(c["client_mac"]);r=radio_map.get(c["radio_id"])
+                        w=self.workers.get(c["controller"])
+                        return bool(a and r and w and r.controller==c["controller"]
+                            and a["ap_name"]==c["ap_name"] and a["ssid"]==c["ssid"]
+                            and a["bssid"]==c.get("bssid")
+                            and c.get("epoch")==w.instance_id+":"+str(w.generation)+"|"+r.epoch)
+                    self.active_detail_clients=[c for c in self.client_history.latest(self.wall()) if current_client(c)]
+                except (sqlite3.Error,OSError,ValueError,TypeError) as exc:
+                    self.error=type(exc).__name__
+                    self.active_detail_clients=[]
             self.last_result={"mode":"demo" if self.simulation else "diagnostic","field_validated":False,
                 "coherent_controllers":len(active),"expected_controllers":len(self.workers),
                 "mapped_radios":len(radios),"active_clients":len(clients),
@@ -110,6 +177,9 @@ class Engine:
         with self.lock:
             self.store.recover()
             self.error=None
+    def client_views(self):
+        if self.error:return []
+        return list(self.active_detail_clients)
     def job_status(self,controller):
         w=self.workers[controller]
         return [asdict(j) for j in w.jobs.list(w.wall())]
