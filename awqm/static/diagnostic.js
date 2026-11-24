@@ -54,6 +54,24 @@ async function openIncident(id){
       el("p",incidentLabels[d.display_state]||d.display_state),el("p","서비스 영향: 미검증 · 실제 원인 확정 아님"),
       el("p","최초 "+kst(d.first_at)+" · 마지막 "+kst(d.last_at)),
       table(["관측 시각","상태","사용률","간섭률","NF","후보"],d.timeline.map(x=>[kst(x.at),incidentLabels[x.state]||x.state,x.evidence.utilization,x.evidence.interference,x.evidence.noise,x.evidence.candidates.map(c=>candidateLabels[c.code]||c.code).join(" / ")])));
+    const exports=el("div",null,"pager"),copy=el("button","주간보고 요약 복사"),copyText=el("textarea");
+    copyText.hidden=true;copyText.readOnly=true;copyText.rows=10;copyText.setAttribute("aria-label","주간보고 요약");
+    copy.addEventListener("click",async()=>{
+      try{
+        const r=await request("/api/incident/summary?"+new URLSearchParams({id}));
+        if(incidentPanel!==ticket||expired)return;
+        copyText.value=r.text;copyText.hidden=false;
+        try{await navigator.clipboard.writeText(r.text);copy.textContent="요약 복사 완료";}
+        catch(e){copyText.select();copy.textContent="텍스트 선택 · 직접 복사";}
+      }catch(e){if(!expired)copy.textContent="요약 조회 실패";}
+    });
+    exports.append(copy);
+    for(const fmt of ["csv","html"]){
+      const a=el("a",fmt.toUpperCase()+" 보고서");a.href="/api/incident/report."+fmt+"?"+new URLSearchParams({id});
+      a.download="awqm-incident-report."+fmt;exports.append(a);
+    }
+    out.append(exports,copyText);
+    if(d.timeline_truncated||d.reviews_truncated)out.append(el("p","최근 이력만 표시합니다. 일부 과거 근거/검증 이력은 조회 상한으로 생략됩니다.","warn"));
     const revision=selectOptions(d.timeline.map(x=>String(x.revision)),Object.fromEntries(d.timeline.map(x=>[String(x.revision),"근거 #"+x.revision+" · "+kst(x.at)+" · "+(incidentLabels[x.state]||x.state)])),String(d.revision));
     const candidate=el("select"),basis=el("p"),verdict=selectOptions(["inconclusive","supported","not_supported"],verdictLabels,"inconclusive"),reason=selectOptions(["insufficient_evidence","radio_evidence","other_evidence","conflicting_evidence"],{insufficient_evidence:"자료 부족",radio_evidence:"Radio 관측 근거",other_evidence:"별도 운영자 확인",conflicting_evidence:"상충 자료"},"insufficient_evidence");
     function updateCandidates(){const ev=d.timeline.find(x=>String(x.revision)===revision.value);candidate.replaceChildren();for(const c of ev.evidence.candidates){const o=el("option",candidateLabels[c.code]||c.code);o.value=c.code;candidate.append(o);}basis.textContent=ev.evidence.candidates.map(c=>(candidateLabels[c.code]||c.code)+" · "+c.basis.join(", ")+" · "+c.limit).join(" / ");}

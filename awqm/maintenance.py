@@ -25,7 +25,7 @@ def write_json(path,value):
     finally:
         if tmp.exists():tmp.unlink()
 
-def verified_backup(store,destination,include_aggregates=True,include_raw=False):
+def verified_backup(store,destination,include_aggregates=True,include_raw=False,audit_path=None):
     dst=Path(destination).resolve()
     if dst.exists() or dst==store.root.resolve() or store.root.resolve() in dst.parents:
         raise ValueError("new backup directory outside data root required")
@@ -37,6 +37,17 @@ def verified_backup(store,destination,include_aggregates=True,include_raw=False)
         manifest=json.loads((snap/"manifest.json").read_text(encoding="utf-8"))
         manifest["format"]=1
         manifest["scope"]="radio-core-only"
+        if audit_path is not None and Path(audit_path).is_file():
+            source=Path(audit_path).resolve()
+            a=sqlite3.connect(source.as_uri()+"?mode=ro",uri=True,timeout=2)
+            b=sqlite3.connect(snap/"web-audit.db")
+            try:
+                a.backup(b)
+                if b.execute("PRAGMA quick_check").fetchall()!=[("ok",)]:raise ValueError("audit backup integrity failure")
+                b.execute("SELECT id,at,event FROM audit LIMIT 0")
+            finally:a.close();b.close()
+            manifest["files"].append("web-audit.db")
+            manifest["scope"]="radio-core-audit"
         manifest["sha256"]={name:digest(snap/name) for name in manifest["files"]}
         write_json(snap/"manifest.json",manifest)
         if dst.exists():raise FileExistsError(dst)
@@ -48,14 +59,15 @@ def verified_backup(store,destination,include_aggregates=True,include_raw=False)
 def verify(source):
     root=Path(source).resolve()
     m=json.loads((root/"manifest.json").read_text(encoding="utf-8"))
-    if m.get("format")!=1 or m.get("scope")!="radio-core-only" or m.get("mode") not in ("demo","diagnostic"):
+    if m.get("format")!=1 or m.get("scope") not in ("radio-core-only","radio-core-audit") or m.get("mode") not in ("demo","diagnostic"):
         raise ValueError("unsupported backup manifest")
     names=m.get("files")
     hashes=m.get("sha256")
     if not isinstance(names,list) or not isinstance(hashes,dict) or len(names)>10000 or len(set(names))!=len(names) or set(names)!=set(hashes) or "core.db" not in names:
         raise ValueError("invalid manifest file list")
+    if ("web-audit.db" in names)!=(m["scope"]=="radio-core-audit"):raise ValueError("backup scope mismatch")
     for name in names:
-        if not isinstance(name,str) or not (name=="core.db" or DAY.fullmatch(name) or MONTH.fullmatch(name)):
+        if not isinstance(name,str) or not (name in ("core.db","web-audit.db") or DAY.fullmatch(name) or MONTH.fullmatch(name)):
             raise ValueError("unsafe backup path")
         path=root/name
         if path.is_symlink() or not path.is_file() or digest(path)!=hashes[name]:
@@ -64,6 +76,8 @@ def verify(source):
         try:
             if c.execute("PRAGMA quick_check").fetchall()!=[("ok",)]:
                 raise ValueError("backup integrity failure")
+            if name=="web-audit.db":
+                c.execute("SELECT id,at,event FROM audit LIMIT 0")
             if name=="core.db":
                 if c.execute("SELECT value FROM metadata WHERE key='mode'").fetchone()!=(m["mode"],):
                     raise ValueError("backup mode mismatch")
@@ -100,13 +114,13 @@ def restore_new(source,destination):
     return dst
 
 class Maintenance:
-    def __init__(self,store,backup_root,clock=time.time,usage=shutil.disk_usage):
+    def __init__(self,store,backup_root,clock=time.time,usage=shutil.disk_usage,retention=None,audit_path=None):
         self.store=store;self.backup_root=Path(backup_root).resolve()
         if self.backup_root==store.root.resolve() or store.root.resolve() in self.backup_root.parents:
             raise ValueError("backup root must be outside data root")
         self.backup_root.mkdir(parents=True,exist_ok=True)
         self.path=store.root/"maintenance.json"
-        self.clock=clock;self.usage=usage
+        self.clock=clock;self.usage=usage;self.retention=retention;self.audit_path=audit_path
         self.state=json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
         self.next_at=0
     def tick(self,force=False):
@@ -139,11 +153,15 @@ class Maintenance:
             daily=now-self.state.get("last_core_backup",-10**12)>=86400
             if (weekly or daily) and backup_level not in ("limited","critical"):
                 name=("aggregate-" if weekly else "core-")+str(now)+"-"+uuid4().hex[:8]
-                dst=verified_backup(self.store,self.backup_root/name,include_aggregates=weekly)
+                dst=verified_backup(self.store,self.backup_root/name,include_aggregates=weekly,audit_path=self.audit_path)
                 self.state.update(last_core_backup=now,last_backup=dst.name)
-                if weekly:self.state["last_aggregate_backup"]=now
+                if weekly:self.state.update(last_aggregate_backup=now,last_aggregate_backup_name=dst.name)
             self.state["status"]="backup_deferred_disk" if (weekly or daily) and backup_level in ("limited","critical") else "ok"
-            self.state["retention"]="protected_pending_evidence_lifecycle"
+            if self.retention is None:
+                self.state["retention"]="disabled_pending_local_authorization"
+            elif now-self.state.get("last_retention_attempt",-10**12)>=86400:
+                self.state["last_retention_attempt"]=now
+                self.state["retention"]=self.retention.run(now,self.state.get("last_aggregate_backup_name"))
         except (OSError,ValueError,RuntimeError,sqlite3.Error,TypeError) as exc:
             self.state.update(status="failed",error=type(exc).__name__)
         finally:

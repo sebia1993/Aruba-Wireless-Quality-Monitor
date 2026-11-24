@@ -27,3 +27,7 @@ The incident list supports page and state filters over up to 365 days; full
 incident reports, automatic retention, grouping, free-text operational notes
 and other cause codes are pending. No field verification or actual outage
 testing was performed by the developer.
+
+## Incident export
+
+Authenticated operators can export the current incident detail as HTML, CSV, or a Korean weekly-report summary (□ / - / *). The report labels observation time separately from service-outage time, retains evidence revision and review decision, and explicitly states that actual equipment action and service impact are unverified. Reviewer IDs and internal Radio MACs are excluded; CSV formula prefixes and HTML text are escaped. A truncated timeline/review is labeled. Downloads and summary requests are audited.

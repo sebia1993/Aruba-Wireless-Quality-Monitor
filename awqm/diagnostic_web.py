@@ -14,6 +14,7 @@ from .reporting import csv_report,html_report
 from .web import STATIC
 from .audit import AuditLog
 from .incidents import ReviewConflict
+from .incident_reports import summary,incident_csv,incident_html
 
 COOKIE="__Host-awqm_session"
 
@@ -137,7 +138,7 @@ def handler_for(view,auth,audit,cfg):
             if path.path=="/diagnostic.css" and not path.query:
                 self._send(200,(STATIC/"diagnostic.css").read_bytes(),"text/css; charset=utf-8");return
             try:
-                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident"))
+                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html"))
             except AuthDenied:
                 if self.path=="/":self._login()
                 else:self._json(401,{"error":"authentication_required"})
@@ -171,11 +172,19 @@ def handler_for(view,auth,audit,cfg):
                 elif path.path=="/api/incidents":
                     q=self._query(path,{"page","status","start","end"})
                     self._json(200,view.incident_list(int(q["page"]),q["status"],int(q["start"]),int(q["end"])))
-                elif path.path=="/api/incident":
+                elif path.path in ("/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html"):
                     q=self._query(path,{"id"})
                     detail=view.incident_detail(q["id"])
-                    audit.record(s.username,"incident_detail",q["id"])
-                    self._json(200,detail)
+                    event={"/api/incident":"incident_detail","/api/incident/summary":"incident_summary",
+                           "/api/incident/report.csv":"incident_csv","/api/incident/report.html":"incident_html"}[path.path]
+                    audit.record(s.username,event,q["id"])
+                    if event=="incident_detail":self._json(200,detail)
+                    elif event=="incident_summary":self._json(200,{"text":summary(detail),"service_impact":"unverified"})
+                    else:
+                        fmt="csv" if event=="incident_csv" else "html"
+                        body=incident_csv(detail) if fmt=="csv" else incident_html(detail)
+                        self._send(200,body,"text/csv; charset=utf-8" if fmt=="csv" else "text/html; charset=utf-8",
+                            (("Content-Disposition",'attachment; filename="awqm-incident-report.'+fmt+'"'),))
                 elif self.path=="/api/admin/status":
                     if s.role!="admin":self._json(403,{"error":"access_denied"});return
                     audit.record(s.username,"admin_status")

@@ -164,6 +164,7 @@ class Incidents:
             reviews=c.execute("""SELECT evidence_rev,at,verdict,reason,candidate FROM rf_incident_reviews
                 WHERE incident_id=? ORDER BY at DESC,rowid DESC LIMIT 100""",(ident,)).fetchall()
             item["reviews"]=[dict(zip(("revision","at","verdict","reason","candidate"),r)) for r in reviews]
+            item["reviews_truncated"]=c.execute("SELECT COUNT(*) FROM rf_incident_reviews WHERE incident_id=?",(ident,)).fetchone()[0]>len(reviews)
             item["service_impact"]="unverified"
             return item
     def review(self,ident,revision,request_id,user,verdict,reason,candidate):

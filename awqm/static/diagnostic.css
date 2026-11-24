@@ -7,3 +7,5 @@
 .history-panel{margin-top:16px;min-width:0}.history-panel select,.history-panel input{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:8px}.history-panel a{color:var(--accent);padding:8px}.history-panel .table-wrap{max-height:360px;overflow:auto}
 
 .login{display:block}.login main{max-width:440px;margin:10vh auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:28px}.login label{display:grid;gap:8px;margin:16px 0}.login button{width:100%;text-align:center;background:var(--accent);color:var(--bg)}.pager{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0}.pager a{color:var(--accent)}.table-wrap{max-height:65vh}.notice{font-weight:500}#detailBody input{margin:4px}#role{overflow-wrap:anywhere}button:disabled{opacity:.55;cursor:default}
+
+#detailBody textarea{width:100%;font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);padding:10px;border-radius:6px;resize:vertical}

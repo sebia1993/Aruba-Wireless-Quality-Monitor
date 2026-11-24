@@ -14,6 +14,7 @@ from .quality_ledger import QualityLedger
 from .live_clients import LiveClients,load_client_approvals
 from .station_validation import load_station_approvals
 from .cluster import ClusterMonitor
+from .retention import Retention,load_retention
 from .diagnostic_view import DiagnosticView
 from .diagnostic_web import create_listener
 from .collector import PinnedSSH
@@ -106,6 +107,7 @@ def run_service(root,stop):
     check_identity(cfg.account);check_layout(cfg)
     web=load_web_config(cfg)
     profile=load_profile(cfg)
+    retention_enabled=load_retention(cfg)
     approvals=load_approvals(cfg)
     client_approvals=load_client_approvals(cfg,approvals)
     station_approvals=load_station_approvals(cfg,client_approvals)
@@ -125,7 +127,9 @@ def run_service(root,stop):
         engine=Engine(workers,store,site=cfg.site,simulation=False,durable_jobs=False,auto=False,
                       quality_ledger=quality,live_clients=LiveClients(client_approvals,station_approvals=station_approvals) if client_approvals else None,
                       cluster_monitor=ClusterMonitor({t.id:t.ip for t in cfg.targets}))
-        maintenance=Maintenance(store,safe_path(cfg.root,"backup"))
+        backup_root=safe_path(cfg.root,"backup");audit_path=safe_path(cfg.root,"logs/web-audit.db")
+        maintenance=Maintenance(store,backup_root,
+            retention=Retention(store,backup_root,audit_path) if retention_enabled else None,audit_path=audit_path)
         view=DiagnosticView(store,time.time,incidents=quality.incidents) if web else None
         server=None;thread=None
         try:

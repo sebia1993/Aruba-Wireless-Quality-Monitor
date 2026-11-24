@@ -163,6 +163,12 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 status,_,raw=req("GET","/api/incident?"+urlencode({"id":ident}),headers=h)
                 self.assertEqual(status,200)
                 self.assertEqual(json.loads(raw)["service_impact"],"unverified")
+                rid_query=urlencode({"id":ident})
+                self.assertEqual(req("GET","/api/incident/summary?"+rid_query)[0],401)
+                status,_,raw=req("GET","/api/incident/summary?"+rid_query,headers=h)
+                self.assertEqual(status,200);self.assertIn("□",json.loads(raw)["text"])
+                self.assertEqual(req("GET","/api/incident/report.csv?"+rid_query,headers=h)[0],200)
+                self.assertEqual(req("GET","/api/incident/report.html?"+rid_query,headers=h)[0],200)
                 review={"csrf":csrf,"id":ident,"revision":incident["revision"],"request_id":"test-req",
                         "verdict":"supported","reason":"radio_evidence","candidate":"RF04"}
                 self.assertEqual(req("POST","/api/incident/review",urlencode(review),form)[0],401)
