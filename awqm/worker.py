@@ -15,6 +15,7 @@ from .scheduler import Scheduler,DEFAULT_POLLS,Poll
 from .jobs import Jobs
 from .client import client_table,station_stats,bss_table
 from .field_validation import version_identity,fingerprint
+from .station_validation import collect as collect_station,StationUnavailable
 
 PARSERS={
     "show cpuload":cpu_load,
@@ -42,11 +43,11 @@ class Reading:
     target: str|None=None
 
 class ControllerWorker:
-    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None):
+    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None):
         self.controller=controller;self.session_factory=session_factory
         self.clock=clock;self.wall=wall
         self.field_approval=field_approval
-        self.live_detail=live_detail;self.client_approval=client_approval
+        self.live_detail=live_detail;self.client_approval=client_approval;self.station_approval=station_approval
         polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table"))
         if field_approval is not None:polls=polls+(Poll("show version",600,30,0),)
         self.schedule=Scheduler(start=clock(),offset=offset,polls=polls,mode=mode)
@@ -135,7 +136,9 @@ class ControllerWorker:
             return r
         finally:
             self.last_heartbeat=self.clock()
-            self.lock.release()
+            try:
+                if self.live_detail:self.jobs.purge_station(self.wall())
+            finally:self.lock.release()
     def submit_detail(self,request_id,name,target,ttl=300):
         # Separate queue lock allows reservation even while the worker awaits SSH.
         return self.jobs.submit(request_id,name,target,self.wall(),ttl)
@@ -159,7 +162,7 @@ class ControllerWorker:
         # and RF observations are required before a CLI is sent.
         a=self.client_approval;radio=self.field_approval
         now=int(self.wall())
-        if not a or not a.automatic or not radio or job.name!="show ap debug client-table":return False
+        if not a or not a.automatic or not radio or job.name not in ("show ap debug client-table","show ap debug client-stats"):return False
         keys=("show version","show ap radio-summary","show ap association","show ap bss-table")
         readings=[self.latest.get(k) for k in keys]
         if any(not x or x.generation!=self.generation or self.outcomes[x.command].status!="success" for x in readings):return False
@@ -167,7 +170,14 @@ class ControllerWorker:
         if not (0<=now-r.observed_at<=90 and 0<=now-assoc.observed_at<=90 and 0<=now-bss.observed_at<=330):return False
         if not radio.permits(v.data,fingerprint(self.session),r.observed_at,now,v.observed_at):return False
         if not a.permits(radio.tag,r.observed_at,now):return False
-        return any(x["name"]==job.target and x["service"] and x["utilization"] is not None and x["utilization"]>=75 for x in r.data)
+        target=job.target
+        if job.name=="show ap debug client-stats":
+            st=self.station_approval
+            if not st or not st.permits(a.tag,r.observed_at,now):return False
+            claims=[x for x in assoc.data if x["active"] and x["client_mac"]==job.target]
+            if len(claims)!=1:return False
+            target=claims[0]["ap_name"]
+        return any(x["name"]==target and x["service"] and x["utilization"] is not None and x["utilization"]>=75 for x in r.data)
     def _detail_tick(self):
         now=self.clock()
         for job in self.jobs.pending(self.wall()):
@@ -183,16 +193,27 @@ class ControllerWorker:
                 self.jobs.defer(job.job_id,"controller_protection");continue
             if not self.jobs.start(job.job_id,self.wall()):continue
             try:
-                raw=self.session.run(job.name,target=job.target,timeout=min(10,available),idle_timeout=min(10,available))
-                if DENIED.search(raw) or UNSUPPORTED.search(raw):
-                    self.detail_disabled.add(job.name)
-                    self.jobs.finish(job.job_id,"skipped","permission_denied_or_unsupported",self.wall())
-                    return Reading(job.name,"unsupported",int(self.wall()),generation=self.generation)
-                try:
-                    value=DETAIL_PARSERS[job.name](raw)
-                except (ValueError,TypeError):
-                    self.jobs.finish(job.job_id,"failed","parse_error",self.wall())
-                    return Reading(job.name,"parse_error",int(self.wall()),generation=self.generation)
+                if self.live_detail and job.name=="show ap debug client-stats":
+                    try:
+                        value=collect_station(self.session,job.target,self.clock,self.wall,min(10,available))
+                    except StationUnavailable:
+                        self.detail_disabled.add(job.name)
+                        self.jobs.finish(job.job_id,"skipped","station_or_association_unavailable",self.wall())
+                        return Reading(job.name,"unsupported",int(self.wall()),generation=self.generation,target=job.target)
+                    except (ValueError,TypeError):
+                        self.jobs.finish(job.job_id,"failed","station_validation_failed",self.wall())
+                        return Reading(job.name,"parse_error",int(self.wall()),generation=self.generation,target=job.target)
+                else:
+                    raw=self.session.run(job.name,target=job.target,timeout=min(10,available),idle_timeout=min(10,available))
+                    if DENIED.search(raw) or UNSUPPORTED.search(raw):
+                        self.detail_disabled.add(job.name)
+                        self.jobs.finish(job.job_id,"skipped","permission_denied_or_unsupported",self.wall())
+                        return Reading(job.name,"unsupported",int(self.wall()),generation=self.generation)
+                    try:
+                        value=DETAIL_PARSERS[job.name](raw)
+                    except (ValueError,TypeError):
+                        self.jobs.finish(job.job_id,"failed","parse_error",self.wall())
+                        return Reading(job.name,"parse_error",int(self.wall()),generation=self.generation)
                 reading=Reading(job.name,"success",int(self.wall()),value,generation=self.generation,target=job.target)
                 # Bounded cache; full historical client persistence is not yet enabled.
                 key=(job.name,job.target)
@@ -204,7 +225,7 @@ class ControllerWorker:
             except Exception as exc:
                 self.jobs.finish(job.job_id,"failed",type(exc).__name__,self.wall())
                 self._failed(type(exc).__name__)
-                return Reading(job.name,"transport_error",int(self.wall()),generation=self.generation)
+                return Reading(job.name,"transport_error",int(self.wall()),generation=self.generation,target=job.target if self.live_detail and job.name=="show ap debug client-stats" else None)
             finally:
                 self.schedule.protection.account(now,self.clock(),True)
         return None

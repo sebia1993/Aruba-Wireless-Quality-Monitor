@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.14.0-dev — 단말 정밀 조회 및 RF Neighbor 분석 기반. 운영 배포 금지.**
+**현재 단계: v0.15.0-dev — 단말 성공 프레임 재시도 분석 및 Airtime 검증 기반. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -56,6 +56,10 @@ Windows EXE에서도 동일하게 `AWQM.exe --validate-cli radio local-output.tx
 ## RF Neighbor 오프라인 검증
 
 `AWQM.exe --validate-cli neighbors local-arm-neighbors.txt`로 AOS 8.9+ 형식의 저장된 ARM Neighbor 결과를 로컬에서 검사합니다. 채널 블록 중첩과 상관관계는 명시적으로 검증된 채널 구성과 직접 관측을 요구합니다. 현재 실제 Neighbor 자동 수집 및 장애 후보 통합은 활성화하지 않습니다. [RF 분석 계약](docs/RF_NEIGHBORS.md).
+
+## 별도 Station Stats 현장 검증 (기본 비활성)
+
+현장 승인된 단말 상세 수집에 한해 Station Stats의 성공 프레임 재시도 구간 분석을 별도 승인으로 활성화할 수 있습니다. 동일 접속 조건과 최소 프레임 수가 충족되지 않으면 미확인으로 표시합니다. Airtime 실측은 아직 활성화하지 않습니다. [Station Stats 검증 안내](docs/STATION_VALIDATION.md).
 
 ## Windows 빌드
 ```powershell

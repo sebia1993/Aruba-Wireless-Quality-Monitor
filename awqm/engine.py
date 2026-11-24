@@ -74,7 +74,7 @@ class Engine:
                     self.snapshots[name]=snapshot
                     if self.client_history and reading and reading.status=="success" and reading.target:
                         self.detail_pending[name]=(reading,snapshot,bss,assoc)
-                    if self.live_clients and reading and reading.status=="success" and reading.target:
+                    if self.live_clients and reading and reading.target and (reading.status=="success" or reading.command=="show ap debug client-stats"):
                         self.live_details[name]=(reading,snapshot,bss,assoc)
                     if reading:self.outcomes[name]={"command":reading.command,"status":reading.status,"observed_at":reading.observed_at}
                 except Exception as exc:
@@ -180,6 +180,7 @@ class Engine:
                         self.live_details.clear()
                         self.live_clients.plan(radios,active,self.field_quality,now_wall,self.workers)
                         self.live_client_views=self.live_clients.publish(radios,active,self.field_quality,clients,now_wall)
+                        self.live_clients.plan_station(clients,now_wall,self.workers)
                     else:
                         self.live_details.clear();self.live_clients.clear();self.live_client_views=[]
                 except (ValueError,TypeError,KeyError,RuntimeError,sqlite3.Error,OSError) as exc:

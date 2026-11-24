@@ -124,9 +124,15 @@ class DiagnosticView:
         with self.lock:
             now=int(self.clock())
             fresh=bool(self.meta.get("available") and 0<=now-self.meta.get("published_at",0)<=20)
-            fields=("id","ap_name","controller","band","observed_at","health","snr","last_phy_rate","quality_score","quality_status","airtime","retry","candidate","scope")
-            rows=[{k:r[k] for k in fields} for r in self.client_rows
+            fields=("id","ap_name","controller","band","observed_at","health","snr","last_phy_rate","quality_score","quality_status","airtime","retry","candidate","scope","station_retry","station_start","station_end","station_tx_activity")
+            rows=[{k:r.get(k) for k in fields} for r in self.client_rows
                 if fresh and 0<=now-r["observed_at"]<=180 and now<r.get("valid_until",0) and any(query.casefold() in str(r[k]).casefold() for k in ("ap_name","id","controller","band"))]
+            # Apply the separate station attestation expiry at read time as
+            # well, even between coordinator publications.
+            expiries={r["id"]:r.get("station_until") for r in self.client_rows}
+            for item in rows:
+                if item.get("station_end") is None or not 0<=now-item["station_end"]<=90 or now>=(expiries.get(item["id"]) or 0):
+                    item.update(station_retry=None,station_start=None,station_end=None,station_tx_activity="unknown")
             return {"rows":rows[(page-1)*size:page*size],"total":len(rows),"page":page,"size":size,
                 "enabled":self.client_enabled,"available":fresh,"scope":"local_operator_attested_ephemeral_detail",
                 "persistent_storage":False,"airtime_validated":False,"cause_confirmed":False}

@@ -18,6 +18,8 @@ def command(name, target=None):
         return name
     if name in AP_COMMANDS and isinstance(target,str) and AP.fullmatch(target):
         return name+" ap-name "+target
+    if name=="show ap association client-mac" and isinstance(target,str) and MAC.fullmatch(target):
+        return name+" "+target
     if name=="show ap debug client-stats" and isinstance(target,str) and MAC.fullmatch(target):
         return name+" client-mac "+target+" advanced"
     raise ValueError("command or target not allowed")

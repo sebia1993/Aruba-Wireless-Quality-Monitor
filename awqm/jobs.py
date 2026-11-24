@@ -110,3 +110,11 @@ class Jobs:
         with self.lock:
             self._expire(now)
             return list(self.records.values())
+
+    def purge_station(self,now):
+        """Live Station Stats targets are needed only until execution finishes."""
+        with self.lock:
+            self._expire(now)
+            gone={key for key,j in self.records.items() if j.name=="show ap debug client-stats" and j.status in TERMINAL}
+            for key in gone:self.records.pop(key,None)
+            self.requests={k:v for k,v in self.requests.items() if v not in gone}

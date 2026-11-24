@@ -23,6 +23,7 @@ class ClientApproval:
     approved_at:int
     valid_until:int
     automatic:bool
+    tag:str=""
     def permits(self,tag,at,now):
         return tag==self.radio_tag and self.approved_at<=at<=now<self.valid_until
 
@@ -51,14 +52,16 @@ def load_client_approvals(cfg,radio_approvals,now=None):
             raise ValueError("reviewer reference required")
         if not isinstance(r["checks"],dict) or set(r["checks"])!=CHECKS or any(v is not True for v in r["checks"].values()):
             raise ValueError("all client checks required")
-        out[r["controller"]]=ClientApproval(a.tag,r["approved_at"],r["valid_until"],r["automatic"])
+        tag=hashlib.sha256(json.dumps({"site":cfg.site,"contract":"aos8-client-table-v1","record":r},sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+        out[r["controller"]]=ClientApproval(a.tag,r["approved_at"],r["valid_until"],r["automatic"],tag)
     return out
 
 class LiveClients:
-    def __init__(self,approvals,key=None,max_rows=5000):
+    def __init__(self,approvals,key=None,max_rows=5000,station_approvals=None):
         self.approvals=dict(approvals);self.key=key or secrets.token_bytes(32)
         self.selector=Selector(cooldown=180,allow_attested=True)
         self.max_rows=max_rows;self.rows={};self.views=[];self.last_plan={}
+        self.station_approvals=dict(station_approvals or {});self.station={};self.station_plan={}
     def token(self,kind,value):
         return hmac.new(self.key,(kind+"|"+value).encode(),hashlib.sha256).hexdigest()[:32]
     def eligible(self,r,s,q,now,automatic=False):
@@ -83,6 +86,10 @@ class LiveClients:
         for controller,_ in planned:self.last_plan[controller]=now
         return planned
     def ingest(self,reading,controller,snapshot,assoc,bss,radios,quality,clients,now):
+        if reading.command=="show ap debug client-stats":
+            result=self.ingest_station(reading,controller,snapshot,assoc,bss,radios,quality,clients,now)
+            if not result and reading.target:self.station.pop(self.token("client",reading.target),None)
+            return result
         if (reading.command!="show ap debug client-table" or not reading.target or
             not snapshot or not assoc or not bss or
             reading.generation!=assoc.generation or reading.generation!=bss.generation or
@@ -120,9 +127,14 @@ class LiveClients:
         # No raw MAC, BSSID or SSID is retained by the client ledger.
         # A new detail observation replaces this AP's previous view. Missing
         # entries are not interpreted as disconnection or proof of recovery.
-        self.rows={k:v for k,v in self.rows.items() if not (v["controller"]==controller and v["ap_name"]==reading.target)}
+        previous={k:v for k,v in self.rows.items() if v["controller"]==controller and v["ap_name"]==reading.target}
+        self.rows={k:v for k,v in self.rows.items() if k not in previous}
         for ident,row in new:
+            old=previous.pop(ident,None)
+            if old and (old["context"],old["association"],old["radio_id"])!=(row["context"],row["association"],row["radio_id"]):
+                self.station.pop(ident,None)
             self.rows[ident]=row
+        for ident in previous:self.station.pop(ident,None)
         if len(self.rows)>self.max_rows:
             keep=sorted(self.rows,key=lambda k:self.rows[k]["observed_at"],reverse=True)[:self.max_rows]
             self.rows={k:self.rows[k] for k in keep}
@@ -138,9 +150,93 @@ class LiveClients:
             if not s or not r or not a or s.field_connection!=row["context"] or not self.eligible(r,s,quality.get(r.radio_id),now):continue
             if a["ap_name"]!=row["ap_name"] or self.token("association",json.dumps([a["bssid"],a["ssid"]]))!=row["association"]:continue
             # API consumers receive only the explicit display allowlist.
-            views.append({k:row[k] for k in ("id","ap_name","controller","band","observed_at","health","snr",
-                "last_phy_rate","quality_score","quality_status","airtime","retry","candidate","scope","valid_until")})
+            item={k:row[k] for k in ("id","ap_name","controller","band","observed_at","health","snr",
+                "last_phy_rate","quality_score","quality_status","airtime","retry","candidate","scope","valid_until")}
+            station=self.station.get(ident);approval=self.station_approvals.get(row["controller"])
+            item.update(station_retry=None,station_start=None,station_end=None,station_tx_activity="unknown",station_until=None)
+            if station and approval and 0<=now-station["at"]<=90 and now<station["until"] and station["context"]==row["context"] and station["association"]==row["association"]:
+                item.update(station_retry=station["ratio"],station_start=station["start"],station_end=station["at"],
+                            station_tx_activity=station["activity"],station_until=station["until"])
+            views.append(item)
+        # Remove stale/context-invalid station observations. No raw identifiers or
+        # station counters are ever written to disk by this component.
+        visible={v["id"] for v in views}
+        self.station={k:v for k,v in self.station.items() if k in visible and 0<=now-v["at"]<=180 and now<v["until"]}
+        self.station_plan={k:v for k,v in self.station_plan.items() if 0<=now-v<=180}
         self.views=sorted(views,key=lambda r:(r["quality_score"] is None,r["quality_score"] or 0,r["id"]))
         return self.views
     def clear(self):
-        self.rows.clear();self.views=[]
+        self.rows.clear();self.station.clear();self.station_plan.clear();self.views=[]
+
+    def ingest_station(self,reading,controller,snapshot,assoc,bss,radios,quality,clients,now):
+        from .station_validation import continuous,successful_retry
+        if reading.status!="success" or not reading.target or not snapshot or not assoc or not bss or reading.generation!=assoc.generation or reading.generation!=bss.generation:
+            return 0
+        if not 0<=now-reading.observed_at<=30 or not 0<=reading.observed_at-assoc.observed_at<=90 or not 0<=reading.observed_at-bss.observed_at<=330:
+            return 0
+        approval=self.station_approvals.get(controller);client=self.approvals.get(controller)
+        if not approval or not client or not approval.permits(client.tag,reading.observed_at,now):return 0
+        ident=self.token("client",reading.target or "")
+        row=self.rows.get(ident);claim=clients.get(reading.target)
+        if not row or not claim or row["controller"]!=controller or row["context"]!=snapshot.field_connection:return 0
+        local=[x for x in assoc.data if x["active"] and x["client_mac"]==reading.target]
+        if len(local)!=1 or any(local[0][k]!=claim[k] for k in ("ap_name","bssid","ssid")):return 0
+        r=next((x for x in radios if x.radio_id==row["radio_id"] and x.controller==controller),None)
+        if not r or not self.eligible(r,snapshot,quality.get(r.radio_id),now):return 0
+        if match_bss(claim["bssid"],claim["ssid"],bss.data,[r])!=r.radio_id:return 0
+        before,after=reading.data["before"],reading.data["after"]
+        association=self.token("association",json.dumps([claim["bssid"],claim["ssid"]]))
+        if ((after.ap,after.bssid,after.ssid)!=(claim["ap_name"],claim["bssid"],claim["ssid"]) or
+            association!=row["association"] or row["ap_name"]!=after.ap or not continuous(before,after,10)):
+            self.station.pop(ident,None);return 0
+        # Store only a pseudonymized stamp and temporary counters, no BSSID/SSID.
+        stamp_token=self.token("station-association",json.dumps([after.ap,after.bssid,after.ssid,after.aid,after.count]))
+        current=reading.data["counters"]
+        if any(type(current[k]) is not int or not 0<=current[k]<=2**63-1 for k in ("sent","retried")) or current["retried"]>current["sent"]:
+            self.station.pop(ident,None);return 0
+        old=self.station.get(ident);ratio=None;start=None;activity="unknown"
+        if old and reading.observed_at<=old["at"]:return 0
+        if old and old["context"]==row["context"] and old["stamp"]==stamp_token and old["association"]==association:
+            dt=reading.observed_at-old["at"]
+            if 30<=dt<=180 and after.age>=old["age"] and abs(after.age-old["age"]-dt)<=3:
+                sent=current["sent"]-old["counters"]["sent"]
+                retried=current["retried"]-old["counters"]["retried"]
+                if 0<=retried<=sent:
+                    start=old["at"]
+                    activity="successful_tx_observed" if sent>0 else "no_successful_tx_increase"
+                    ratio=successful_retry(old["counters"],current,stamp_token,stamp_token)
+        self.station[ident]={"at":reading.observed_at,"start":start,"ratio":ratio,"activity":activity,
+            "until":min(row["valid_until"],approval.valid_until,snapshot.field_until),"context":row["context"],
+            "association":association,"stamp":stamp_token,"age":after.age,"counters":{"sent":current["sent"],"retried":current["retried"]}}
+        return 1
+
+    def plan_station(self,clients,now,workers):
+        # Bounded, per-AP cohort of at most three low-quality observations.
+        # Selection does not label the device as active or a cause. Raw MAC
+        # exists only in the existing transient association/job pipeline.
+        candidates={}
+        claims={self.token("client",m):m for m in clients}
+        for row in self.views:
+            ident=row["id"];controller=row["controller"]
+            approval=self.station_approvals.get(controller);a=self.approvals.get(controller)
+            if not approval or not a or not approval.permits(a.tag,row["observed_at"],now):continue
+            if row["quality_score"] is None or row["quality_score"]>=50 or ident not in claims:continue
+            if now-self.station_plan.get(ident,-1e20)<45:continue
+            candidates.setdefault((controller,row["ap_name"]),[]).append(row)
+        planned=[]
+        for (controller,ap),rows in candidates.items():
+            w=workers.get(controller)
+            if not w or "show ap debug client-stats" in getattr(w,"detail_disabled",set()):continue
+            if hasattr(w.jobs,"purge_station"):w.jobs.purge_station(now)
+            # Existing queued/running station jobs consume the controller cap.
+            active=[j for j in w.jobs.list(now) if j.name=="show ap debug client-stats" and j.status in ("queued","deferred","running")]
+            rows=[row for row in rows if claims[row["id"]] not in {j.target for j in active}]
+            slots=max(0,3-len(active))
+            if not slots:continue
+            for row in sorted(rows,key=lambda x:(x["quality_score"],x["id"]))[:slots]:
+                ident=row["id"];target=claims[ident]
+                try:
+                    j=w.submit_detail("station-"+ident+"-"+str(now//45),"show ap debug client-stats",target,ttl=60)
+                except (RuntimeError,ValueError):continue
+                self.station_plan[ident]=now;planned.append(j.job_id)
+        return planned

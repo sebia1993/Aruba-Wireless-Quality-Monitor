@@ -164,7 +164,10 @@ def associations(text):
     rows=table(text,"Association Table",("name","bssid","mac","auth","assoc","essid","flags"),r"Num Clients:\s*(\d+)")
     return [dict(ap_name=r["name"],bssid=mac(r["bssid"]),client_mac=mac(r["mac"]),ssid=r["essid"],
                  active="A" in r["flags"] and r["assoc"].lower()=="y",
-                 authenticated=r["auth"].lower()=="y",flags=r["flags"]) for r in rows]
+                 authenticated=r["auth"].lower()=="y",flags=r["flags"],
+                 association_time=r.get("assoc. time"),
+                 aid=int(r["aid"]) if re.fullmatch(r"\d+",r.get("aid","")) else None,
+                 num_assoc=int(r["num assoc"]) if re.fullmatch(r"\d+",r.get("num assoc","")) else None) for r in rows]
 
 def cpu_load(text):
     matches=list(re.finditer(r"(?im)^\s*user\s+([\d.]+)%,\s*system\s+([\d.]+)%,\s*idle\s+([\d.]+)%\s*$",cleaned(text)))
