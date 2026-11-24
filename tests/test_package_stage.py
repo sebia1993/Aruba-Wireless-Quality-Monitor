@@ -8,7 +8,12 @@ class StageTests(unittest.TestCase):
         with zipfile.ZipFile(p,"w") as z:
             for name in ("AWQM.exe","AWQM_Service.exe","AWQM_Manager.exe","VERSION.txt","README.md","BUILD-DEPENDENCIES.txt","_internal/python.dll","docs/guide.md"):
                 if name!=omit:z.writestr("AWQM/"+name,"0.20.0-dev\n" if name=="VERSION.txt" else "fixture")
-            for name,data in extra:z.writestr(name,data)
+            for name,data in extra:
+                if isinstance(name,str):
+                    # Preserve raw spelling on Windows during fixture construction.
+                    i=zipfile.ZipInfo(name);i.filename=name;i.orig_filename=name
+                    z.writestr(i,data)
+                else:z.writestr(name,data)
         return p
     def test_verified_staging_and_no_overwrite(self):
         with tempfile.TemporaryDirectory() as d:
@@ -20,10 +25,11 @@ class StageTests(unittest.TestCase):
     def test_bad_packages(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)
-            for member in ("AWQM/../bad","AWQM/CON.txt","AWQM/x. ","AWQM/x:stream","AWQM/awqm.exe","AWQM/dir\\bad","AWQM/README.md/child"):
-                z=self.package(p,[(member,"bad")])
-                with self.assertRaises(ValueError):stage(z,digest(z),p/"new")
-                self.assertFalse((p/"new").exists())
+            for member in ("AWQM/../bad","AWQM/CON.txt","AWQM/x. ","AWQM/x:stream","AWQM/awqm.exe","AWQM/dir\\bad","AWQM/README.md/child","AWQM/CON .txt","AWQM/CONOUT$","AWQM/Stage-Receipt.json","AWQM/Docs/extra.md"):
+                with self.subTest(member=member):
+                    z=self.package(p,[(member,"bad")])
+                    with self.assertRaises(ValueError):stage(z,digest(z),p/"new")
+                    self.assertFalse((p/"new").exists())
             z=self.package(p,omit="AWQM_Service.exe")
             with self.assertRaises(ValueError):stage(z,digest(z),p/"new")
             z=self.package(p)
