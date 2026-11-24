@@ -168,9 +168,12 @@ def soak(root,hours=72,aps=500,clients=10):
 
 def main():
     p=argparse.ArgumentParser(description="Isolated synthetic validation; never contacts real WLCs")
-    p.add_argument("kind",choices=("capacity","soak"))
+    p.add_argument("kind",choices=("capacity","https","soak"))
     p.add_argument("--output",type=Path,required=True,help="new empty destination path")
     a=p.parse_args()
-    result=scale_test(a.output) if a.kind=="capacity" else soak(a.output)
+    if a.kind=="https":
+        from .https_validation import https_test
+        result=https_test(a.output)
+    else:result=scale_test(a.output) if a.kind=="capacity" else soak(a.output)
     print(json.dumps(result,ensure_ascii=False,indent=2))
     if result.get("result",result.get("state")) not in ("pass","passed"):raise SystemExit(1)
