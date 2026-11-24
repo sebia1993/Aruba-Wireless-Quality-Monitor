@@ -111,10 +111,13 @@ def run_service(root,stop):
         store=Store(safe_path(cfg.root,"data"),mode="diagnostic")
         gate=ConnectionGate(cfg.known_hosts,stop=stop)
         workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode="safe",offset=i*15,enable_bss=True,field_approval=approvals.get(t.id)) for i,t in enumerate(cfg.targets)]
+        # Always open the local history ledger so old incidents remain
+        # inspectable after an attestation is revoked or expires.
+        quality=QualityLedger(store)
         engine=Engine(workers,store,site=cfg.site,simulation=False,durable_jobs=False,auto=False,
-                      quality_ledger=QualityLedger(store) if approvals else None)
+                      quality_ledger=quality)
         maintenance=Maintenance(store,safe_path(cfg.root,"backup"))
-        view=DiagnosticView(store,time.time) if web else None
+        view=DiagnosticView(store,time.time,incidents=quality.incidents) if web else None
         server=None;thread=None
         try:
             if web:

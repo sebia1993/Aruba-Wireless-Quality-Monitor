@@ -9,10 +9,10 @@ from threading import RLock
 from .reporting import csv_report,html_report
 
 class DiagnosticView:
-    def __init__(self,store,clock,key=None):
+    def __init__(self,store,clock,key=None,incidents=None):
         if store.mode!="diagnostic":raise ValueError("diagnostic store required")
         self.store=store;self.clock=clock;self.key=key or secrets.token_bytes(32)
-        self.lock=RLock();self.rows=[];self.index={};self.meta={}
+        self.lock=RLock();self.rows=[];self.index={};self.meta={};self.incidents=incidents
     def token(self,radio_id):
         return hmac.new(self.key,radio_id.encode("utf-8"),hashlib.sha256).hexdigest()[:32]
     def publish(self,result,current=(),available=True,quality=None):
@@ -42,7 +42,8 @@ class DiagnosticView:
                         quality_score=q.get("score") if approved else None,
                         risk_status=q.get("status") if approved else "UNKNOWN",
                         approval=q.get("approval") if approved else None,
-                        approval_until=q.get("valid_until") if approved else None))
+                        approval_until=q.get("valid_until") if approved else None,
+                        incident_id=q.get("incident_id") if approved else None))
                 if available:self.rows=rows;self.index=index
             else:
                 self.rows=[dict(r,freshness="stale_or_unconfirmed") for r in self.rows]
@@ -69,7 +70,7 @@ class DiagnosticView:
                 x=dict(r)
                 if stale:x["freshness"]="stale_or_unconfirmed"
                 if stale or x["freshness"]!="observed" or (x.get("approval_until") or 0)<=now:
-                    x.update(quality="unvalidated",quality_score=None,risk_status="UNKNOWN",approval=None,approval_until=None)
+                    x.update(quality="unvalidated",quality_score=None,risk_status="UNKNOWN",approval=None,approval_until=None,incident_id=None)
                 data.append(x)
             if stale:
                 for k in ("coherent_controllers","mapped_radios","active_clients","unresolved_radios","client_conflicts"):meta[k]=None
@@ -91,3 +92,26 @@ class DiagnosticView:
         return {"mode":"diagnostic","field_validated":False,"radio_id":token,"start":start,"end":end,"resolution":"raw",
                 "count":len(rows),"limit":2000,"truncated":len(raw)>2000,"fields":list(fields),"rows":rows,
                 "note":"Field-unvalidated diagnostic observations. No verified quality score, downtime, service impact or root cause."}
+
+    def current_incidents(self):
+        with self.lock:
+            now=int(self.clock())
+            if not self.meta.get("available") or not 0<=now-self.meta.get("published_at",0)<=20:return set()
+            return {r["incident_id"] for r in self.rows if r.get("incident_id") and r["freshness"]=="observed"
+                    and (r.get("approval_until") or 0)>now and r.get("risk_status")!="UNKNOWN"}
+
+    def incident_list(self,page,status,start,end):
+        if self.incidents is None:
+            return {"rows":[],"total":0,"page":page,"size":50,"scope":"no_current_attestation","service_impact":"unverified"}
+        return self.incidents.list(page,status,start,end,current=self.current_incidents())
+
+    def incident_detail(self,ident):
+        if self.incidents is None:raise ValueError("incident ledger unavailable")
+        detail=self.incidents.detail(ident)
+        detail["current_observation"]=ident in self.current_incidents() and detail["ended_at"] is None
+        detail["display_state"]="UNCONFIRMED" if detail["ended_at"] is None and not detail["current_observation"] else detail["state"]
+        return detail
+
+    def incident_review(self,ident,revision,request_id,user,verdict,reason,candidate):
+        if self.incidents is None:raise ValueError("incident ledger unavailable")
+        return self.incidents.review(ident,revision,request_id,user,verdict,reason,candidate)

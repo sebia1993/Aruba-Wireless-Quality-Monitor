@@ -13,6 +13,7 @@ from .secure_preview import tls_context
 from .reporting import csv_report,html_report
 from .web import STATIC
 from .audit import AuditLog
+from .incidents import ReviewConflict
 
 COOKIE="__Host-awqm_session"
 
@@ -136,7 +137,7 @@ def handler_for(view,auth,audit,cfg):
             if path.path=="/diagnostic.css" and not path.query:
                 self._send(200,(STATIC/"diagnostic.css").read_bytes(),"text/css; charset=utf-8");return
             try:
-                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status"))
+                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident"))
             except AuthDenied:
                 if self.path=="/":self._login()
                 else:self._json(401,{"error":"authentication_required"})
@@ -162,6 +163,14 @@ def handler_for(view,auth,audit,cfg):
                         body=csv_report(report) if fmt=="csv" else html_report(report)
                         self._send(200,body,"text/csv; charset=utf-8" if fmt=="csv" else "text/html; charset=utf-8",
                             (("Content-Disposition",'attachment; filename="awqm-diagnostic-history.'+fmt+'"'),))
+                elif path.path=="/api/incidents":
+                    q=self._query(path,{"page","status","start","end"})
+                    self._json(200,view.incident_list(int(q["page"]),q["status"],int(q["start"]),int(q["end"])))
+                elif path.path=="/api/incident":
+                    q=self._query(path,{"id"})
+                    detail=view.incident_detail(q["id"])
+                    audit.record(s.username,"incident_detail",q["id"])
+                    self._json(200,detail)
                 elif self.path=="/api/admin/status":
                     if s.role!="admin":self._json(403,{"error":"access_denied"});return
                     audit.record(s.username,"admin_status")
@@ -185,7 +194,17 @@ def handler_for(view,auth,audit,cfg):
                     d=self._form({"csrf"})
                     auth.logout(self._token(),d["csrf"])
                     self._redirect(COOKIE+"=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict")
+                elif self.path=="/api/incident/review":
+                    s=auth.session(self._token())
+                    if s.role not in ("operator","admin"):raise AuthDenied("role denied")
+                    d=self._form({"csrf","id","revision","request_id","verdict","reason","candidate"})
+                    if not hmac.compare_digest(d["csrf"],s.csrf):raise AuthDenied("invalid csrf")
+                    # The durable review itself records actor, exact evidence,
+                    # decision and timestamp in one core transaction.
+                    self._json(200,view.incident_review(d["id"],int(d["revision"]),d["request_id"],
+                        s.username,d["verdict"],d["reason"],d["candidate"]))
                 else:self._send(404)
+            except ReviewConflict:self._json(409,{"error":"evidence_revision_unavailable"})
             except AuthBusy:self._login(429,"인증 처리 중 또는 보호 정책에 따라 잠시 대기합니다.")
             except AuthDenied:self._login(401,"인증 실패 또는 세션 만료")
             except (ValueError,TypeError,UnicodeError,TimeoutError):self._send(400)

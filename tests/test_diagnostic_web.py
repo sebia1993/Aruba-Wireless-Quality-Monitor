@@ -99,8 +99,16 @@ class DiagnosticHTTPTests(unittest.TestCase):
     def test_authenticated_read_and_export(self):
         with tempfile.TemporaryDirectory() as root:
             p=Path(root);c,k=certificate(p);t=int(time.time())
-            s=Store(p/"data",mode="diagnostic");r=radio(t);s.save(r)
-            view=DiagnosticView(s,time.time);view.publish({"coherent_controllers":1},[(r.radio_id,t)])
+            from awqm.quality_ledger import QualityLedger
+            from awqm.aos8 import ControllerSnapshot
+            s=Store(p/"data",mode="diagnostic");ledger=QualityLedger(s)
+            for at in (t-360,t-180,t):
+                r=radio(at);s.save(r)
+                snap=ControllerSnapshot("w1",at,[],[],[],field_tag="test-attestation",
+                    field_until=t+3600,field_connection="test-session",field_profile="safe")
+                quality=ledger.evaluate([r],[snap],at,{r.radio_id:at})
+            view=DiagnosticView(s,time.time,incidents=ledger.incidents)
+            view.publish({"coherent_controllers":1},[(r.radio_id,t)],quality=quality)
             audit=AuditLog(p/"audit.db")
             auth=Auth({"op":"operator","admin":"admin"},lambda u,p:p=="fixture",audit_sink=audit.auth_event)
             cfg=WebConfig("127.0.0.1","127.0.0.1:0",0,(IPv4Network("127.0.0.1/32"),),"w1",c,k,{},cert_expiry(c,"127.0.0.1"))
@@ -120,6 +128,8 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 finally:con.close()
             try:
                 self.assertEqual(req("GET","/api/radios?q=&page=1")[0],401)
+                iq=urlencode({"page":1,"status":"all","start":t-86400,"end":t+1})
+                self.assertEqual(req("GET","/api/incidents?"+iq)[0],401)
                 self.assertEqual(req("GET","/",headers={"Host":"invalid.example"})[0],403)
                 body=urlencode({"username":"op","password":"fixture"})
                 form={"Content-Type":"application/x-www-form-urlencoded","Origin":origin}
@@ -143,6 +153,23 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 self.assertEqual(req("POST","/api/demo/jobs","",form)[0],404)
                 token=cookie.split("=",1)[1]
                 csrf=auth.session(token).csrf
+                status,_,raw=req("GET","/api/incidents?"+iq,headers=h)
+                self.assertEqual(status,200)
+                incident=json.loads(raw)["rows"][0]
+                self.assertEqual(incident["display_state"],"PERSISTENT")
+                self.assertEqual(incident["incident_id"],row["incident_id"])
+                self.assertNotIn(r.radio_id,raw.decode())
+                ident=incident["incident_id"]
+                status,_,raw=req("GET","/api/incident?"+urlencode({"id":ident}),headers=h)
+                self.assertEqual(status,200)
+                self.assertEqual(json.loads(raw)["service_impact"],"unverified")
+                review={"csrf":csrf,"id":ident,"revision":incident["revision"],"request_id":"test-req",
+                        "verdict":"supported","reason":"radio_evidence","candidate":"RF04"}
+                self.assertEqual(req("POST","/api/incident/review",urlencode(review),form)[0],401)
+                self.assertEqual(req("POST","/api/incident/review",urlencode({**review,"csrf":"bad"}),{**form,**h})[0],401)
+                self.assertEqual(req("POST","/api/incident/review",urlencode(review),{**form,**h})[0],200)
+                self.assertTrue(json.loads(req("POST","/api/incident/review",urlencode(review),{**form,**h})[2])["duplicate"])
+                self.assertEqual(req("POST","/api/incident/review",urlencode({**review,"request_id":"different","revision":999}),{**form,**h})[0],409)
                 self.assertEqual(req("POST","/auth/logout",urlencode({"csrf":csrf}),{**form,**h})[0],303)
                 self.assertEqual(req("GET","/api/radios?q=&page=1",headers=h)[0],401)
                 self.assertGreaterEqual(audit.summary()["events"],4)

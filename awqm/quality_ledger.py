@@ -7,11 +7,13 @@ can be published as a policy evaluation.
 import json
 from dataclasses import asdict,replace
 from .analysis import State,advance,radio_score
+from .incidents import Incidents
 
 class QualityLedger:
     def __init__(self,store):
         if store.mode!="diagnostic":raise ValueError("diagnostic store required")
         self.store=store;self.cache={}
+        self.incidents=Incidents(store)
         with store.lock,store._db(store.root/"core.db") as c:
             c.executescript("""
             CREATE TABLE IF NOT EXISTS radio_quality_latest(
@@ -51,6 +53,7 @@ class QualityLedger:
                 if old and old[0]==r.observed_at:
                     if old[1]!=s.field_tag or old[2]!=context:continue
                     state=State(**json.loads(old[3]));score=old[4]
+                    incident=self.incidents.current_id(c,r.radio_id,context)
                 else:
                     previous=State(**json.loads(old[3])) if old and old[1]==s.field_tag and old[2]==context else State(status="UNKNOWN")
                     # A new validation/connection context starts a new evidence
@@ -65,7 +68,8 @@ class QualityLedger:
                     if old is None or old[2]!=context or previous.status!=state.status:
                         c.execute("INSERT OR IGNORE INTO radio_quality_events VALUES(?,?,?,?,?,?)",
                             (r.radio_id,r.observed_at,s.field_tag,context,state.status,score))
-                results[r.radio_id]=(context,{"observed_at":r.observed_at,"score":score,
+                    incident=self.incidents.observe(c,r,context,state,score)
+                results[r.radio_id]=(context,{"observed_at":r.observed_at,"score":score,"incident_id":incident,
                     "status":state.status,"approval":s.field_tag[:12],"valid_until":s.field_until,
                     "policy":"balanced-radio-v1","scope":"local_operator_attested_radio"})
         self.cache=results
