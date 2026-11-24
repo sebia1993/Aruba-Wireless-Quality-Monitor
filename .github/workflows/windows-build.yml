@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - 'develop/**'
+      - '!develop/awqm-portable'
   workflow_dispatch:
 permissions:
   contents: read

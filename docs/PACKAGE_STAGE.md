@@ -1,5 +1,7 @@
 # Offline update preparation
 
+The v0.25.1-dev single-EXE portable ZIP is not a service-installation candidate. Its GitHub release provides a SHA-256 checksum separately. The existing staging and rollback verifier deliberately accepts only the legacy complete onedir service package, not the portable ZIP. This prevents treating a portable preview as a qualified service update.
+
 Obtain the ZIP and its expected SHA-256 through an independently trusted release channel. SHA-256 alone does not authenticate the publisher; the development artifact is not a qualified release.
 
 ```powershell

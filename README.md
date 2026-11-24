@@ -2,8 +2,14 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.25.0-dev — 수동 조사 및 장기 Radio 이력 조회. 운영 배포 금지.**
+**현재 단계: v0.25.1-dev — 수동 조사 및 장기 Radio 이력 조회. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
+
+## Windows 11 x64 단일 EXE 개발 검증판
+
+GitHub Releases의 `AWQM_0.25.1-dev_Win11_x64.zip`을 한 번 압축 해제하면 `AWQM.exe` 하나만 나옵니다. Actions의 개발 artifact도 EXE를 직접 담으며 내부 ZIP은 없습니다. Python 설치가 필요하지 않습니다. 일반 사용자 권한으로 더블클릭하여 모의 화면(1) 또는 합성 수집 엔진(2)을 명시적으로 선택합니다. 로컬 브라우저가 열리지 않으면 화면에 표시된 localhost 주소를 사용합니다. `AWQM.exe --version`으로 버전을 확인할 수 있습니다.
+
+**운영 배포 금지. 관리자 권한으로 실행하지 마십시오.** PyInstaller onefile은 임시 폴더에서 라이브러리를 실행하므로 실제 Windows SCM 서비스 등록 및 권한이 필요한 관리자 작업은 이 휴대형 검증판에서 차단됩니다. 기존 진단 서비스와 관리자 기능의 소스 및 보호된 onedir 빌드는 보존합니다. `AWQM.exe --service --smoke-test`, `AWQM.exe --manager smoke-test`는 import 확인만 수행합니다. 승인된 일반 권한의 1회 진단과 오프라인 파서 등 기존 명령은 유지합니다. 휴대형 ZIP을 서비스 업데이트 후보로 사용하지 마십시오.
 
 ## 실행 (개발 환경)
 ```sh
@@ -35,7 +41,7 @@ Windows EXE에서도 동일하게 `AWQM.exe --validate-cli radio local-output.tx
 
 ## Windows 진단 서비스 (현장 검증 후보 기능)
 
-빌드 ZIP에 AWQM_Service.exe 및 AWQM_Manager.exe를 추가합니다. 실제 사용은 사내 승인, 비관리자 전용 서비스 계정과 보호된 NTFS 폴더, 검증된 WLC Host Key 및 DPAPI 자격 증명 준비 이후에만 가능합니다. 운영용 RF 분석이나 실데이터 웹 공유는 아직 활성화하지 않습니다. [서비스 구성 및 검증 절차](docs/WINDOWS_SERVICE.md).
+기존 보호된 onedir 서비스 개발 빌드에는 AWQM_Service.exe 및 AWQM_Manager.exe가 있습니다. 단일 EXE 휴대형 배포판에는 별도 EXE를 포함하지 않습니다. 실제 사용은 사내 승인, 비관리자 전용 서비스 계정과 보호된 NTFS 폴더, 검증된 WLC Host Key 및 DPAPI 자격 증명 준비 이후에만 가능합니다. 운영용 RF 분석이나 실데이터 웹 공유는 아직 활성화하지 않습니다. [서비스 구성 및 검증 절차](docs/WINDOWS_SERVICE.md).
 
 ## 진단 서비스의 HTTPS 웹 조회 (선택)
 
@@ -104,10 +110,10 @@ AP 상세에서 원본 7일, 5분 집계 30일, 1시간 집계 365일 조회 및
 ## Windows 빌드
 ```powershell
 python -m pip install -r requirements-build.txt
-python -m PyInstaller --noconfirm --clean --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
-dist\AWQM\AWQM.exe --demo
+python -m PyInstaller --noconfirm --clean --onefile --name AWQM --add-data "awqm/static;awqm/static" launcher.py
+.\dist\AWQM.exe --demo
 ```
-GitHub Actions의 Windows ZIP artifact는 개발용입니다. 정식 릴리스로 간주하지 않습니다.
+GitHub Actions의 raw EXE artifact와 GitHub Releases에 직접 등록되는 ZIP은 개발 검증용입니다. 정식 운영 릴리스로 간주하지 않습니다. 실제 SCM용 기존 onedir 개발 빌드 절차는 [서비스 안내](docs/WINDOWS_SERVICE.md)를 참조하십시오.
 
 - [확정 설계 기준 및 개발 범위](docs/DESIGN.md)
 - [CLI 출력 검증 안내](docs/CLI_VALIDATION.md)

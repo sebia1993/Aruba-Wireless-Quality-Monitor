@@ -6,6 +6,20 @@ safe-mode basic collection, stores unvalidated observations in a diagnostic
 DB, and never starts a web listener or enables automatic detail collection.
 Do not deploy as a verified production system.
 
+## Portable distribution restriction (v0.25.1-dev)
+
+The single-executable portable preview is **not** a qualified Windows service host. Do not elevate it or register it with SCM. Its manager/service switches support import smoke tests only. Onefile extraction and the bootloader process model require separate security and lifecycle qualification. The existing protected onedir development path remains available from source:
+
+```powershell
+python -m pip install -r requirements-build.txt
+python -m PyInstaller --noconfirm --clean --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
+Copy-Item dist\AWQM\AWQM.exe dist\AWQM\AWQM_Service.exe
+Copy-Item dist\AWQM\AWQM.exe dist\AWQM\AWQM_Manager.exe
+Copy-Item VERSION.txt,README.md -Destination dist\AWQM
+```
+
+Only a locally approved, administrator-protected onedir installation may be considered for the following **unqualified** service procedures. Preserve the existing dedicated account and ACL controls.
+
 ## Prerequisites
 
 Install the complete ZIP folder as C:/Program Files/AWQM with normal
