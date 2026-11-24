@@ -35,6 +35,7 @@ class Engine:
         self.inflight={};self.snapshots={};self.outcomes={};self.next_tick={}
         self.accepted={};self.last_result={};self.error=None
         self.paused=False;self.closed=False;self.lock=Lock()
+        self.operation_requested={};self.operation_applied={};self.operation_error=None;self.operation_revision=None
         self.published_radios=()
         self.quality_ledger=quality_ledger;self.field_quality={}
         self.live_clients=live_clients
@@ -62,6 +63,64 @@ class Engine:
     def cancel(self,controller,job_id):
         w=self.workers[controller]
         return w.jobs.cancel(job_id,w.wall())
+    def apply_operations(self,desired,error=None):
+        with self.lock:
+            if error:
+                self.operation_error=error;self.operation_revision=None
+                for name,w in self.workers.items():
+                    self.operation_requested[name]={"requested_paused":True,"revision":None,"changed_at":None}
+                    w.maintenance_requested=True
+                return
+            if set(desired["controllers"])!=set(self.workers):raise ValueError("operation scope mismatch")
+            self.operation_revision=desired["revision"];self.operation_error=None
+            for name,state in desired["controllers"].items():
+                previous=self.operation_requested.get(name)
+                if previous==state:continue
+                self.operation_requested[name]=dict(state)
+                if previous is None and state["revision"]==0 and not state["requested_paused"]:
+                    self.operation_applied[name]=dict(state)
+                    continue
+                self.workers[name].maintenance_requested=True
+
+    def _maintenance_step(self):
+        blocked=set()
+        for index,(name,w) in enumerate(self.workers.items()):
+            wanted=self.operation_requested.get(name)
+            if wanted is None:continue
+            changed=self.operation_applied.get(name)!=wanted
+            if wanted["requested_paused"] or changed:blocked.add(name)
+            if changed:
+                # In-flight results from a previous PM context cannot
+                # reappear as current observations.
+                for cache in (self.snapshots,self.cluster_frames,self.neighbor_frames,self.association_frames,
+                              self.detail_pending,self.live_details,self.neighbor_pending):
+                    cache.pop(name,None)
+                if self.live_clients:self.live_clients.clear()
+                if self.live_neighbors:self.live_neighbors.clear()
+                if name in self.inflight:continue
+                if w.quiesce_collection(wanted["requested_paused"],index*15):
+                    self.operation_applied[name]=dict(wanted)
+                    self.outcomes.pop(name,None)
+                    if not wanted["requested_paused"]:
+                        blocked.discard(name)
+                        self.next_tick[name]=self.clock()+index*15
+        return blocked
+
+    def operation_status(self):
+        states=[]
+        for name,w in self.workers.items():
+            wanted=self.operation_requested.get(name,{"requested_paused":False,"revision":0,"changed_at":None})
+            applied=self.operation_applied.get(name)
+            if applied!=wanted and name in self.operation_requested:
+                phase="draining" if name in self.inflight else "applying"
+            else:phase="paused" if wanted["requested_paused"] else "enabled"
+            protection=w.protection_frame()
+            jobs=w.jobs.list(self.wall())
+            counts={k:sum(j.status==k for j in jobs) for k in ("queued","deferred","running")}
+            states.append({"controller":name,**wanted,"applied_revision":applied["revision"] if applied else None,
+                "phase":phase,"inflight":name in self.inflight,"jobs":counts,**protection})
+        return {"revision":self.operation_revision,"error":self.operation_error,"controllers":states}
+
     def pulse(self):
         """Nonblocking relative to SSH workers; SQLite commit is serialized here.
 
@@ -99,8 +158,10 @@ class Engine:
                     self.next_tick[name]=now+15
                     if isinstance(exc, (sqlite3.Error,OSError)):
                         self.error=type(exc).__name__
+            maintenance_blocked=self._maintenance_step()
             active=[]
             for name,s in self.snapshots.items():
+                if name in maintenance_blocked:continue
                 if s is None:continue
                 # Never relabel an expired cached snapshot as a current reading.
                 w=self.workers[name];wall=int(self.wall())
@@ -235,11 +296,12 @@ class Engine:
                 "coherent_controllers":len(active),"expected_controllers":len(self.workers),
                 "mapped_radios":len(radios),"active_clients":len(clients),
                 "unresolved_radios":len(unresolved),"client_conflicts":len(conflicts),
-                "storage_error":self.error,"paused":self.paused,"cluster":self.cluster_view,
+                "storage_error":self.error,"paused":self.paused or len(maintenance_blocked)==len(self.workers),"cluster":self.cluster_view,
+                "operations":self.operation_status() if self.operation_requested else None,
                 "controllers":{k:self.outcomes.get(k,{"status":"waiting"}) for k in self.workers}}
             if not self.error and not self.paused:
                 for name,w in self.workers.items():
-                    if name not in self.inflight and now>=self.next_tick.get(name,0):
+                    if name not in maintenance_blocked and name not in self.inflight and now>=self.next_tick.get(name,0):
                         self.inflight[name]=self.pool.submit(self._step,w,bool(self.cluster_monitor and name==self.cluster_monitor.representative))
                         self.next_tick[name]=now+.25
             return dict(self.last_result)

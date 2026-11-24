@@ -29,7 +29,7 @@ function neighborPanel(r){
 
 const manualAttempts=new Map();
 const jobLabels={queued:"접수 완료 · 대기",deferred:"보호 정책 대기",running:"CLI 조회 중",completed:"CLI 조회 완료",failed:"조회 실패",cancelled:"예약 취소",expired:"예약 만료",skipped:"조회 불가",receipt_unavailable:"결과 확인 불가"};
-const jobReasons={service_instance_changed:"서비스 인스턴스 변경 · 새로고침 필요",manual_detail_disabled:"수동 조사 비활성",current_attested_congestion_required:"현재 검증된 지속 혼잡 Radio 필요",observation_unavailable:"현재 관측 확인 불가",client_attestation_unavailable:"단말 지표 검증 필요",command_unavailable:"지원하지 않는 조회 명령",controller_ap_queue_full:"WLC 대기열 가득 참",ap_cooldown:"동일 AP 재조회 대기",queue_not_accepted:"예약 접수 불가",shared_job_not_cancellable:"공유 예약은 취소할 수 없음",receipt_capacity_reached:"접수 이력 상한 도달",service_stopping:"서비스 종료 중"};
+const jobReasons={collection_paused:"수집 일시정지",maintenance_context_changed:"점검 전 예약 종료",service_instance_changed:"서비스 인스턴스 변경 · 새로고침 필요",manual_detail_disabled:"수동 조사 비활성",current_attested_congestion_required:"현재 검증된 지속 혼잡 Radio 필요",observation_unavailable:"현재 관측 확인 불가",client_attestation_unavailable:"단말 지표 검증 필요",command_unavailable:"지원하지 않는 조회 명령",controller_ap_queue_full:"WLC 대기열 가득 참",ap_cooldown:"동일 AP 재조회 대기",queue_not_accepted:"예약 접수 불가",shared_job_not_cancellable:"공유 예약은 취소할 수 없음",receipt_capacity_reached:"접수 이력 상한 도달",service_stopping:"서비스 종료 중"};
 async function jobPost(action,data){
   const csrf=document.querySelector("input[name=csrf]").value;
   const r=await fetch("/api/manual-jobs/"+action,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams({...data,csrf}),cache:"no-store"});
@@ -317,12 +317,64 @@ function associationPanel(){
   return panel;
 }
 
+function operationsPanel(){
+  const panel=el("section"),out=el("div"),msg=el("p"),refresh=el("button","수집 보호·점검 상태 조회");
+  let state=null,loading=false;
+  const phase={enabled:"수집 허용",paused:"일시정지 적용",draining:"실행 중 조회 종료 대기",applying:"변경 적용 중"};
+  const protection={normal:"정상",limited:"제한",critical:"긴급 보호",unknown:"미확인"};
+  async function load(){
+    if(loading||expired)return;
+    loading=true;refresh.disabled=true;
+    try{
+      const d=await request("/api/admin/collection");
+      if(expired||!panel.isConnected)return;
+      state=d.enabled?d.desired:null;
+      if(!state){out.replaceChildren(el("p","수집 제어 비활성"));return;}
+      const applied=d.applied.current?d.applied.state:null;
+      const rows=new Map((applied?.controllers||[]).map(x=>[x.controller,x]));
+      const controls=el("div",null,"pager");
+      for(const [action,label] of [["pause","전체 수집 일시정지"],["resume","전체 수집 재개"]]){
+        const b=el("button",label);b.addEventListener("click",()=>change("all",action,b));controls.append(b);
+      }
+      out.replaceChildren(el("p","요청 상태와 적용 상태는 별개입니다. 설정 변경이나 장비 재부팅을 수행하지 않습니다."),controls,
+        table(["WLC","요청","적용","CPU %","보호","CLI 5분 사용 초","상세 1분 사용 초","예약 대기/실행","제어"],Object.entries(state.controllers).map(([id,w])=>{
+          const a=rows.get(id),b=el("button",w.requested_paused?"재개":"일시정지");
+          b.addEventListener("click",()=>change(id,w.requested_paused?"resume":"pause",b));
+          const phaseLabel=a&&a.revision===w.revision?phase[a.phase]||a.phase:"적용 미확인";
+          return [id,w.requested_paused?"정지 요청":"수집 허용 요청",phaseLabel,a?.cpu,protection[a?.protection]||"미확인",
+            a?.cli_seconds_300,a?.detail_seconds_60,a?.jobs?(a.jobs.queued+a.jobs.deferred)+" / "+a.jobs.running:"미확인",b];
+        })));
+      if(applied?.error)out.append(el("p","운영 상태 저장소 오류 · 신규 수집 차단","warn"));
+      if(d.recent.length)out.append(el("h3","최근 요청 이력"),table(["시각","대상","요청"],d.recent.slice(0,20).map(x=>[kst(x.at),x.target,x.requested_paused?"일시정지":"재개"])));
+    }catch(e){state=null;if(!expired)out.textContent="관리자 권한 필요 또는 상태 조회 실패";}
+    finally{loading=false;refresh.disabled=false;}
+  }
+  async function change(target,action,button){
+    if(!state||loading||expired)return;
+    button.disabled=true;
+    const revision=state.revision;loading=true;
+    try{
+      const csrf=document.querySelector("input[name=csrf]").value;
+      const r=await fetch("/api/admin/collection",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+        body:new URLSearchParams({csrf,target,action,revision:String(revision)}),cache:"no-store"});
+      if(r.status===401){invalidate();return;}
+      if(r.status===409){msg.textContent="상태가 변경됐거나 요청을 적용할 수 없습니다. 최신 상태를 확인하세요.";return;}
+      if(!r.ok)throw Error("unconfirmed");
+      const d=await r.json();msg.textContent=d.accepted?"요청 저장 완료 · 실행 중 조회 종료 및 적용 상태를 확인하세요.":"접수 여부 미확인";
+    }catch(e){if(!expired)msg.textContent="요청 결과 미확인 · 상태를 다시 조회합니다.";}
+    finally{loading=false;button.disabled=false;if(!expired)await load();}
+  }
+  refresh.addEventListener("click",load);
+  panel.append(el("h3","수집 보호 및 점검 제어"),el("p","관리자 전용 · 전체 정지 후 새 웹 로그인 불가 시 로컬 AWQM_Manager 사용 · 자동 재개 없음"),refresh,msg,out);
+  return panel;
+}
+
 function render(){
   if(expired)return;
   const c=$("content");c.replaceChildren();$("heading").textContent=names[view];
   if(view==="clients"){loadClients();return;}
   if(view==="history"){loadIncidents();return;}
-  if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out,jobsPanel(),associationPanel());return;}
+  if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out,operationsPanel(),jobsPanel(),associationPanel());return;}
   if(!snapshot){c.append(el("p","자료 확인 중"));return;}
   if(view==="overview"){const k=el("div",null,"kpis");k.append(metric("관측 WLC",snapshot.coherent_controllers==null?null:snapshot.coherent_controllers+" / "+snapshot.expected_controllers),metric("저장된 Radio",snapshot.inventory_radios),metric("현재 매핑 Radio",snapshot.mapped_radios),metric("활성 단말 관측",snapshot.active_clients));c.append(k,el("p","최근 게시: "+kst(snapshot.published_at)+" · "+(snapshot.available?"관측 자료 제공":"현재 관측 확인 불가")),clusterPanel(snapshot.cluster));}
   c.append(table(["AP","WLC","대역","채널","사용률 %","간섭률 %","NF dBm","품질 점수","위험 관측","관측 시각 KST","수집 상태"],snapshot.rows.map(r=>{const b=el("button",r.ap_name);b.addEventListener("click",()=>openHistory(r));const cell=el("div");cell.append(b);if(r.incident_id){const i=el("button","위험 이력");i.addEventListener("click",()=>openIncident(r.incident_id));cell.append(i);}return [cell,r.controller,r.band,r.channel,r.utilization,r.interference,r.noise,r.quality_score==null?"미검증":r.quality_score,r.risk_status==="UNKNOWN"?"미확인":r.risk_status,kst(r.observed_at),r.freshness==="observed"?(r.quality==="local_operator_attested"?"최근 관측 · 현장 승인 지표":"최근 관측 · 미검증"):"오래됨 / 확인 불가"];})));

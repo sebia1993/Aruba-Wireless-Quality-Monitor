@@ -1,11 +1,13 @@
 """Explicit local Windows service management; never exposes passwords in argv."""
-import argparse,getpass,os,sys,warnings
+import argparse,getpass,os,sys,warnings,json
 from pathlib import Path
 from uuid import uuid4
 from .service_config import default_root,load_config,envelope,fixed_local
 from .windows_security import account_sid,check_identity,check_layout,check_acl
 from .winservice import SERVICE_NAME,DISPLAY_NAME
 from .association_history import key_path,key_envelope
+from .operations import configured_ops
+from .windows_security import current_sid
 
 def prompt(label):
     if not sys.stdin.isatty():raise ValueError("interactive console required")
@@ -124,6 +126,18 @@ def control(action):
         if svc is not None:w.CloseServiceHandle(svc)
         w.CloseServiceHandle(scm)
 
+def collection_control(cfg,action,target=None,revision=None):
+    import win32security
+    if not win32security.CheckTokenMembership(None,win32security.ConvertStringSidToSid("S-1-5-32-544")):
+        raise ValueError("elevated local administrator required")
+    check_layout(cfg,require_credentials=False)
+    ops=configured_ops(cfg)
+    if action=="collection-status":
+        print(json.dumps({"desired":ops.snapshot(),"recent":ops.recent()},ensure_ascii=False,indent=2))
+    else:
+        result=ops.set("local:"+current_sid(),target,action=="collection-pause",revision)
+        print(json.dumps(result,ensure_ascii=False,indent=2))
+        print("Desired state recorded. Check service-status.json for coordinator application/drain; no CLI or device change.")
 def main():
     p=argparse.ArgumentParser(description="AWQM Windows diagnostic service manager")
     sub=p.add_subparsers(dest="action",required=True)
@@ -133,6 +147,11 @@ def main():
     q.add_argument("--auto-start",action="store_true")
     for name in ("status","start","stop","enable-auto","remove"):
         sub.add_parser(name)
+    sub.add_parser("collection-status",help="show persistent desired collection state")
+    for action in ("collection-pause","collection-resume"):
+        q=sub.add_parser(action,help="record desired state, not immediate drain")
+        q.add_argument("controller",help="configured WLC ID or all")
+        q.add_argument("--revision",type=int,required=True)
     sub.add_parser("provision-history-key",help="create a protected local history pseudonym key")
     sub.add_parser("smoke-test",help="verify imports only; no service change")
     a=p.parse_args()
@@ -143,6 +162,7 @@ def main():
             print("AWQM manager imports passed (no SCM operation)")
         elif a.action=="provision":provision(load_config(default_root()),a.controller,a.replace)
         elif a.action=="provision-history-key":provision_history_key(load_config(default_root()))
+        elif a.action.startswith("collection-"):collection_control(load_config(default_root()),a.action,getattr(a,"controller",None),getattr(a,"revision",None))
         elif a.action=="install":install(load_config(default_root()),a.auto_start)
         else:control(a.action)
     except Exception as exc:p.exit(2,"AWQM manager operation failed: "+type(exc).__name__+"\n")

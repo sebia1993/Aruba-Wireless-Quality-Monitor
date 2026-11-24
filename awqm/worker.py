@@ -68,6 +68,7 @@ class ControllerWorker:
         self.detail_latest={}
         self.detail_disabled=set()
         self.last_heartbeat=self.clock()
+        self.maintenance_requested=False
     def _close(self):
         if self.session is not None:
             try:self.session.close()
@@ -96,7 +97,7 @@ class ControllerWorker:
         if not self.lock.acquire(blocking=False):return None
         try:
             now=self.clock()
-            if self.schedule.paused or self.blocked or now<self.next_connect:
+            if self.maintenance_requested or self.schedule.paused or self.blocked or now<self.next_connect:
                 return None
             if self.session is None:
                 try:
@@ -159,6 +160,38 @@ class ControllerWorker:
             try:
                 if self.live_detail:self.jobs.purge_station(self.wall())
             finally:self.lock.release()
+    def quiesce_collection(self,paused,offset=0):
+        # Only after the coordinator drains its submitted future. An
+        # in-flight web authentication also owns this lock.
+        if not self.lock.acquire(blocking=False):return False
+        try:
+            self._close()
+            self.latest.clear();self.outcomes.clear();self.detail_latest.clear()
+            now=self.clock()
+            self.schedule.reconnect(now)
+            self.schedule.paused=bool(paused)
+            for name in self.disabled:self.schedule.due[name]=float("inf")
+            if not paused:self.next_connect=max(self.next_connect,now+offset)
+            for job in self.jobs.pending(self.wall()):
+                self.jobs.finish(job.job_id,"skipped","maintenance_context_changed",self.wall())
+            if self.live_detail:self.jobs.purge_station(self.wall())
+            self.maintenance_requested=bool(paused)
+            return True
+        finally:self.lock.release()
+
+    def protection_frame(self):
+        if not self.lock.acquire(blocking=False):
+            return {"connection":"busy","cpu":None,"protection":"unknown","profile":self.schedule.mode}
+        try:
+            now=self.clock();p=self.schedule.protection
+            return {"connection":"blocked" if self.blocked else "connected" if self.session is not None else "disconnected",
+                    "block_reason":self.blocked,"cpu":p.last_cpu if p.last_at is not None and 0<=now-p.last_at<=90 else None,
+                    "protection":p.effective(now),"profile":self.schedule.mode,
+                    "cli_seconds_300":round(p.budget(now,300),2),"detail_seconds_60":round(p.budget(now,60,True),2),
+                    "retry_after_seconds":round(max(0,self.next_connect-now),1),
+                    "disabled_polls":sorted(self.disabled),"disabled_details":sorted(self.detail_disabled),
+                    "heartbeat_age_seconds":round(max(0,now-self.last_heartbeat),1)}
+        finally:self.lock.release()
     def user_frame(self):
         with self.lock:
             return {cmd:r for cmd in USER_TABLES if (r:=self.outcomes.get(cmd)) and r.status=="success" and r.generation==self.generation and self.session is not None and 0<=self.wall()-r.observed_at<=330}

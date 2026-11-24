@@ -51,7 +51,7 @@ class Protection:
         else:
             self.high=self.low=0
     def effective(self,now):
-        return "unknown" if self.last_at is None or now-self.last_at>90 else self.level
+        return "unknown" if self.last_at is None or not 0<=now-self.last_at<=90 else self.level
     def account(self,start,end,detail=False):
         if end>=start:
             self.history.append((start,end,detail))
@@ -112,5 +112,9 @@ class Scheduler:
         self.running=None
     def reconnect(self,now):
         self.running=None
+        prior=self.protection
         self.protection=Protection()
+        # Do not erase recent CLI budget on reconnect/maintenance.
+        self.protection.history=prior.history
+        if prior.level in ("limited","critical"):self.protection.level=prior.level
         self.due={name:now for name in self.polls}

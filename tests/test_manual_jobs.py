@@ -104,3 +104,11 @@ class ManualTests(unittest.TestCase):
         self.assertTrue(b["joined"])
         self.assertFalse(self.reserve()["can_cancel"])
         self.assertEqual(self.broker.cancel("op",self.broker.epoch,a["receipt_id"])["status"],"queued")
+
+    def test_pause_requested_rejects_new_reservation(self):
+        from awqm.operations import Operations
+        ops=Operations(Path(self.temp.name)/"ops.db",("w1",),clock=self.clock)
+        self.broker.operations=ops
+        ops.set("local:admin","all",True,0)
+        with self.assertRaises(ReservationRejected):self.reserve()
+        self.assertEqual(self.worker.jobs.list(self.t[0]),[])

@@ -123,7 +123,9 @@ class DiagnosticHTTPTests(unittest.TestCase):
             worker.field_approval=Approval("w1","192.0.2.1","model","8.10.0.24","key",t-1000,t+3600,"tag")
             worker.client_approval=ClientApproval("tag",t-1000,t+3600,False)
             manual=ManualReservations(view,{"w1":worker},audit,threading.Event(),lambda:t)
-            server=RestrictedTLS(proxy,handler_for(view,auth,audit,proxy,manual),tls_context(c,k))
+            from awqm.operations import Operations
+            operations=Operations(p/"ops.db",("w1",))
+            server=RestrictedTLS(proxy,handler_for(view,auth,audit,proxy,manual,operations),tls_context(c,k))
             proxy.authority=f"127.0.0.1:{server.server_port}"
             self.assertFalse(server.verify_request(None,("192.0.2.10",1234)))
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -157,6 +159,21 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 self.assertIn("diagnostic",data.decode("utf-8-sig"))
                 self.assertNotIn("02:00:00:00:00:01",data.decode("utf-8-sig"))
                 self.assertEqual(req("GET","/api/admin/status",headers=h)[0],403)
+                self.assertEqual(req("GET","/api/admin/collection",headers=h)[0],403)
+                self.assertEqual(req("GET","/api/admin/collection")[0],401)
+                admin_token=auth.login("admin","fixture")
+                admin_h={"Cookie":"__Host-awqm_session="+admin_token}
+                status,_,raw=req("GET","/api/admin/collection",headers=admin_h)
+                self.assertEqual(status,200);self.assertEqual(json.loads(raw)["desired"]["revision"],0)
+                op_form={"csrf":auth.session(admin_token).csrf,"target":"all","action":"pause","revision":"0"}
+                self.assertEqual(req("POST","/api/admin/collection",urlencode(op_form),{**form,**h})[0],403)
+                self.assertEqual(req("POST","/api/admin/collection",urlencode({**op_form,"csrf":"bad"}),{**form,**admin_h})[0],401)
+                status,_,raw=req("POST","/api/admin/collection",urlencode(op_form),{**form,**admin_h})
+                self.assertEqual(status,200);self.assertTrue(json.loads(raw)["accepted"])
+                self.assertTrue(operations.paused("w1"))
+                self.assertEqual(req("POST","/api/admin/collection",urlencode({**op_form,"action":"resume"}),{**form,**admin_h})[0],409)
+                self.assertEqual(req("POST","/api/admin/collection",urlencode({**op_form,"action":"resume","revision":"1"}),{**form,**admin_h})[0],200)
+                self.assertFalse(operations.paused("w1"))
                 self.assertEqual(req("GET","/api/association-history?id=&page=1",headers=h)[0],403)
                 self.assertEqual(req("GET","/api/association-history?id=&page=1")[0],401)
                 self.assertEqual(req("GET","/api/history.html?"+q,headers=h)[0],200)

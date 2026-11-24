@@ -59,14 +59,14 @@ class DiagnosticView:
                 "unresolved_radios":result.get("unresolved_radios"),
                 "client_conflicts":result.get("client_conflicts"),
                 "storage_error":result.get("storage_error"),"cluster":result.get("cluster") if available else None,
-                "paused":bool(result.get("paused")),
+                "paused":bool(result.get("paused")),"operations":result.get("operations"),
                 "available":bool(available),"quality_scope":"locally_attested_radio_only"}
     def page(self,query="",page=1,size=100):
         if not isinstance(query,str) or len(query)>128 or not 1<=page<=10000 or not 1<=size<=100:
             raise ValueError("invalid query")
         query=query.casefold()
         with self.lock:
-            meta=dict(self.meta);now=int(self.clock())
+            meta=dict(self.meta);meta.pop("operations",None);now=int(self.clock())
             stale=not meta.get("available") or not 0<=now-meta.get("published_at",0)<=20
             rows=[r for r in self.rows if any(query in str(r[k]).casefold() for k in ("ap_name","controller","band","channel"))]
             data=[]
@@ -80,6 +80,13 @@ class DiagnosticView:
                 for k in ("coherent_controllers","mapped_radios","active_clients","unresolved_radios","client_conflicts"):meta[k]=None
                 meta["available"]=False;meta["cluster"]=None
             return {**meta,"rows":data,"total":len(rows),"page":page,"size":size,"inventory_radios":len(self.rows)}
+    def operation_status(self):
+        with self.lock:
+            now=int(self.clock())
+            published=self.meta.get("published_at")
+            current=published is not None and 0<=now-published<=20
+            return {"published_at":published,"current":current,
+                    "state":self.meta.get("operations") if current else None}
     def manual_target(self,token):
         # Deliberately return only an attested current persistent congestion
         # target. Never use a free-form device address, CLI or client MAC.

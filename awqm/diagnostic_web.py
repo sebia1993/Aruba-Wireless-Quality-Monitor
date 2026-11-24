@@ -16,17 +16,22 @@ from .audit import AuditLog
 from .incidents import ReviewConflict
 from .incident_reports import summary,incident_csv,incident_html
 from .manual_jobs import ManualReservations,ReservationRejected
+from .operations import OperationConflict,OperationRejected
 
 COOKIE="__Host-awqm_session"
 
 class CoordinatedVerifier:
-    def __init__(self,worker,gate,verify,stop):
-        self.worker=worker;self.gate=gate;self.verify=verify;self.stop=stop
+    def __init__(self,worker,gate,verify,stop,operations=None):
+        self.worker=worker;self.gate=gate;self.verify=verify;self.stop=stop;self.operations=operations
     def __call__(self,user,password):
         w=self.worker
-        if self.stop.is_set() or not w.lock.acquire(blocking=False):
+        if self.stop.is_set() or getattr(w,"maintenance_requested",False) or not w.lock.acquire(blocking=False):
             raise AuthBusy("controller busy")
         try:
+            if self.operations is not None:
+                try:paused=self.operations.paused(w.controller)
+                except (OSError,sqlite3.Error,RuntimeError,ValueError):raise AuthBusy("operation state unavailable") from None
+                if paused:raise AuthBusy("controller paused")
             p=w.schedule.protection
             now=w.clock()
             if (w.session is None or w.blocked or w.schedule.paused or p.effective(now)!="normal"
@@ -78,7 +83,7 @@ class RestrictedTLS(ThreadingHTTPServer):
             try:self.shutdown_request(conn if conn is not None else request)
             finally:self.capacity.release()
 
-def handler_for(view,auth,audit,cfg,manual=None):
+def handler_for(view,auth,audit,cfg,manual=None,operations=None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version="HTTP/1.0"
         def log_message(self,*a):pass
@@ -140,7 +145,7 @@ def handler_for(view,auth,audit,cfg,manual=None):
             if path.path=="/diagnostic.css" and not path.query:
                 self._send(200,(STATIC/"diagnostic.css").read_bytes(),"text/css; charset=utf-8");return
             try:
-                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html","/api/neighbors","/api/association-history"))
+                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html","/api/neighbors","/api/association-history","/api/admin/collection"))
             except AuthDenied:
                 if self.path=="/":self._login()
                 else:self._json(401,{"error":"authentication_required"})
@@ -199,6 +204,11 @@ def handler_for(view,auth,audit,cfg,manual=None):
                         body=incident_csv(detail) if fmt=="csv" else incident_html(detail)
                         self._send(200,body,"text/csv; charset=utf-8" if fmt=="csv" else "text/html; charset=utf-8",
                             (("Content-Disposition",'attachment; filename="awqm-incident-report.'+fmt+'"'),))
+                elif self.path=="/api/admin/collection":
+                    if s.role!="admin":self._json(403,{"error":"access_denied"});return
+                    if operations is None:self._json(200,{"enabled":False});return
+                    self._json(200,{"enabled":True,"desired":operations.snapshot(),"applied":view.operation_status(),
+                                    "recent":operations.recent()})
                 elif self.path=="/api/admin/status":
                     if s.role!="admin":self._json(403,{"error":"access_denied"});return
                     audit.record(s.username,"admin_status")
@@ -222,6 +232,15 @@ def handler_for(view,auth,audit,cfg,manual=None):
                     d=self._form({"csrf"})
                     auth.logout(self._token(),d["csrf"])
                     self._redirect(COOKIE+"=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict")
+                elif self.path=="/api/admin/collection":
+                    s=auth.session(self._token())
+                    if s.role!="admin":self._json(403,{"error":"access_denied"});return
+                    d=self._form({"csrf","target","action","revision"})
+                    if not hmac.compare_digest(d["csrf"],s.csrf):raise AuthDenied("invalid csrf")
+                    if operations is None:raise OperationRejected("operation_control_unavailable")
+                    if d["action"] not in ("pause","resume"):raise OperationRejected("invalid_operation")
+                    result=operations.set("web:"+s.username,d["target"],d["action"]=="pause",int(d["revision"]))
+                    self._json(200,result)
                 elif self.path in ("/api/manual-jobs/reserve","/api/manual-jobs/cancel"):
                     s=auth.session(self._token())
                     if s.role not in ("operator","admin"):raise AuthDenied("role denied")
@@ -241,6 +260,7 @@ def handler_for(view,auth,audit,cfg,manual=None):
                     self._json(200,view.incident_review(d["id"],int(d["revision"]),d["request_id"],
                         s.username,d["verdict"],d["reason"],d["candidate"]))
                 else:self._send(404)
+            except (OperationConflict,OperationRejected) as exc:self._json(409,{"error":str(exc)})
             except ReservationRejected as exc:self._json(409,{"error":str(exc)})
             except ReviewConflict:self._json(409,{"error":"evidence_revision_unavailable"})
             except AuthBusy:self._login(429,"인증 처리 중 또는 보호 정책에 따라 잠시 대기합니다.")
@@ -249,12 +269,12 @@ def handler_for(view,auth,audit,cfg,manual=None):
             except (RuntimeError,sqlite3.Error,OSError):self._send(503)
     return Handler
 
-def create_listener(cfg,service_cfg,workers,gate,view,stop,manual_enabled=False):
+def create_listener(cfg,service_cfg,workers,gate,view,stop,manual_enabled=False,operations=None):
     worker=workers[cfg.controller]
     target=next(t for t in service_cfg.targets if t.id==cfg.controller)
-    verifier=CoordinatedVerifier(worker,gate,ArubaVerifier(target.ip,service_cfg.known_hosts),stop)
+    verifier=CoordinatedVerifier(worker,gate,ArubaVerifier(target.ip,service_cfg.known_hosts),stop,operations=operations)
     audit=AuditLog(service_cfg.root/"logs"/"web-audit.db")
     # Conservative defaults; actual AAA lockout threshold is site-specific.
     auth=Auth(cfg.roles,verifier,user_limit=2,global_limit=20,window=300,audit_sink=audit.auth_event)
-    manual=ManualReservations(view,workers,audit,stop) if manual_enabled else None
-    return RestrictedTLS(cfg,handler_for(view,auth,audit,cfg,manual),tls_context(cfg.cert,cfg.key))
+    manual=ManualReservations(view,workers,audit,stop,operations=operations) if manual_enabled else None
+    return RestrictedTLS(cfg,handler_for(view,auth,audit,cfg,manual,operations),tls_context(cfg.cert,cfg.key))

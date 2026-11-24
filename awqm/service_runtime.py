@@ -7,7 +7,7 @@ detail requests or public data export. User must authorize local trial.
 from threading import Lock
 from contextlib import contextmanager
 from pathlib import Path
-import hashlib,time,shutil,threading
+import hashlib,time,shutil,threading,sqlite3
 from .web_config import load_web_config
 from .field_validation import load_approvals
 from .quality_ledger import QualityLedger
@@ -19,6 +19,7 @@ from .live_neighbors import LiveNeighbors,load_neighbor_approvals
 from .association_history import AssociationHistory,load_history_approvals,load_key
 from .diagnostic_view import DiagnosticView
 from .manual_jobs import load_manual_policy
+from .operations import configured_ops
 from .diagnostic_web import create_listener
 from .collector import PinnedSSH
 from .ssh_shell import ShellSession
@@ -71,14 +72,19 @@ def exclusive(root):
         yield
     finally:h.Close()
 
-def pump(engine,maintenance,stop,status_path,usage=shutil.disk_usage,wall=time.time,interval=.25,view=None):
+def pump(engine,maintenance,stop,status_path,usage=shutil.disk_usage,wall=time.time,interval=.25,view=None,operations=None):
     last_status=-1e20
-    last_disk=-1e20;level="unknown"
+    last_disk=-1e20;level="unknown";last_ops=-1e20
     try:
         while not stop.is_set():
             now=wall()
             if now-last_disk>=5:
                 space=usage(engine.store.root);level=disk_level(space.free,space.total);last_disk=now
+            if operations is not None and (now<last_ops or now-last_ops>=1):
+                try:engine.apply_operations(operations.snapshot())
+                except (OSError,ValueError,RuntimeError,sqlite3.Error) as exc:
+                    engine.apply_operations(None,error=type(exc).__name__)
+                last_ops=now
             if level=="critical":
                 # Do not harvest or dispatch new work while critical. Bounded
                 # in-flight tasks may finish; stale samples are not synthesized.
@@ -89,7 +95,7 @@ def pump(engine,maintenance,stop,status_path,usage=shutil.disk_usage,wall=time.t
             if now-last_status>=5:
                 if view is not None:
                     view.publish(result,getattr(engine,"published_radios",()),
-                                 available=level!="critical" and not bool(result.get("storage_error")),
+                                 available=level!="critical" and not bool(result.get("storage_error")) and not result.get("paused"),
                                  quality=getattr(engine,"field_quality",{}),
                                  client_views=getattr(engine,"live_client_views",()),
                                  client_enabled=bool(getattr(engine,"live_clients",None)),
@@ -97,6 +103,7 @@ def pump(engine,maintenance,stop,status_path,usage=shutil.disk_usage,wall=time.t
                                  neighbor_enabled=bool(getattr(engine,"live_neighbors",None)))
                 write_json(status_path,{"state":"running","at":int(now),"disk_level":level,
                     "result":result,"maintenance":getattr(engine,"last_maintenance",{}),
+                    "operations":result.get("operations"),
                     "web_enabled":view is not None,"field_validated":False})
                 last_status=now
             stop.wait(interval)
@@ -127,6 +134,7 @@ def run_service(root,stop):
         if keys.lookup(t.ip) is None:raise ValueError("unapproved host key")
         secret(t)
     with exclusive(cfg.root):
+        operations=configured_ops(cfg)
         store=Store(safe_path(cfg.root,"data"),mode="diagnostic")
         gate=ConnectionGate(cfg.known_hosts,stop=stop)
         workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode=profile,offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True,neighbor_approval=neighbor_approvals.get(t.id),history_approval=history_approvals.get(t.id),manual_detail=manual_enabled) for i,t in enumerate(cfg.targets)]
@@ -145,10 +153,10 @@ def run_service(root,stop):
         server=None;thread=None
         try:
             if web:
-                server=create_listener(web,cfg,engine.workers,gate,view,stop,manual_enabled=manual_enabled)
+                server=create_listener(web,cfg,engine.workers,gate,view,stop,manual_enabled=manual_enabled,operations=operations)
                 thread=threading.Thread(target=server.serve_forever,name="awqm-https",daemon=True)
                 thread.start()
-            pump(engine,maintenance,stop,safe_path(cfg.root,"logs/service-status.json"),view=view)
+            pump(engine,maintenance,stop,safe_path(cfg.root,"logs/service-status.json"),view=view,operations=operations)
         finally:
             stop.set()
             if server is not None:

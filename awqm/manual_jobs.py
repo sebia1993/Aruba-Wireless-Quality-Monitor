@@ -31,10 +31,10 @@ def load_manual_policy(cfg):
     return True
 
 class ManualReservations:
-    def __init__(self,view,workers,audit,stop,clock=time.time,limit=2000):
+    def __init__(self,view,workers,audit,stop,clock=time.time,limit=2000,operations=None):
         self.view=view;self.workers=dict(workers);self.audit=audit
         self.stop=stop;self.clock=clock;self.limit=limit;self.lock=RLock()
-        self.epoch=uuid4().hex;self.receipts={};self.requests={}
+        self.epoch=uuid4().hex;self.receipts={};self.requests={};self.operations=operations
 
     def _response(self,receipt):
         w=self.workers[receipt["controller"]]
@@ -79,6 +79,8 @@ class ManualReservations:
             target=self.view.manual_target(token)
             w=self.workers.get(target["controller"])
             if w is None or not w.manual_detail or not w.live_detail:raise ReservationRejected("manual_detail_disabled")
+            if getattr(w,"maintenance_requested",False) or (self.operations is not None and self.operations.paused(target["controller"])):
+                raise ReservationRejected("collection_paused")
             now=self.clock()
             a=w.client_approval;radio=w.field_approval
             if not a or not radio or now>=radio.valid_until or not a.permits(radio.tag,target["observed_at"],now):

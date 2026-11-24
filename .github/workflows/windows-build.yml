@@ -79,19 +79,19 @@ jobs:
           Copy-Item capacity-validation\capacity-result.json -Destination dist\AWQM
           Copy-Item docs -Destination dist\AWQM\docs -Recurse
           python -m pip freeze | Set-Content -Encoding utf8 dist\AWQM\BUILD-DEPENDENCIES.txt
-          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.22.0-dev_Win11_x64.zip
-          $hash = (Get-FileHash AWQM_0.22.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
-          "$hash  AWQM_0.22.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
+          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.23.0-dev_Win11_x64.zip
+          $hash = (Get-FileHash AWQM_0.23.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  AWQM_0.23.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
       - name: Frozen offline package verification and staging
         shell: pwsh
         run: |
-          & .\dist\AWQM\AWQM.exe --stage-package AWQM_0.22.0-dev_Win11_x64.zip --sha256 (Get-FileHash AWQM_0.22.0-dev_Win11_x64.zip -Algorithm SHA256).Hash --output staged-verification
+          & .\dist\AWQM\AWQM.exe --stage-package AWQM_0.23.0-dev_Win11_x64.zip --sha256 (Get-FileHash AWQM_0.23.0-dev_Win11_x64.zip -Algorithm SHA256).Hash --output staged-verification
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: AWQM-Windows-dev-x64
           path: |
-            AWQM_0.22.0-dev_Win11_x64.zip
+            AWQM_0.23.0-dev_Win11_x64.zip
             SHA256SUMS.txt
             capacity-validation/capacity-result.json
           if-no-files-found: error
