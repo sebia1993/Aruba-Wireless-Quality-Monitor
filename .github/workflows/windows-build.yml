@@ -32,20 +32,26 @@ jobs:
         run: |
           & .\dist\AWQM\AWQM.exe --demo --smoke-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Frozen offline parser smoke test
+        shell: pwsh
+        run: |
+          "user 10%, system 10%, idle 80%" | Set-Content -Encoding utf8 cpu-fixture.txt
+          & .\dist\AWQM\AWQM.exe --validate-cli cpu cpu-fixture.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package development ZIP
         shell: pwsh
         run: |
           Copy-Item README.md,VERSION.txt -Destination dist\AWQM
           Copy-Item docs -Destination dist\AWQM\docs -Recurse
           python -m pip freeze | Set-Content -Encoding utf8 dist\AWQM\BUILD-DEPENDENCIES.txt
-          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.1.0-dev_Win11_x64.zip
-          $hash = (Get-FileHash AWQM_0.1.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
-          "$hash  AWQM_0.1.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
+          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.2.0-dev_Win11_x64.zip
+          $hash = (Get-FileHash AWQM_0.2.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  AWQM_0.2.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: AWQM-Windows-dev-x64
           path: |
-            AWQM_0.1.0-dev_Win11_x64.zip
+            AWQM_0.2.0-dev_Win11_x64.zip
             SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 3
