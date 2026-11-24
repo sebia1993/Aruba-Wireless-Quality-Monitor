@@ -1,4 +1,4 @@
-# AWQM development progress (v0.19.0-dev)
+# AWQM development progress (v0.20.0-dev)
 
 Planning is approved and complete. This is a provisional engineering estimate,
 not a measured test-pass percentage or field readiness claim. Each of the ten
@@ -17,11 +17,11 @@ actual 72-hour soak and Windows service lifecycle checks.
 | 05 | Analysis | 78% | Full cause catalog, validated input gates and incident review |
 | 06 | Dashboard | 86% | Full client/incident views, WebSocket and end-to-end operation |
 | 07 | Security | 74% | Full audit lifecycle, hardening, production authorization tests |
-| 08 | Windows operation | 65% | Actual SCM lifecycle, installer/update/rollback and offline verification |
-| 09 | Validation | 27% | Full regression, load, security and 72-hour real-time soak |
-| 10 | Distribution | 10% | Qualified release candidate and complete guides |
+| 08 | Windows operation | 69% | Actual SCM lifecycle, installer/update/rollback and offline verification |
+| 09 | Validation | 32% | Full regression, load, security and 72-hour real-time soak |
+| 10 | Distribution | 13% | Qualified release candidate and complete guides |
 
-Arithmetic mean: 68.8%. These estimates will be updated from verified evidence;
+Arithmetic mean: 70.0%. These estimates will be updated from verified evidence;
 a successful development build is not a passed production release gate.
-Windows builds through v0.18 verified. Latest v0.19 build requires confirmation. No production
+Windows builds through v0.18 verified. v0.19 initial CI found one SQL binding error; corrected in v0.20. Full-scale CI and package verification pending. No production
 release or real corporate equipment validation has been performed.

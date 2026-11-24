@@ -178,7 +178,7 @@ class AssociationHistory:
                     elif values[6]!=old[8] or values[7]!=old[9]:event="anchor_context_changed"
                     elif tuple(values[8:])!=old[10:]:event="user_anchor_observation_changed"
                     else:event="metadata_changed"
-                c.execute("INSERT INTO association_segments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(ident,at,at,*values,event))
+                c.execute("INSERT INTO association_segments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(ident,at,at,*values,event))
                 changed+=1
         self.signature=sig
         return changed

@@ -17,6 +17,14 @@ def main():
         if name!="awqm_manager.exe":sys.argv.pop(1)
         from awqm.manager import main as manager_main
         manager_main();return
+    if len(sys.argv)>1 and sys.argv[1]=="--stage-package":
+        sys.argv.pop(1)
+        from awqm.package_stage import main as stage_main
+        stage_main();return
+    if len(sys.argv)>1 and sys.argv[1]=="--validate-scale":
+        sys.argv.pop(1)
+        from awqm.scale_validation import main as scale_main
+        scale_main();return
     if len(sys.argv)>1 and sys.argv[1]=="--validate-cli":
         sys.argv.pop(1)
         probe_main()
