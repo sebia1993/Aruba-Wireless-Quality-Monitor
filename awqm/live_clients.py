@@ -64,6 +64,7 @@ class LiveClients:
         self.max_rows=max_rows;self.rows={};self.views=[];self.last_plan={}
         self.station_approvals=dict(station_approvals or {});self.station={};self.station_plan={}
         self.correlation=ClientCorrelation(correlation_approvals or {},max_rows)
+        self.aggregate_written={}
     def token(self,kind,value):
         return hmac.new(self.key,(kind+"|"+value).encode(),hashlib.sha256).hexdigest()[:32]
     def eligible(self,r,s,q,now,automatic=False):
@@ -187,8 +188,43 @@ class LiveClients:
                 "peer_comparable":None,"peer_degraded":None,"candidate_until":None,"candidate_scope":None}))
         self.views=sorted(views,key=lambda r:(r["quality_score"] is None,r["quality_score"] or 0,r["id"]))
         return self.views
+    def persist_correlations(self,incidents,radios,snapshots,quality,now):
+        """Persist only aggregate RF03 evidence, never a client-level row.
+        The first accepted summary per Radio observation is immutable.
+        Separate consent and the retention policy are mandatory.
+        """
+        if not any(a.persist_aggregate and a.approved_at<=now<a.valid_until for a in self.correlation.approvals.values()):return 0
+        rs={r.radio_id:r for r in radios}
+        by={s.controller:s for s in snapshots}
+        self.aggregate_written={k:v for k,v in self.aggregate_written.items() if k in rs and v[0]==rs[k].observed_at}
+        groups={}
+        for row in self.views:
+            if row.get("candidate")!="RF03" or row.get("confidence")!="low" or now>=(row.get("candidate_until") or 0):continue
+            internal=self.rows.get(row["id"])
+            if not internal:continue
+            r=rs.get(internal["radio_id"]);s=by.get(row["controller"])
+            a=self.correlation.approvals.get(row["controller"]);station=self.station_approvals.get(row["controller"])
+            if not r or not s or not a or not a.persist_aggregate or not station:
+                continue
+            if not a.permits(station.tag,row["station_start"],now) or not self.eligible(r,s,quality.get(r.radio_id),now):
+                continue
+            if self.aggregate_written.get(r.radio_id)==(r.observed_at,s.field_connection,r.epoch):continue
+            groups.setdefault(r.radio_id,[]).append(row)
+        saved=0
+        for rid,rows in groups.items():
+            r=rs[rid];s=by[r.controller];q=quality[rid]
+            # The durable payload contains no individual station identifiers,
+            # SSID/BSSID, link/counter values or reversible pseudonyms.
+            summary={"candidate_count":len(rows),"min_comparable":min(x["peer_comparable"] for x in rows),
+                "min_degraded":min(x["peer_degraded"] for x in rows),
+                "interval_end":max(x["station_end"] for x in rows)}
+            context=s.field_tag+"|"+s.field_connection+"|"+r.epoch
+            if incidents.record_client_summary(r,q,context,now,summary):
+                saved+=1
+            self.aggregate_written[rid]=(r.observed_at,s.field_connection,r.epoch)
+        return saved
     def clear(self):
-        self.rows.clear();self.station.clear();self.station_plan.clear();self.correlation.clear();self.views=[]
+        self.rows.clear();self.station.clear();self.station_plan.clear();self.correlation.clear();self.aggregate_written.clear();self.views=[]
 
     def ingest_station(self,reading,controller,snapshot,assoc,bss,radios,quality,clients,now):
         from .station_validation import continuous,successful_retry

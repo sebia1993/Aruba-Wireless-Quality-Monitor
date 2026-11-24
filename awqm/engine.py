@@ -260,6 +260,8 @@ class Engine:
                         self.live_details.clear()
                         self.live_clients.plan(radios,active,self.field_quality,now_wall,self.workers)
                         self.live_client_views=self.live_clients.publish(radios,active,self.field_quality,clients,now_wall)
+                        if self.quality_ledger:
+                            self.live_clients.persist_correlations(self.quality_ledger.incidents,radios,active,self.field_quality,now_wall)
                         self.live_clients.plan_station(clients,now_wall,self.workers)
                     else:
                         self.live_details.clear();self.live_clients.clear();self.live_client_views=[]

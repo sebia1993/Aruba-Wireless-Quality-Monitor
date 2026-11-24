@@ -132,6 +132,11 @@ class Incidents:
             if not row or row[0]!="PERSISTENT" or row[1]!=r.observed_at or row[4] is not None:return False
             old=json.loads(row[3])
             evidence=evidence_for(r,SimpleNamespace(status="PERSISTENT"),quality.get("score"))
+            # A second evidence source for the same Radio sample must not
+            # erase the first. This is historical evidence, not live status.
+            if old.get("observed_at")==r.observed_at and "client_correlation" in old:
+                evidence["client_correlation"]=old["client_correlation"]
+                evidence["candidates"].extend(c for c in old["candidates"] if c["code"]=="RF03")
             evidence["neighbor_observed_at"]=at
             evidence["neighbor_evidence"]=[{k:x[k] for k in ("ap_name","band","channel","width","snr","discovery","neighbor_at","target_radio_at","relation","overlap_mhz","candidate","confidence")} for x in matches]
             for code in sorted({x["candidate"] for x in matches}):
@@ -139,10 +144,53 @@ class Incidents:
                     "confidence":"medium","basis":["verified_receiving_radio_scope","direct_ota_observation",
                         "explicit_channel_block_overlap","aligned_persistent_congestion"],
                     "limit":"Correlation only; actual cause, client impact and service outage unverified"})
+            if old.get("observed_at")==r.observed_at and old.get("neighbor_observed_at",-1)>at:return False
+            evidence["candidates"].sort(key=lambda c:c["code"])
             if old==evidence:return False
             rev=row[2]+1;payload=json.dumps(evidence,sort_keys=True,allow_nan=False)
             c.execute("UPDATE rf_incidents SET evidence_rev=?,evidence=? WHERE incident_id=?",(rev,payload,ident))
             c.execute("INSERT INTO rf_incident_events VALUES(?,?,?,?,?)",(ident,rev,at,"PERSISTENT",payload))
+            return True
+    def record_client_summary(self,r,quality,context,now,summary):
+        """Append a privacy-minimized, separately approved RF03 observation.
+        The first qualifying aggregate per Radio sample wins. A new Radio
+        sample resets its latest candidate set; past revisions remain intact.
+        """
+        ident=quality.get("incident_id")
+        if not ident or not IDENT.fullmatch(ident) or quality.get("status")!="PERSISTENT" or quality.get("observed_at")!=r.observed_at:
+            return False
+        if not isinstance(summary,dict) or set(summary)!={"candidate_count","min_comparable","min_degraded","interval_end"}:
+            raise ValueError("invalid aggregate evidence fields")
+        if any(type(v) is not int for v in summary.values()):
+            raise ValueError("invalid aggregate evidence values")
+        n,p,d,t=(summary[k] for k in ("candidate_count","min_comparable","min_degraded","interval_end"))
+        if not 1<=n<=5000 or not 2<=d<=p<=31:
+            raise ValueError("insufficient or invalid aggregate evidence")
+        if (not r.valid or r.utilization<75 or not 0<=now-r.observed_at<=90
+            or not 0<=now-t<=90 or abs(t-r.observed_at)>30
+            or now>=quality.get("valid_until",0)):
+            return False
+        with self.store.lock,self.store._db(self.store.root/"core.db") as c:
+            row=c.execute("SELECT state,last_at,evidence_rev,evidence,ended_at,context FROM rf_incidents WHERE incident_id=? AND radio_id=?",(ident,r.radio_id)).fetchone()
+            if not row or row[0]!="PERSISTENT" or row[1]!=r.observed_at or row[4] is not None or row[5]!=context:return False
+            old=json.loads(row[3])
+            if old.get("observed_at")==r.observed_at and "client_correlation" in old:return False
+            evidence=evidence_for(r,SimpleNamespace(status="PERSISTENT"),quality.get("score"))
+            if old.get("observed_at")==r.observed_at and "neighbor_evidence" in old:
+                evidence["neighbor_observed_at"]=old["neighbor_observed_at"]
+                evidence["neighbor_evidence"]=old["neighbor_evidence"]
+                evidence["candidates"].extend(x for x in old["candidates"] if x["code"] in ("RF05","RF06"))
+            evidence["client_correlation"]={**summary,"scope":"aggregate_historical_observation",
+                "confidence":"low","baseline_minutes":[5,15],"minimum_interval_overlap_percent":80,
+                "minimum_retry_percent":25,"minimum_health_decline_points":20,"minimum_retry_increase_points":15}
+            evidence["candidates"].append({"code":"RF03","label":"Concurrent successful-retry and peer degradation candidate",
+                "confidence":"low","basis":["aligned_successful_retry","two_or_more_degraded_comparison_clients",
+                    "same_radio_network_and_observed_sequence","comparison_baseline_5_to_15_minutes"],
+                "limit":"Historical aggregate correlation only; no client attribution, Airtime or service impact"})
+            evidence["candidates"].sort(key=lambda c:c["code"])
+            rev=row[2]+1;payload=json.dumps(evidence,sort_keys=True,allow_nan=False)
+            c.execute("UPDATE rf_incidents SET evidence_rev=?,evidence=? WHERE incident_id=?",(rev,payload,ident))
+            c.execute("INSERT INTO rf_incident_events VALUES(?,?,?,?,?)",(ident,rev,now,"PERSISTENT",payload))
             return True
     def current_id(self,c,radio_id,context):
         row=c.execute("""SELECT incident_id FROM rf_incidents WHERE radio_id=? AND context=? AND ended_at IS NULL""",
@@ -198,7 +246,7 @@ class Incidents:
         if (not isinstance(ident,str) or not IDENT.fullmatch(ident) or type(revision) is not int or revision<1
             or not isinstance(request_id,str) or not REQUEST.fullmatch(request_id)
             or not isinstance(user,str) or not USER.fullmatch(user)
-            or verdict not in REVIEW_VERDICTS or reason not in REASONS or candidate not in ("RF04","RF05","RF06","UNKNOWN")):
+            or verdict not in REVIEW_VERDICTS or reason not in REASONS or candidate not in ("RF03","RF04","RF05","RF06","UNKNOWN")):
             raise ValueError("invalid review")
         if candidate=="UNKNOWN" and verdict=="supported":raise ValueError("unknown cause cannot be confirmed")
         with self.transaction() as c:

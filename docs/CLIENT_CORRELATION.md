@@ -44,6 +44,20 @@ tokens are exposed. Candidate validity is bounded by its constituent
 evidence expiration. Baselines are cleared on lost context or approval
 and capped per client, retained only for currently observed sequences.
 The feature never provides a live Airtime value, impact score, traffic
-failure percentage, confirmed cause or service impact. Persistent RF03
-incident evidence and the full cause catalog remain outstanding. Actual
+failure percentage, confirmed cause or service impact. The full cause catalog and live Airtime remain outstanding. Actual
 site approval and validation are operator-owned.
+
+## Optional aggregate evidence (v0.28)
+The default remains ephemeral only. In an existing approved correlation
+controller record, an explicit boolean persist_aggregate=true requires
+both the enabled retention policy and additional check
+aggregate_evidence_retention_approval=true. This authorizes a Radio-level
+historical RF03 evidence revision containing observation time and candidate,
+comparison and degradation counts only. The minima describe the observed
+candidate set, not necessarily one cohort. No client identifiers, individual
+retry/Health/counters or SSID/BSSID values are retained. The first qualifying
+summary per Radio observation is retained and existing same-observation
+Neighbor evidence is preserved. A new Radio sample does not inherit the
+RF03 candidate. Older evidence remains available for explicit review and
+reporting, under existing incident/backup retention rules. Review support
+means support for the recorded correlation, never confirmed client causality.

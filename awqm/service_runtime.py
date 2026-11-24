@@ -125,7 +125,7 @@ def run_service(root,stop):
     approvals=load_approvals(cfg)
     client_approvals=load_client_approvals(cfg,approvals)
     station_approvals=load_station_approvals(cfg,client_approvals)
-    correlation_approvals=load_correlation_approvals(cfg,station_approvals)
+    correlation_approvals=load_correlation_approvals(cfg,station_approvals,retention_enabled=retention_enabled)
     neighbor_approvals=load_neighbor_approvals(cfg,approvals)
     history_approvals=load_history_approvals(cfg,approvals,retention_enabled)
     history_key=load_key(cfg) if history_approvals else None

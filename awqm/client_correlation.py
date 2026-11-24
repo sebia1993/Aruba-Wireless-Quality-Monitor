@@ -20,10 +20,11 @@ class CorrelationApproval:
     station_tag:str
     approved_at:int
     valid_until:int
+    persist_aggregate:bool=False
     def permits(self,tag,at,now):
         return bool(tag and tag==self.station_tag and self.approved_at<=at<=now<self.valid_until)
 
-def load_correlation_approvals(cfg,stations,now=None):
+def load_correlation_approvals(cfg,stations,now=None,retention_enabled=False):
     path=safe_path(cfg.root,"config/client-correlation.json")
     if not path.exists():return {}
     if path.stat().st_size>64000:raise ValueError("correlation manifest too large")
@@ -36,8 +37,12 @@ def load_correlation_approvals(cfg,stations,now=None):
     if not isinstance(rows,list) or not 1<=len(rows)<=len(stations):raise ValueError("invalid correlation targets")
     result={}
     for r in rows:
-        if not isinstance(r,dict) or set(r)!={"controller","station_tag","approved_at","valid_until","reviewed_by","checks"}:
+        required={"controller","station_tag","approved_at","valid_until","reviewed_by","checks"}
+        if not isinstance(r,dict) or not required<=set(r)<=required|{"persist_aggregate"}:
             raise ValueError("invalid correlation approval")
+        persist=r.get("persist_aggregate",False)
+        if type(persist) is not bool or persist and not retention_enabled:
+            raise ValueError("explicit aggregate retention authorization required")
         s=stations.get(r["controller"])
         if not s or not s.tag or r["controller"] in result or r["station_tag"]!=s.tag:
             raise ValueError("exact Station Stats attestation required")
@@ -45,9 +50,10 @@ def load_correlation_approvals(cfg,stations,now=None):
             raise ValueError("invalid correlation lifetime")
         if not isinstance(r["reviewed_by"],str) or not 1<=len(r["reviewed_by"])<=128 or any(ord(c)<32 for c in r["reviewed_by"]):
             raise ValueError("reviewer reference required")
-        if not isinstance(r["checks"],dict) or set(r["checks"])!=CHECKS or any(v is not True for v in r["checks"].values()):
+        checks=CHECKS|({"aggregate_evidence_retention_approval"} if persist else set())
+        if not isinstance(r["checks"],dict) or set(r["checks"])!=checks or any(v is not True for v in r["checks"].values()):
             raise ValueError("all correlation checks required")
-        result[r["controller"]]=CorrelationApproval(s.tag,r["approved_at"],r["valid_until"])
+        result[r["controller"]]=CorrelationApproval(s.tag,r["approved_at"],r["valid_until"],persist)
     return result
 
 class ClientCorrelation:

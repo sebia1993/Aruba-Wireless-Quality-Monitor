@@ -174,7 +174,7 @@ function openHistory(r){
 }
 
 const incidentLabels={DETECTED:"최초 위험",PERSISTENT:"지속 위험",RECOVERING:"회복 관측 중",RESOLVED:"RF 정책 정상화",TRANSIENT:"일시 위험",UNCONFIRMED:"현재 확인 불가",CONTEXT_LOST:"관측 조건 변경 · 정상화 아님"};
-const candidateLabels={RF04:"Radio 혼잡 관측",RF05:"동일 채널 경합 후보",RF06:"중첩 채널 경합 후보",UNKNOWN:"원인 미확인"};
+const candidateLabels={RF03:"재시도·동시 저하 후보(과거 근거)",RF04:"Radio 혼잡 관측",RF05:"동일 채널 경합 후보",RF06:"중첩 채널 경합 후보",UNKNOWN:"원인 미확인"};
 const verdictLabels={supported:"근거 지지",not_supported:"근거 불충분/반대",inconclusive:"판단 보류"};
 let incidentPage=1,incidentFilter="all",incidentVersion=0,incidentPanel=null;
 const reviewAttempts=new Map();
@@ -237,7 +237,7 @@ async function openIncident(id){
     if(d.timeline_truncated||d.reviews_truncated)out.append(el("p","최근 이력만 표시합니다. 일부 과거 근거/검증 이력은 조회 상한으로 생략됩니다.","warn"));
     const revision=selectOptions(d.timeline.map(x=>String(x.revision)),Object.fromEntries(d.timeline.map(x=>[String(x.revision),"근거 #"+x.revision+" · "+kst(x.at)+" · "+(incidentLabels[x.state]||x.state)])),String(d.revision));
     const candidate=el("select"),basis=el("p"),verdict=selectOptions(["inconclusive","supported","not_supported"],verdictLabels,"inconclusive"),reason=selectOptions(["insufficient_evidence","radio_evidence","other_evidence","conflicting_evidence"],{insufficient_evidence:"자료 부족",radio_evidence:"Radio 관측 근거",other_evidence:"별도 운영자 확인",conflicting_evidence:"상충 자료"},"insufficient_evidence");
-    function updateCandidates(){const ev=d.timeline.find(x=>String(x.revision)===revision.value);candidate.replaceChildren();for(const c of ev.evidence.candidates){const o=el("option",candidateLabels[c.code]||c.code);o.value=c.code;candidate.append(o);}basis.textContent=ev.evidence.candidates.map(c=>(candidateLabels[c.code]||c.code)+" · "+c.basis.join(", ")+" · "+c.limit).join(" / ")+(ev.evidence.neighbor_evidence?" · 인접 후보 "+ev.evidence.neighbor_evidence.map(n=>(n.ap_name||"미확인")+" "+n.channel+"CH / "+n.overlap_mhz+"MHz").join(", "):"");}
+    function updateCandidates(){const ev=d.timeline.find(x=>String(x.revision)===revision.value);candidate.replaceChildren();for(const c of ev.evidence.candidates){const o=el("option",candidateLabels[c.code]||c.code);o.value=c.code;candidate.append(o);}basis.textContent=ev.evidence.candidates.map(c=>(candidateLabels[c.code]||c.code)+" · "+c.basis.join(", ")+" · "+c.limit).join(" / ")+(ev.evidence.client_correlation?" · RF03 과거 집계 "+kst(ev.evidence.client_correlation.interval_end)+" / 후보 "+ev.evidence.client_correlation.candidate_count+"대 / 비교 최소 "+ev.evidence.client_correlation.min_comparable+"대, 저하 최소 "+ev.evidence.client_correlation.min_degraded+"대":"")+(ev.evidence.neighbor_evidence?" · 인접 후보 "+ev.evidence.neighbor_evidence.map(n=>(n.ap_name||"미확인")+" "+n.channel+"CH / "+n.overlap_mhz+"MHz").join(", "):"");}
     revision.addEventListener("change",updateCandidates);updateCandidates();
     const save=el("button","운영자 검증 기록"),message=el("p");let attempt=null;
     save.addEventListener("click",async()=>{
