@@ -149,6 +149,8 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 self.assertIn("diagnostic",data.decode("utf-8-sig"))
                 self.assertNotIn("02:00:00:00:00:01",data.decode("utf-8-sig"))
                 self.assertEqual(req("GET","/api/admin/status",headers=h)[0],403)
+                self.assertEqual(req("GET","/api/association-history?id=&page=1",headers=h)[0],403)
+                self.assertEqual(req("GET","/api/association-history?id=&page=1")[0],401)
                 self.assertEqual(req("GET","/api/history.html?"+q,headers=h)[0],200)
                 self.assertEqual(req("POST","/api/demo/jobs","",form)[0],404)
                 token=cookie.split("=",1)[1]

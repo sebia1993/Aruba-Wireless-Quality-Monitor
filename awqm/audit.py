@@ -9,7 +9,7 @@ from pathlib import Path
 from threading import RLock
 from contextlib import contextmanager
 
-EVENTS=frozenset(("login","denied","logout","history","export_csv","export_html","admin_status","incident_detail","client_view","incident_summary","incident_csv","incident_html","neighbor_view"))
+EVENTS=frozenset(("login","denied","logout","history","export_csv","export_html","admin_status","incident_detail","client_view","incident_summary","incident_csv","incident_html","neighbor_view","association_history"))
 
 class AuditLog:
     def __init__(self,path,clock=time.time):

@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.18.0-dev — 단말 성공 프레임 재시도 분석 및 Airtime 검증 기반. 운영 배포 금지.**
+**현재 단계: v0.19.0-dev — 단말 성공 프레임 재시도 분석 및 Airtime 검증 기반. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -72,6 +72,10 @@ WLC별 CPU·Peer 상태 및 Active/Standby AP·단말 수를 종합 현황에서
 ## 선택적 RF Neighbor 실제 조회
 
 별도 현장 검증 기록을 통해 BSSID 지정 조회와 수신 Radio·채널 블록·OTA 시간을 검증한 경우에만 자동 RF Neighbor 조회가 가능하도록 연결했습니다. 실제 원인 확정이나 물리 위치 추정은 하지 않습니다. [RF Neighbor 검증 조건](docs/RF_NEIGHBORS.md).
+
+## 선택적 단말 접속 관측 이력
+
+현장 검증 및 개인정보/보존 승인, 별도 DPAPI 키가 있는 경우 관리자 전용 30일 단말 접속 관측 이력과 A/S-UAC 테이블 관측을 제공합니다. Radio와 분리된 association.db를 사용하며 원본 단말 식별 정보를 저장하지 않습니다. [설정 및 제약](docs/ASSOCIATION_HISTORY.md).
 
 ## Windows 빌드
 ```powershell

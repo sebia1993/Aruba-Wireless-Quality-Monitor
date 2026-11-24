@@ -138,7 +138,7 @@ def handler_for(view,auth,audit,cfg):
             if path.path=="/diagnostic.css" and not path.query:
                 self._send(200,(STATIC/"diagnostic.css").read_bytes(),"text/css; charset=utf-8");return
             try:
-                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html","/api/neighbors"))
+                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html","/api/neighbors","/api/association-history"))
             except AuthDenied:
                 if self.path=="/":self._login()
                 else:self._json(401,{"error":"authentication_required"})
@@ -169,6 +169,11 @@ def handler_for(view,auth,audit,cfg):
                     result=view.neighbors(q["id"])
                     audit.record(s.username,"neighbor_view",q["id"])
                     self._json(200,result)
+                elif path.path=="/api/association-history":
+                    if s.role!="admin":self._json(403,{"error":"access_denied"});return
+                    q=self._query(path,{"id","page"})
+                    audit.record(s.username,"association_history")
+                    self._json(200,view.association_page(q["id"],int(q["page"])))
                 elif path.path=="/api/clients":
                     q=self._query(path,{"q","page"})
                     # Log detailed-client view access without raw client identifiers.
@@ -196,7 +201,7 @@ def handler_for(view,auth,audit,cfg):
                     remaining=max(0,(cfg.expires_at-int(time.time()))//86400)
                     self._json(200,{"audit":audit.summary(),"certificate_days":remaining,
                         "certificate_warning":remaining<=30,"field_validated":False,
-                        "automatic_detail":view.client_enabled,"client_identity_storage":False})
+                        "automatic_detail":view.client_enabled,"raw_client_identity_storage":False,"pseudonymous_association_history":view.association_history is not None})
                 else:self._send(404)
             except (ValueError,TypeError,OverflowError):self._json(400,{"error":"invalid_request"})
             except (RuntimeError,sqlite3.Error,OSError):self._json(503,{"error":"data_or_audit_unavailable"})

@@ -149,12 +149,35 @@ function clusterPanel(d){
   return c;
 }
 
+function associationPanel(){
+  const panel=el("section"),out=el("div"),input=el("input"),button=el("button","접속 이력 조회"),pager=el("div",null,"pager");
+  let p=1;
+  input.placeholder="보호된 단말 ID (전체 조회는 공란)";input.maxLength=32;input.setAttribute("aria-label","보호된 단말 ID");
+  async function load(){
+    button.disabled=true;
+    try{
+      const d=await request("/api/association-history?"+new URLSearchParams({id:input.value.trim(),page:String(p)}));
+      if(expired||!panel.isConnected)return;
+      out.replaceChildren(el("p",d.enabled?"최근 30일 양성 관측 이력 · 관측 공백은 접속 종료가 아님":"이력 수집 비활성 또는 현장 승인 만료"));
+      if(d.rows.length)out.append(table(["보호 ID","AP","대역","AAC","A-UAC 관측","S-UAC 관측","관측 유형","첫 관측","최근 관측"],d.rows.map(r=>[r.id,r.ap_name,r.band,r.aac,r.auac,r.suac,({first_observation:"첫 관측",after_observation_gap:"관측 공백 후",attachment_changed:"접속 위치 변경 관측",anchor_context_changed:"앵커 컨텍스트 변경",user_anchor_observation_changed:"UAC 관측 변경",metadata_changed:"메타데이터 변경"})[r.event]||r.event,kst(r.first_at),kst(r.last_at)])));
+      const prev=el("button","이전"),next=el("button","다음");
+      prev.disabled=p<=1;next.disabled=p*d.size>=d.total;
+      prev.addEventListener("click",()=>{p--;load();});next.addEventListener("click",()=>{p++;load();});
+      pager.replaceChildren(prev,el("span",p+" / "+Math.max(1,Math.ceil(d.total/d.size))+" · "+d.total+"건"),next);
+    }catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 이력 조회 불가";}
+    finally{button.disabled=false;}
+  }
+  button.addEventListener("click",()=>{p=1;load();});
+  panel.append(el("h3","보호된 단말 접속 이력"),el("p","관리자 전용 · MAC/IP/사용자명/SSID/BSSID 원문 미저장 · UAC는 테이블 관측"),input,button,out,pager);
+  return panel;
+}
+
 function render(){
   if(expired)return;
   const c=$("content");c.replaceChildren();$("heading").textContent=names[view];
   if(view==="clients"){loadClients();return;}
   if(view==="history"){loadIncidents();return;}
-  if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out);return;}
+  if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out,associationPanel());return;}
   if(!snapshot){c.append(el("p","자료 확인 중"));return;}
   if(view==="overview"){const k=el("div",null,"kpis");k.append(metric("관측 WLC",snapshot.coherent_controllers==null?null:snapshot.coherent_controllers+" / "+snapshot.expected_controllers),metric("저장된 Radio",snapshot.inventory_radios),metric("현재 매핑 Radio",snapshot.mapped_radios),metric("활성 단말 관측",snapshot.active_clients));c.append(k,el("p","최근 게시: "+kst(snapshot.published_at)+" · "+(snapshot.available?"관측 자료 제공":"현재 관측 확인 불가")),clusterPanel(snapshot.cluster));}
   c.append(table(["AP","WLC","대역","채널","사용률 %","간섭률 %","NF dBm","품질 점수","위험 관측","관측 시각 KST","수집 상태"],snapshot.rows.map(r=>{const b=el("button",r.ap_name);b.addEventListener("click",()=>openHistory(r));const cell=el("div");cell.append(b);if(r.incident_id){const i=el("button","위험 이력");i.addEventListener("click",()=>openIncident(r.incident_id));cell.append(i);}return [cell,r.controller,r.band,r.channel,r.utilization,r.interference,r.noise,r.quality_score==null?"미검증":r.quality_score,r.risk_status==="UNKNOWN"?"미확인":r.risk_status,kst(r.observed_at),r.freshness==="observed"?(r.quality==="local_operator_attested"?"최근 관측 · 현장 승인 지표":"최근 관측 · 미검증"):"오래됨 / 확인 불가"];})));

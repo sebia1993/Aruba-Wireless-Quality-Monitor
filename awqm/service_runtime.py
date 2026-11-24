@@ -16,6 +16,7 @@ from .station_validation import load_station_approvals
 from .cluster import ClusterMonitor
 from .retention import Retention,load_retention
 from .live_neighbors import LiveNeighbors,load_neighbor_approvals
+from .association_history import AssociationHistory,load_history_approvals,load_key
 from .diagnostic_view import DiagnosticView
 from .diagnostic_web import create_listener
 from .collector import PinnedSSH
@@ -115,6 +116,8 @@ def run_service(root,stop):
     client_approvals=load_client_approvals(cfg,approvals)
     station_approvals=load_station_approvals(cfg,client_approvals)
     neighbor_approvals=load_neighbor_approvals(cfg,approvals)
+    history_approvals=load_history_approvals(cfg,approvals,retention_enabled)
+    history_key=load_key(cfg) if history_approvals else None
     # Preflight all blobs and known host entries before creating any session.
     import paramiko
     keys=paramiko.HostKeys(str(cfg.known_hosts))
@@ -124,18 +127,19 @@ def run_service(root,stop):
     with exclusive(cfg.root):
         store=Store(safe_path(cfg.root,"data"),mode="diagnostic")
         gate=ConnectionGate(cfg.known_hosts,stop=stop)
-        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode=profile,offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True,neighbor_approval=neighbor_approvals.get(t.id)) for i,t in enumerate(cfg.targets)]
+        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode=profile,offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True,neighbor_approval=neighbor_approvals.get(t.id),history_approval=history_approvals.get(t.id)) for i,t in enumerate(cfg.targets)]
         # Always open the local history ledger so old incidents remain
         # inspectable after an attestation is revoked or expires.
         quality=QualityLedger(store)
+        history=AssociationHistory(store,cfg.site,history_key,history_approvals) if history_key else None
         engine=Engine(workers,store,site=cfg.site,simulation=False,durable_jobs=False,auto=False,
                       quality_ledger=quality,live_clients=LiveClients(client_approvals,station_approvals=station_approvals) if client_approvals else None,
                       cluster_monitor=ClusterMonitor({t.id:t.ip for t in cfg.targets}),
-                      live_neighbors=LiveNeighbors(neighbor_approvals,quality.incidents) if neighbor_approvals else None)
+                      live_neighbors=LiveNeighbors(neighbor_approvals,quality.incidents) if neighbor_approvals else None,association_history=history)
         backup_root=safe_path(cfg.root,"backup");audit_path=safe_path(cfg.root,"logs/web-audit.db")
         maintenance=Maintenance(store,backup_root,
             retention=Retention(store,backup_root,audit_path) if retention_enabled else None,audit_path=audit_path)
-        view=DiagnosticView(store,time.time,incidents=quality.incidents) if web else None
+        view=DiagnosticView(store,time.time,incidents=quality.incidents,association_history=history) if web else None
         server=None;thread=None
         try:
             if web:

@@ -91,7 +91,7 @@ class Retention:
         if type(now) is not int or not 1<=max_days<=31:raise ValueError("invalid retention request")
         today=day_start(day_for(now))
         result={"raw_deleted":[],"raw_held":{},"aggregate_rows_deleted":{"5m":0,"1h":0},
-                "incidents_deleted":0,"audit_deleted":0,"policy":"balanced-7-30-365-v1"}
+                "incidents_deleted":0,"audit_deleted":0,"association_segments_deleted":0,"policy":"balanced-7-30-365-v1"}
         if self.store.pending_count():result["status"]="pending_writes";return result
         raw_days=[d for d in _days(self.store) if day_start(d)+86400<=today-7*86400]
         backup=None;verified_files=set()
@@ -162,6 +162,13 @@ class Retention:
                         c.execute("DELETE FROM radio_quality_events WHERE radio_id=? AND context=? AND observed_at BETWEEN ? AND ?",(rid,ctx,first,last))
                         c.execute("DELETE FROM rf_incidents WHERE incident_id=?",(ident,))
                         result["incidents_deleted"]+=1
+        history=self.store.root/"association.db"
+        if history.is_file():
+            with self.store.lock,self.store._db(history) as c:
+                c.execute("PRAGMA secure_delete=ON")
+                cutoff_history=now-30*86400
+                result["association_segments_deleted"]=c.execute("DELETE FROM association_segments WHERE rowid IN (SELECT rowid FROM association_segments WHERE last_at<? ORDER BY last_at LIMIT 50000)",(cutoff_history,)).rowcount
+                c.execute("UPDATE association_segments SET first_at=? WHERE first_at<? AND last_at>=?",(cutoff_history,cutoff_history,cutoff_history))
         if self.audit_path and self.audit_path.is_file():
             c=sqlite3.connect(self.audit_path,timeout=2)
             try:

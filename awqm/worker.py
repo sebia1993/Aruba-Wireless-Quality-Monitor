@@ -19,6 +19,7 @@ from .station_validation import collect as collect_station,StationUnavailable
 from .cluster import MEMBERSHIP,AP_LOAD,CLIENT_LOAD,LOAD_COMMANDS,group_membership,ap_load,client_load
 from .live_neighbors import COMMAND as NEIGHBOR,width_value
 from .rf_neighbors import arm_neighbors
+from .association_history import COMMANDS as USER_TABLES,user_table
 
 PARSERS={
     "show cpuload":cpu_load,
@@ -29,6 +30,7 @@ PARSERS={
     "show ap association":associations,
     "show ap bss-table":bss_table,
     MEMBERSHIP:group_membership,AP_LOAD:ap_load,CLIENT_LOAD:client_load,
+    **{cmd:user_table for cmd in USER_TABLES},
 }
 DETAIL_PARSERS={"show ap debug client-table":client_table,"show ap debug client-stats":station_stats,NEIGHBOR:arm_neighbors}
 DENIED=re.compile(r"(?im)^\s*(?:%\s*)?(?:permission denied|access denied|not authorized|authorization failed)")
@@ -47,12 +49,12 @@ class Reading:
     target: str|None=None
 
 class ControllerWorker:
-    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False,neighbor_approval=None):
+    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False,neighbor_approval=None,history_approval=None):
         self.controller=controller;self.session_factory=session_factory
         self.clock=clock;self.wall=wall
-        self.field_approval=field_approval;self.enable_cluster=enable_cluster;self.neighbor_approval=neighbor_approval
+        self.field_approval=field_approval;self.enable_cluster=enable_cluster;self.neighbor_approval=neighbor_approval;self.history_approval=history_approval
         self.live_detail=live_detail;self.client_approval=client_approval;self.station_approval=station_approval
-        polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table") and (enable_cluster or p.name!=MEMBERSHIP))
+        polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table") and (enable_cluster or p.name!=MEMBERSHIP) and (history_approval is not None or p.name not in USER_TABLES))
         if enable_cluster:polls=polls+(Poll(AP_LOAD,120,20,2),Poll(CLIENT_LOAD,120,20,2))
         if field_approval is not None:polls=polls+(Poll("show version",600,30,0),)
         self.schedule=Scheduler(start=clock(),offset=offset,polls=polls,mode=mode)
@@ -115,6 +117,12 @@ class ControllerWorker:
                     elif self.schedule.due[cmd]==float("inf"):self.schedule.due[cmd]=self.clock()
             p=self.schedule.next(self.clock())
             if p is None:return self._detail_tick()
+            if p.name in USER_TABLES:
+                at=int(self.wall());a=self.history_approval;r=self.field_approval;v=self.latest.get("show version")
+                if not (self.schedule.protection.effective(self.clock())=="normal" and a and r and v and v.generation==self.generation and self.outcomes[v.command].status=="success"
+                    and r.permits(v.data,fingerprint(self.session),at,at,v.observed_at) and a.permits(r.tag,at,at)):
+                    self.schedule.finish(self.clock());self.latest.pop(p.name,None)
+                    return self._record(p.name,"withheld",reason="history_authorization_unavailable")
             try:
                 raw=self.session.run(p.name,timeout=p.timeout)
             except Exception as exc:
@@ -150,6 +158,9 @@ class ControllerWorker:
             try:
                 if self.live_detail:self.jobs.purge_station(self.wall())
             finally:self.lock.release()
+    def user_frame(self):
+        with self.lock:
+            return {cmd:r for cmd in USER_TABLES if (r:=self.outcomes.get(cmd)) and r.status=="success" and r.generation==self.generation and self.session is not None and 0<=self.wall()-r.observed_at<=330}
     def cluster_frame(self):
         if not self.enable_cluster:return None
         with self.lock:

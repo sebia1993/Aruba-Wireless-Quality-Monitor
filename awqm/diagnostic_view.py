@@ -9,10 +9,10 @@ from threading import RLock
 from .reporting import csv_report,html_report
 
 class DiagnosticView:
-    def __init__(self,store,clock,key=None,incidents=None):
+    def __init__(self,store,clock,key=None,incidents=None,association_history=None):
         if store.mode!="diagnostic":raise ValueError("diagnostic store required")
         self.store=store;self.clock=clock;self.key=key or secrets.token_bytes(32)
-        self.lock=RLock();self.rows=[];self.index={};self.meta={};self.incidents=incidents;self.client_rows=[];self.client_enabled=False;self.neighbor_views={};self.neighbor_enabled=False
+        self.lock=RLock();self.rows=[];self.index={};self.meta={};self.incidents=incidents;self.association_history=association_history;self.client_rows=[];self.client_enabled=False;self.neighbor_views={};self.neighbor_enabled=False
     def token(self,radio_id):
         return hmac.new(self.key,radio_id.encode("utf-8"),hashlib.sha256).hexdigest()[:32]
     def publish(self,result,current=(),available=True,quality=None,client_views=(),client_enabled=False,neighbor_views=None,neighbor_enabled=False):
@@ -58,7 +58,7 @@ class DiagnosticView:
                 "active_clients":result.get("active_clients"),
                 "unresolved_radios":result.get("unresolved_radios"),
                 "client_conflicts":result.get("client_conflicts"),
-                "storage_error":result.get("storage_error"),
+                "storage_error":result.get("storage_error"),"cluster":result.get("cluster") if available else None,
                 "paused":bool(result.get("paused")),
                 "available":bool(available),"quality_scope":"locally_attested_radio_only"}
     def page(self,query="",page=1,size=100):
@@ -80,6 +80,9 @@ class DiagnosticView:
                 for k in ("coherent_controllers","mapped_radios","active_clients","unresolved_radios","client_conflicts"):meta[k]=None
                 meta["available"]=False;meta["cluster"]=None
             return {**meta,"rows":data,"total":len(rows),"page":page,"size":size,"inventory_radios":len(self.rows)}
+    def association_page(self,ident,page):
+        if self.association_history is None:return {"enabled":False,"rows":[],"total":0,"page":page,"size":50}
+        return self.association_history.page(int(self.clock()),ident,page)
     def history(self,token,start,end):
         if not isinstance(token,str) or len(token)!=32 or not 0<=start<end or end-start>7*86400:
             raise ValueError("invalid history request")

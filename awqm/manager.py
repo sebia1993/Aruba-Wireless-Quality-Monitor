@@ -5,6 +5,7 @@ from uuid import uuid4
 from .service_config import default_root,load_config,envelope,fixed_local
 from .windows_security import account_sid,check_identity,check_layout,check_acl
 from .winservice import SERVICE_NAME,DISPLAY_NAME
+from .association_history import key_path,key_envelope
 
 def prompt(label):
     if not sys.stdin.isatty():raise ValueError("interactive console required")
@@ -47,6 +48,20 @@ def provision(cfg,controller,replace=False):
     finally:
         if temp.exists():temp.unlink()
     print("Credential protected under current service identity; controller:",controller)
+
+def provision_history_key(cfg):
+    sid=check_identity(cfg.account);check_layout(cfg,require_credentials=False)
+    dst=key_path(cfg)
+    if dst.exists():raise ValueError("history key already exists; no automatic replacement")
+    temp=dst.with_name(dst.name+".tmp-"+uuid4().hex)
+    try:
+        with temp.open("xb") as f:
+            f.write(key_envelope(cfg));f.flush();os.fsync(f.fileno())
+        check_acl(temp,sid)
+        temp.rename(dst)
+    finally:
+        if temp.exists():temp.unlink()
+    print("Association history key provisioned under the current service identity")
 
 def install(cfg,auto=False):
     import win32service as w
@@ -118,6 +133,7 @@ def main():
     q.add_argument("--auto-start",action="store_true")
     for name in ("status","start","stop","enable-auto","remove"):
         sub.add_parser(name)
+    sub.add_parser("provision-history-key",help="create a protected local history pseudonym key")
     sub.add_parser("smoke-test",help="verify imports only; no service change")
     a=p.parse_args()
     if sys.platform!="win32":p.error("Windows only")
@@ -126,6 +142,7 @@ def main():
             import win32service,win32security,servicemanager
             print("AWQM manager imports passed (no SCM operation)")
         elif a.action=="provision":provision(load_config(default_root()),a.controller,a.replace)
+        elif a.action=="provision-history-key":provision_history_key(load_config(default_root()))
         elif a.action=="install":install(load_config(default_root()),a.auto_start)
         else:control(a.action)
     except Exception as exc:p.exit(2,"AWQM manager operation failed: "+type(exc).__name__+"\n")
