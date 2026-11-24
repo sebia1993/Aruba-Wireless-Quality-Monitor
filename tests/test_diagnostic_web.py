@@ -18,6 +18,8 @@ from awqm.diagnostic_web import RestrictedTLS,handler_for,CoordinatedVerifier
 from awqm.secure_preview import tls_context
 from awqm.web_config import WebConfig,cert_expiry,load_web_config
 from awqm.scheduler import Protection
+from awqm.manual_jobs import ManualReservations
+from test_manual_jobs import Worker
 
 def certificate(root,hostname="127.0.0.1"):
     key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
@@ -115,7 +117,13 @@ class DiagnosticHTTPTests(unittest.TestCase):
             from dataclasses import replace
             # Handler uses a separate mutable config proxy for the ephemeral test port.
             proxy=SimpleNamespace(**vars(cfg))
-            server=RestrictedTLS(proxy,handler_for(view,auth,audit,proxy),tls_context(c,k))
+            worker=Worker(lambda:t)
+            from awqm.live_clients import ClientApproval
+            from awqm.field_validation import Approval
+            worker.field_approval=Approval("w1","192.0.2.1","model","8.10.0.24","key",t-1000,t+3600,"tag")
+            worker.client_approval=ClientApproval("tag",t-1000,t+3600,False)
+            manual=ManualReservations(view,{"w1":worker},audit,threading.Event(),lambda:t)
+            server=RestrictedTLS(proxy,handler_for(view,auth,audit,proxy,manual),tls_context(c,k))
             proxy.authority=f"127.0.0.1:{server.server_port}"
             self.assertFalse(server.verify_request(None,("192.0.2.10",1234)))
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -155,6 +163,18 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 self.assertEqual(req("POST","/api/demo/jobs","",form)[0],404)
                 token=cookie.split("=",1)[1]
                 csrf=auth.session(token).csrf
+                self.assertEqual(req("GET","/api/manual-jobs")[0],401)
+                status,_,raw=req("GET","/api/manual-jobs",headers=h)
+                self.assertEqual(status,200)
+                reserve={"csrf":csrf,"epoch":json.loads(raw)["epoch"],"request_id":"manual-http-00001","id":row["id"]}
+                self.assertEqual(req("POST","/api/manual-jobs/reserve",urlencode(reserve),form)[0],401)
+                self.assertEqual(req("POST","/api/manual-jobs/reserve",urlencode({**reserve,"csrf":"bad"}),{**form,**h})[0],401)
+                status,_,raw=req("POST","/api/manual-jobs/reserve",urlencode(reserve),{**form,**h})
+                self.assertEqual(status,200);receipt=json.loads(raw)
+                self.assertEqual(receipt["status"],"queued")
+                self.assertEqual(json.loads(req("POST","/api/manual-jobs/reserve",urlencode(reserve),{**form,**h})[2])["receipt_id"],receipt["receipt_id"])
+                cancel={"csrf":csrf,"epoch":reserve["epoch"],"receipt_id":receipt["receipt_id"]}
+                self.assertEqual(json.loads(req("POST","/api/manual-jobs/cancel",urlencode(cancel),{**form,**h})[2])["status"],"cancelled")
                 status,_,raw=req("GET","/api/incidents?"+iq,headers=h)
                 self.assertEqual(status,200)
                 incident=json.loads(raw)["rows"][0]

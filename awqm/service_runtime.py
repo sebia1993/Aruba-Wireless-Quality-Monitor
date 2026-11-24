@@ -18,6 +18,7 @@ from .retention import Retention,load_retention
 from .live_neighbors import LiveNeighbors,load_neighbor_approvals
 from .association_history import AssociationHistory,load_history_approvals,load_key
 from .diagnostic_view import DiagnosticView
+from .manual_jobs import load_manual_policy
 from .diagnostic_web import create_listener
 from .collector import PinnedSSH
 from .ssh_shell import ShellSession
@@ -111,6 +112,7 @@ def run_service(root,stop):
     check_identity(cfg.account);check_layout(cfg)
     web=load_web_config(cfg)
     profile=load_profile(cfg)
+    manual_enabled=load_manual_policy(cfg)
     retention_enabled=load_retention(cfg)
     approvals=load_approvals(cfg)
     client_approvals=load_client_approvals(cfg,approvals)
@@ -127,7 +129,7 @@ def run_service(root,stop):
     with exclusive(cfg.root):
         store=Store(safe_path(cfg.root,"data"),mode="diagnostic")
         gate=ConnectionGate(cfg.known_hosts,stop=stop)
-        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode=profile,offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True,neighbor_approval=neighbor_approvals.get(t.id),history_approval=history_approvals.get(t.id)) for i,t in enumerate(cfg.targets)]
+        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode=profile,offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True,neighbor_approval=neighbor_approvals.get(t.id),history_approval=history_approvals.get(t.id),manual_detail=manual_enabled) for i,t in enumerate(cfg.targets)]
         # Always open the local history ledger so old incidents remain
         # inspectable after an attestation is revoked or expires.
         quality=QualityLedger(store)
@@ -143,7 +145,7 @@ def run_service(root,stop):
         server=None;thread=None
         try:
             if web:
-                server=create_listener(web,cfg,engine.workers,gate,view,stop)
+                server=create_listener(web,cfg,engine.workers,gate,view,stop,manual_enabled=manual_enabled)
                 thread=threading.Thread(target=server.serve_forever,name="awqm-https",daemon=True)
                 thread.start()
             pump(engine,maintenance,stop,safe_path(cfg.root,"logs/service-status.json"),view=view)

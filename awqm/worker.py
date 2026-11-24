@@ -20,6 +20,7 @@ from .cluster import MEMBERSHIP,AP_LOAD,CLIENT_LOAD,LOAD_COMMANDS,group_membersh
 from .live_neighbors import COMMAND as NEIGHBOR,width_value
 from .rf_neighbors import arm_neighbors
 from .association_history import COMMANDS as USER_TABLES,user_table
+from .manual_jobs import bind_ap
 
 PARSERS={
     "show cpuload":cpu_load,
@@ -49,10 +50,10 @@ class Reading:
     target: str|None=None
 
 class ControllerWorker:
-    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False,neighbor_approval=None,history_approval=None):
+    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False,neighbor_approval=None,history_approval=None,manual_detail=False):
         self.controller=controller;self.session_factory=session_factory
         self.clock=clock;self.wall=wall
-        self.field_approval=field_approval;self.enable_cluster=enable_cluster;self.neighbor_approval=neighbor_approval;self.history_approval=history_approval
+        self.field_approval=field_approval;self.enable_cluster=enable_cluster;self.neighbor_approval=neighbor_approval;self.history_approval=history_approval;self.manual_detail=bool(manual_detail)
         self.live_detail=live_detail;self.client_approval=client_approval;self.station_approval=station_approval
         polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table") and (enable_cluster or p.name!=MEMBERSHIP) and (history_approval is not None or p.name not in USER_TABLES))
         if enable_cluster:polls=polls+(Poll(AP_LOAD,120,20,2),Poll(CLIENT_LOAD,120,20,2))
@@ -171,9 +172,9 @@ class ControllerWorker:
                     if r and r.generation==self.generation:readings[cmd]=r
             return {"connected":self.session is not None and not self.blocked,
                     "readings":readings,"disabled":tuple(self.disabled)}
-    def submit_detail(self,request_id,name,target,ttl=300):
+    def submit_detail(self,request_id,name,target,ttl=300,binding=None):
         # Separate queue lock allows reservation even while the worker awaits SSH.
-        return self.jobs.submit(request_id,name,target,self.wall(),ttl)
+        return self.jobs.submit(request_id,name,target,self.wall(),ttl,binding=binding)
     def _detail_target(self,job):
         now=int(self.wall())
         if job.name==NEIGHBOR:
@@ -186,7 +187,16 @@ class ControllerWorker:
             r=self.latest.get("show ap active details")
             if not r or r.generation!=self.generation or self.outcomes[r.command].status!="success" or not 0<=now-r.observed_at<=150:
                 return False
-            return sum(a["name"]==job.target and "A" in a["roles"] for a in r.data)==1
+            anchors=[a for a in r.data if a["name"]==job.target and "A" in a["roles"]]
+            if len(anchors)!=1:return False
+            if self.live_detail and job.request_id.startswith("manual-"):
+                inv=self.latest.get("show ap database long")
+                if not inv or inv.generation!=self.generation or self.outcomes[inv.command].status!="success" or not 0<=now-inv.observed_at<=660:return False
+                entries=[a for a in inv.data if a["name"]==job.target and a["ip"]==anchors[0]["ip"]]
+                if len(entries)!=1 or not job.binding:return False
+                try:return bind_ap(entries[0]["mac"])==job.binding
+                except ValueError:return False
+            return True
         r=self.latest.get("show ap association")
         a=self.latest.get("show ap active details")
         if not r or not a or any(x.generation!=self.generation or self.outcomes[x.command].status!="success" or not 0<=now-x.observed_at<=150 for x in (r,a)):
@@ -217,7 +227,9 @@ class ControllerWorker:
         # and RF observations are required before a CLI is sent.
         a=self.client_approval;radio=self.field_approval
         now=int(self.wall())
-        if not a or not a.automatic or not radio or job.name not in ("show ap debug client-table","show ap debug client-stats"):return False
+        manual=self.manual_detail and job.name=="show ap debug client-table" and job.request_id.startswith("manual-")
+        if job.request_id.startswith("manual-") and not manual:return False
+        if not a or not (a.automatic or manual) or not radio or job.name not in ("show ap debug client-table","show ap debug client-stats"):return False
         keys=("show version","show ap radio-summary","show ap association","show ap bss-table")
         readings=[self.latest.get(k) for k in keys]
         if any(not x or x.generation!=self.generation or self.outcomes[x.command].status!="success" for x in readings):return False
@@ -263,12 +275,12 @@ class ControllerWorker:
                     if DENIED.search(raw) or UNSUPPORTED.search(raw):
                         self.detail_disabled.add(job.name)
                         self.jobs.finish(job.job_id,"skipped","permission_denied_or_unsupported",self.wall())
-                        return Reading(job.name,"unsupported",int(self.wall()),generation=self.generation,target=job.target if job.name==NEIGHBOR else None)
+                        return Reading(job.name,"unsupported",int(self.wall()),generation=self.generation,target=job.target if self.live_detail and job.name in (NEIGHBOR,"show ap debug client-table") else None)
                     try:
                         value=DETAIL_PARSERS[job.name](raw)
                     except (ValueError,TypeError):
                         self.jobs.finish(job.job_id,"failed","parse_error",self.wall())
-                        return Reading(job.name,"parse_error",int(self.wall()),generation=self.generation,target=job.target if job.name==NEIGHBOR else None)
+                        return Reading(job.name,"parse_error",int(self.wall()),generation=self.generation,target=job.target if self.live_detail and job.name in (NEIGHBOR,"show ap debug client-table") else None)
                 reading=Reading(job.name,"success",int(self.wall()),value,generation=self.generation,target=job.target)
                 # Bounded cache; full historical client persistence is not yet enabled.
                 key=(job.name,job.target)
@@ -280,7 +292,7 @@ class ControllerWorker:
             except Exception as exc:
                 self.jobs.finish(job.job_id,"failed",type(exc).__name__,self.wall())
                 self._failed(type(exc).__name__)
-                return Reading(job.name,"transport_error",int(self.wall()),generation=self.generation,target=job.target if self.live_detail and job.name in ("show ap debug client-stats",NEIGHBOR) else None)
+                return Reading(job.name,"transport_error",int(self.wall()),generation=self.generation,target=job.target if self.live_detail and job.name in ("show ap debug client-stats","show ap debug client-table",NEIGHBOR) else None)
             finally:
                 self.schedule.protection.account(now,self.clock(),True)
         return None

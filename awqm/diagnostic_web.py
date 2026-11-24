@@ -15,6 +15,7 @@ from .web import STATIC
 from .audit import AuditLog
 from .incidents import ReviewConflict
 from .incident_reports import summary,incident_csv,incident_html
+from .manual_jobs import ManualReservations,ReservationRejected
 
 COOKIE="__Host-awqm_session"
 
@@ -77,7 +78,7 @@ class RestrictedTLS(ThreadingHTTPServer):
             try:self.shutdown_request(conn if conn is not None else request)
             finally:self.capacity.release()
 
-def handler_for(view,auth,audit,cfg):
+def handler_for(view,auth,audit,cfg,manual=None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version="HTTP/1.0"
         def log_message(self,*a):pass
@@ -164,6 +165,8 @@ def handler_for(view,auth,audit,cfg):
                         body=csv_report(report) if fmt=="csv" else html_report(report)
                         self._send(200,body,"text/csv; charset=utf-8" if fmt=="csv" else "text/html; charset=utf-8",
                             (("Content-Disposition",'attachment; filename="awqm-diagnostic-history.'+fmt+'"'),))
+                elif self.path=="/api/manual-jobs":
+                    self._json(200,manual.list(s.username) if manual is not None else {"enabled":False,"epoch":None,"rows":[],"total":0})
                 elif path.path=="/api/neighbors":
                     q=self._query(path,{"id"})
                     result=view.neighbors(q["id"])
@@ -218,6 +221,15 @@ def handler_for(view,auth,audit,cfg):
                     d=self._form({"csrf"})
                     auth.logout(self._token(),d["csrf"])
                     self._redirect(COOKIE+"=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict")
+                elif self.path in ("/api/manual-jobs/reserve","/api/manual-jobs/cancel"):
+                    s=auth.session(self._token())
+                    if s.role not in ("operator","admin"):raise AuthDenied("role denied")
+                    reserve=self.path.endswith("/reserve")
+                    d=self._form({"csrf","epoch","request_id","id"} if reserve else {"csrf","epoch","receipt_id"})
+                    if not hmac.compare_digest(d["csrf"],s.csrf):raise AuthDenied("invalid csrf")
+                    if manual is None:raise ReservationRejected("manual_detail_disabled")
+                    if reserve:self._json(200,manual.reserve(s.username,d["epoch"],d["request_id"],d["id"]))
+                    else:self._json(200,manual.cancel(s.username,d["epoch"],d["receipt_id"]))
                 elif self.path=="/api/incident/review":
                     s=auth.session(self._token())
                     if s.role not in ("operator","admin"):raise AuthDenied("role denied")
@@ -228,6 +240,7 @@ def handler_for(view,auth,audit,cfg):
                     self._json(200,view.incident_review(d["id"],int(d["revision"]),d["request_id"],
                         s.username,d["verdict"],d["reason"],d["candidate"]))
                 else:self._send(404)
+            except ReservationRejected as exc:self._json(409,{"error":str(exc)})
             except ReviewConflict:self._json(409,{"error":"evidence_revision_unavailable"})
             except AuthBusy:self._login(429,"인증 처리 중 또는 보호 정책에 따라 잠시 대기합니다.")
             except AuthDenied:self._login(401,"인증 실패 또는 세션 만료")
@@ -235,11 +248,12 @@ def handler_for(view,auth,audit,cfg):
             except (RuntimeError,sqlite3.Error,OSError):self._send(503)
     return Handler
 
-def create_listener(cfg,service_cfg,workers,gate,view,stop):
+def create_listener(cfg,service_cfg,workers,gate,view,stop,manual_enabled=False):
     worker=workers[cfg.controller]
     target=next(t for t in service_cfg.targets if t.id==cfg.controller)
     verifier=CoordinatedVerifier(worker,gate,ArubaVerifier(target.ip,service_cfg.known_hosts),stop)
     audit=AuditLog(service_cfg.root/"logs"/"web-audit.db")
     # Conservative defaults; actual AAA lockout threshold is site-specific.
     auth=Auth(cfg.roles,verifier,user_limit=2,global_limit=20,window=300,audit_sink=audit.auth_event)
-    return RestrictedTLS(cfg,handler_for(view,auth,audit,cfg),tls_context(cfg.cert,cfg.key))
+    manual=ManualReservations(view,workers,audit,stop) if manual_enabled else None
+    return RestrictedTLS(cfg,handler_for(view,auth,audit,cfg,manual),tls_context(cfg.cert,cfg.key))

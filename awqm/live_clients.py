@@ -85,22 +85,28 @@ class LiveClients:
         planned=self.selector.plan(rows,now,workers)
         for controller,_ in planned:self.last_plan[controller]=now
         return planned
+    def invalidate_ap(self,controller,target):
+        removed=[k for k,r in self.rows.items() if r["controller"]==controller and r["ap_name"]==target]
+        for ident in removed:
+            self.rows.pop(ident,None);self.station.pop(ident,None)
     def ingest(self,reading,controller,snapshot,assoc,bss,radios,quality,clients,now):
         if reading.command=="show ap debug client-stats":
             result=self.ingest_station(reading,controller,snapshot,assoc,bss,radios,quality,clients,now)
             if not result and reading.target:self.station.pop(self.token("client",reading.target),None)
             return result
-        if (reading.command!="show ap debug client-table" or not reading.target or
-            not snapshot or not assoc or not bss or
+        if reading.command!="show ap debug client-table" or not reading.target:return 0
+        def invalid():
+            self.invalidate_ap(controller,reading.target);return 0
+        if (reading.status!="success" or not snapshot or not assoc or not bss or
             reading.generation!=assoc.generation or reading.generation!=bss.generation or
             not 0<=now-reading.observed_at<=90 or not 0<=reading.observed_at-assoc.observed_at<=90 or
             not 0<=reading.observed_at-bss.observed_at<=330):
-            return 0
-        if not isinstance(reading.data,list) or len(reading.data)>2000:return 0
+            return invalid()
+        if not isinstance(reading.data,list) or len(reading.data)>2000:return invalid()
         a=self.approvals.get(controller)
-        if not a or not snapshot.field_tag or now>=(snapshot.field_until or 0) or not a.permits(snapshot.field_tag,reading.observed_at,now):return 0
+        if not a or not snapshot.field_tag or now>=(snapshot.field_until or 0) or not a.permits(snapshot.field_tag,reading.observed_at,now):return invalid()
         relevant=[r for r in radios if r.controller==controller and r.ap_name==reading.target]
-        if not relevant or len({r.ap_id for r in relevant})!=1:return 0
+        if not relevant or len({r.ap_id for r in relevant})!=1:return invalid()
         current={r.radio_id:r for r in relevant}
         local={}
         for d in assoc.data:

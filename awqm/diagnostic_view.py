@@ -80,6 +80,25 @@ class DiagnosticView:
                 for k in ("coherent_controllers","mapped_radios","active_clients","unresolved_radios","client_conflicts"):meta[k]=None
                 meta["available"]=False;meta["cluster"]=None
             return {**meta,"rows":data,"total":len(rows),"page":page,"size":size,"inventory_radios":len(self.rows)}
+    def manual_target(self,token):
+        # Deliberately return only an attested current persistent congestion
+        # target. Never use a free-form device address, CLI or client MAC.
+        from .manual_jobs import ReservationRejected,bind_ap
+        with self.lock:
+            now=int(self.clock())
+            if not self.meta.get("available") or self.meta.get("paused") or not 0<=now-self.meta.get("published_at",0)<=20:
+                raise ReservationRejected("observation_unavailable")
+            row=next((r for r in self.rows if r["id"]==token),None)
+            if (not row or row["freshness"]!="observed" or row["quality"]!="local_operator_attested"
+                or row["risk_status"]!="PERSISTENT" or (row.get("approval_until") or 0)<=now
+                or not 0<=now-row["observed_at"]<=90 or row["utilization"] is None or row["utilization"]<75):
+                raise ReservationRejected("current_attested_congestion_required")
+            rid=self.index.get(token,"")
+            # Internal IDs are site:wired-MAC:physical-Radio. Only a digest
+            # leaves this method; the HTTP receipt omits even that digest.
+            try:mac=rid.split(":",1)[1].rsplit(":",1)[0]
+            except IndexError:raise ReservationRejected("physical_ap_identity_unavailable") from None
+            return {**{k:row[k] for k in ("controller","ap_name","observed_at")},"binding":bind_ap(mac)}
     def association_page(self,ident,page):
         if self.association_history is None:return {"enabled":False,"rows":[],"total":0,"page":page,"size":50}
         return self.association_history.page(int(self.clock()),ident,page)

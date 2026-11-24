@@ -86,7 +86,7 @@ class Engine:
                     self.snapshots[name]=snapshot
                     if self.client_history and reading and reading.status=="success" and reading.target:
                         self.detail_pending[name]=(reading,snapshot,bss,assoc)
-                    if self.live_clients and reading and reading.target and reading.command!=NEIGHBOR and (reading.status=="success" or reading.command=="show ap debug client-stats"):
+                    if self.live_clients and reading and reading.target and reading.command!=NEIGHBOR and (reading.status=="success" or reading.command in ("show ap debug client-stats","show ap debug client-table")):
                         self.live_details[name]=(reading,snapshot,bss,assoc)
                     if reading:self.outcomes[name]={"command":reading.command,"status":reading.status,"observed_at":reading.observed_at}
                 except Exception as exc:

@@ -114,3 +114,12 @@ class LiveClientTests(unittest.TestCase):
         workers={"w1":W()}
         self.assertEqual(len(l.plan(radios,[s],quality,1000,workers)),2)
         self.assertEqual(l.plan(radios,[s],quality,1001,workers),[])
+
+    def test_failed_table_invalidates_previous_ap_view(self):
+        r,s,q,a,assoc,bss,d=fixture()
+        l=LiveClients({"w1":ClientApproval("tag",900,1900,True)},key=b"fixture")
+        self.assertEqual(l.ingest(d,"w1",s,assoc,bss,[r],q,{MAC:a},1010),1)
+        self.assertEqual(len(l.publish([r],[s],q,{MAC:a},1010)),1)
+        failed=replace(d,status="parse_error",data=None)
+        self.assertEqual(l.ingest(failed,"w1",s,assoc,bss,[r],q,{MAC:a},1011),0)
+        self.assertEqual(l.publish([r],[s],q,{MAC:a},1011),[])
