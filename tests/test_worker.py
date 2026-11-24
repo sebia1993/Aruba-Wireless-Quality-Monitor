@@ -38,6 +38,14 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(len(data["radios"]),2)
         self.assertEqual(len(data["clients"]),1)
         clock.t=46
+        self.assertIsNotNone(w.snapshot())
+        clock.t=61
+        w.tick();w.tick()
+        snap=w.snapshot()
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap.observed_at,61)
+        self.assertEqual(snap.inventory_at,0)
+        clock.t=212
         self.assertIsNone(w.snapshot())
     def test_partial_failure_is_not_empty(self):
         clock,session,w=setup()
@@ -70,6 +78,19 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(session.closed)
         self.assertEqual(w.next_connect,15)
         self.assertIsNone(w.tick())
+    def test_reconnect_cannot_use_old_anchor(self):
+        clock,session,w=setup()
+        for _ in range(5):w.tick()
+        clock.t=31
+        session.responses["show cpuload"]=TimeoutError()
+        self.assertEqual(w.tick().status,"transport_error")
+        self.assertIsNone(w.snapshot())
+        session.responses["show cpuload"]="user 10%, system 10%, idle 80%"
+        clock.t=46
+        self.assertEqual(w.tick().status,"success")
+        self.assertIsNone(w.snapshot())
+        for _ in range(4):w.tick()
+        self.assertIsNotNone(w.snapshot())
     def test_partial_cluster_coverage(self):
         c,s,w=setup()
         for _ in range(5):w.tick()

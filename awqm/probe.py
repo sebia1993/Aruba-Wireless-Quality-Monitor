@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 from .aos8 import radio_summary,inventory,active_details,associations,cpu_load,ParseError
 
-PARSERS={"radio":radio_summary,"inventory":inventory,"active":active_details,"association":associations,"cpu":cpu_load}
+from .client import client_table,station_stats,bss_table
+PARSERS={"radio":radio_summary,"inventory":inventory,"active":active_details,"association":associations,"cpu":cpu_load,
+         "client":client_table,"stats":station_stats,"bss":bss_table}
 
 def main():
     p=argparse.ArgumentParser(description="Local AOS 8 CLI parser validation (no SSH connection)")
@@ -21,6 +23,9 @@ def main():
     if isinstance(result,list):
         report={"status":"parsed","kind":a.kind,"count":len(result),"field_validated":False}
         if a.detail:report["rows"]=result
+    elif isinstance(result,dict):
+        report={"status":"parsed","kind":a.kind,"fields":sorted(result),"field_validated":False}
+        if a.detail:report["counters"]=result
     else:
         report={"status":"parsed","kind":a.kind,"cpu_percent":result,"field_validated":False}
     print(json.dumps(report,ensure_ascii=False,indent=2))

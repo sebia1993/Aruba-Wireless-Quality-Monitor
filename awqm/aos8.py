@@ -183,6 +183,9 @@ class ControllerSnapshot:
     active: list
     radios: list
     associations: list | None = None
+    inventory_at: int | None = None
+    anchor_at: int | None = None
+    association_at: int | None = None
 
 def merge_radios(snapshots, site="default", max_skew=45):
     """Only map physical radios with unique AP MAC, AAC and matching physical Radio ID.

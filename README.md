@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.2.0-dev — CLI 파서 및 수집 엔진 기반 개발. 운영 배포 금지.**
+**현재 단계: v0.3.0-dev — 단말 통계·원인 후보 분석 기반 개발. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -17,7 +17,7 @@ python launcher.py --demo
 ```sh
 python launcher.py --validate-cli radio local-output.txt
 ```
-Windows EXE에서도 동일하게 `AWQM.exe --validate-cli radio local-output.txt`를 사용할 수 있습니다. 명령 종류: radio, inventory, active, association, cpu. 기본 결과는 건수 또는 CPU 값이며 SSH에 연결하지 않습니다. 실제 CLI 결과는 사내 PC 밖으로 전송하지 않습니다. --detail 출력에는 식별 정보가 포함될 수 있으므로 주의하십시오.
+Windows EXE에서도 동일하게 `AWQM.exe --validate-cli radio local-output.txt`를 사용할 수 있습니다. 명령 종류: radio, inventory, active, association, cpu, client, stats, bss. 기본 결과는 건수 또는 CPU 값이며 SSH에 연결하지 않습니다. 실제 CLI 결과는 사내 PC 밖으로 전송하지 않습니다. --detail 출력에는 식별 정보가 포함될 수 있으므로 주의하십시오.
 
 ## Windows 빌드
 ```powershell

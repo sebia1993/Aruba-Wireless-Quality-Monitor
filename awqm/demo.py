@@ -20,3 +20,44 @@ def seed(store, now=None):
         fixture=json.dumps({"schema":"awqm.synthetic.radio.v1","complete":True,"count":len(rows),"rows":rows})
         for row in normalized_snapshot(fixture):
             store.save(row)
+
+
+def synthetic_clients(radios):
+    """Generate explicit synthetic evidence using the same analysis functions.
+
+    Only current synthetic radios are used; never feed real device data here.
+    """
+    from .client import Sample,Airtime,analyze
+    from .model import Radio
+    out=[]
+    for row in radios:
+        if row.get("source")!="synthetic":
+            continue
+        radio=Radio(**{k:row[k] for k in Radio.__dataclass_fields__})
+        t=radio.observed_at
+        busy=bool(row.get("open_incident")) and radio.utilization>=75
+        # Three comparable windows; all data are deliberately invented.
+        def sample(i,at,packets,health,retries,rate,snr):
+            client=f"02:00:00:{int(radio.ap_name.rsplit('-',1)[1]):02x}:{int(radio.radio_id.rsplit(':',1)[1]):02x}:{i:02x}"
+            bssid=f"02:ff:00:{int(radio.ap_name.rsplit('-',1)[1]):02x}:{int(radio.radio_id.rsplit(':',1)[1]):02x}:01"
+            return Sample(client,radio.radio_id,bssid,"DEMO-GUEST" if i==1 else "DEMO-STAFF",
+                          radio.epoch,at,packets,packets,health,snr,rate,sent=packets,retried=retries)
+        history=[]
+        for i in range(1,5):
+            low=busy and i in (1,2,3)
+            idle=i==4
+            before=sample(i,t-120,1000,90,5,600,35)
+            previous=sample(i,t-60,1200,90,10,600,35)
+            current=sample(i,t,1200 if idle else 1500,
+                           22 if i==1 and low else 45 if low else 20 if idle else 92,
+                           10 if idle else 110 if low else 15,
+                           24 if i==1 and low else 12 if idle else 600,
+                           12 if i==1 and low else 10 if idle else 34)
+            history.append((before,previous,current))
+        for i,(old,p,c) in enumerate(history,1):
+            air=Airtime(43 if busy and i==1 else 4,"measured","whole_interval",p.at,c.at,c.epoch,True) if i!=4 else None
+            result=analyze(p,c,radio,busy,history,air)
+            out.append(dict(client_mac=c.client_mac,client_name=f"DEMO-{radio.ap_name[8:]}-{radio.radio_id[-1]}-{i}",
+                            radio_id=radio.radio_id,ap_name=radio.ap_name,ssid=c.ssid,band=radio.band,
+                            health=c.health,snr=c.snr,rate=c.rate,observed_at=c.at,source="synthetic",**result))
+    return out

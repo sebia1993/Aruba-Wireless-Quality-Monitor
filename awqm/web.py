@@ -3,7 +3,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import json, tempfile, threading, time
 from .storage import Store
-from .demo import seed, synthetic_rows
+from .demo import seed, synthetic_rows, synthetic_clients
 
 STATIC=Path(__file__).resolve().parent/"static"
 def handler_for(store):
@@ -15,7 +15,9 @@ def handler_for(store):
             routes={"/":("index.html","text/html; charset=utf-8"),"/style.css":("style.css","text/css; charset=utf-8"),
                     "/app.js":("app.js","text/javascript; charset=utf-8")}
             if self.path=="/api/snapshot":
-                body=json.dumps(store.snapshot(),ensure_ascii=False).encode()
+                snapshot=store.snapshot()
+                snapshot["clients"]=synthetic_clients(snapshot["radios"])
+                body=json.dumps(snapshot,ensure_ascii=False).encode()
                 kind="application/json; charset=utf-8"
             elif self.path in routes:
                 name,kind=routes[self.path]
@@ -41,7 +43,9 @@ def serve(port=8765, once=False):
         store=Store(root)
         seed(store)
         if once:
-            print(json.dumps({"mode":"demo","radios":len(store.snapshot()["radios"])}))
+            snap=store.snapshot()
+            print(json.dumps({"mode":"demo","radios":len(snap["radios"]),
+                              "clients":len(synthetic_clients(snap["radios"]))}))
             return
         server=ThreadingHTTPServer(("127.0.0.1",port),handler_for(store))
         stopped=threading.Event()
