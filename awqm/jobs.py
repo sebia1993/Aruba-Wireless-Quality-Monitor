@@ -10,7 +10,7 @@ import re
 from uuid import uuid4
 from .collector import command
 
-DETAIL_COMMANDS={"show ap debug client-table","show ap debug client-stats"}
+DETAIL_COMMANDS={"show ap debug client-table","show ap debug client-stats","show ap arm neighbors bssid"}
 TERMINAL={"completed","failed","cancelled","expired","skipped"}
 
 @dataclass(frozen=True)
@@ -51,7 +51,7 @@ class Jobs:
         if name not in DETAIL_COMMANDS or not 1<=ttl<=600:
             raise ValueError("detail command or TTL not allowed")
         command(name,target)
-        if name.endswith("client-stats"):target=target.lower()
+        if name.endswith("client-stats") or name=="show ap arm neighbors bssid":target=target.lower()
         key=(name,target)
         with self.lock:
             self._expire(now)
@@ -115,6 +115,6 @@ class Jobs:
         """Live Station Stats targets are needed only until execution finishes."""
         with self.lock:
             self._expire(now)
-            gone={key for key,j in self.records.items() if j.name=="show ap debug client-stats" and j.status in TERMINAL}
+            gone={key for key,j in self.records.items() if j.name in ("show ap debug client-stats","show ap arm neighbors bssid") and j.status in TERMINAL}
             for key in gone:self.records.pop(key,None)
             self.requests={k:v for k,v in self.requests.items() if v not in gone}

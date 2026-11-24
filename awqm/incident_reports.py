@@ -47,7 +47,7 @@ def summary(detail):
 
 HEADERS=("record_type","incident_id","ap_name","controller","band","revision","observed_at_kst",
     "state","utilization_percent","interference_percent","noise_dbm","quality_score","candidates",
-    "review_verdict","review_reason","review_candidate","service_impact","truncated")
+    "neighbor_evidence","review_verdict","review_reason","review_candidate","service_impact","truncated")
 
 def rows(detail):
     common={"incident_id":detail["incident_id"],"ap_name":detail["ap_name"],"controller":detail["controller"],
@@ -57,7 +57,9 @@ def rows(detail):
         return dict(common,record_type=kind,revision=revision,observed_at_kst=time_label(at),state=state,
             utilization_percent=e.get("utilization"),interference_percent=e.get("interference"),
             noise_dbm=e.get("noise"),quality_score=e.get("quality_score"),
-            candidates=",".join(c["code"] for c in e.get("candidates",[])))
+            candidates=",".join(c["code"] for c in e.get("candidates",[])),
+            neighbor_evidence="; ".join(line(n.get("ap_name"))+" "+line(n.get("candidate"))+" CH "+line(n.get("channel"))+
+                " / overlap "+line(n.get("overlap_mhz"))+" MHz / OTA "+time_label(n.get("neighbor_at")) for n in e.get("neighbor_evidence",[])))
     yield observation("summary",detail["revision"],detail["evidence"].get("observed_at"),detail.get("display_state",detail["state"]),detail["evidence"])
     for x in detail["timeline"]:
         yield observation("evidence",x["revision"],x["at"],x["state"],x["evidence"])

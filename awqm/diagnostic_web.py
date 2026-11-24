@@ -138,7 +138,7 @@ def handler_for(view,auth,audit,cfg):
             if path.path=="/diagnostic.css" and not path.query:
                 self._send(200,(STATIC/"diagnostic.css").read_bytes(),"text/css; charset=utf-8");return
             try:
-                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html"))
+                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html","/api/neighbors"))
             except AuthDenied:
                 if self.path=="/":self._login()
                 else:self._json(401,{"error":"authentication_required"})
@@ -164,6 +164,11 @@ def handler_for(view,auth,audit,cfg):
                         body=csv_report(report) if fmt=="csv" else html_report(report)
                         self._send(200,body,"text/csv; charset=utf-8" if fmt=="csv" else "text/html; charset=utf-8",
                             (("Content-Disposition",'attachment; filename="awqm-diagnostic-history.'+fmt+'"'),))
+                elif path.path=="/api/neighbors":
+                    q=self._query(path,{"id"})
+                    result=view.neighbors(q["id"])
+                    audit.record(s.username,"neighbor_view",q["id"])
+                    self._json(200,result)
                 elif path.path=="/api/clients":
                     q=self._query(path,{"q","page"})
                     # Log detailed-client view access without raw client identifiers.

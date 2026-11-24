@@ -12,10 +12,11 @@ from .aos8 import merge_radios,merge_associations
 from .durable_jobs import DurableJobs
 from .selection import Selector
 from .client_history import ClientHistory,map_samples
+from .live_neighbors import COMMAND as NEIGHBOR
 import json
 
 class Engine:
-    def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time,simulation=False,durable_jobs=False,auto=False,quality_ledger=None,live_clients=None,cluster_monitor=None):
+    def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time,simulation=False,durable_jobs=False,auto=False,quality_ledger=None,live_clients=None,cluster_monitor=None,live_neighbors=None):
         self.workers={w.controller:w for w in workers}
         if not 1<=len(workers)<=4 or len(self.workers)!=len(workers):
             raise ValueError("one to four unique workers required")
@@ -40,6 +41,8 @@ class Engine:
         if simulation and live_clients:raise ValueError("live client path is separate from demo")
         self.live_details={};self.live_client_views=[]
         self.cluster_monitor=cluster_monitor;self.cluster_frames={};self.cluster_view=None
+        if simulation and live_neighbors:raise ValueError("live neighbor path is separate from demo")
+        self.live_neighbors=live_neighbors;self.neighbor_frames={};self.neighbor_pending={};self.neighbor_views={};self.neighbor_refresh_at=None
     @staticmethod
     def _step(w,cluster_load=False):
         r=w.tick(cluster_load=cluster_load) if w.enable_cluster else w.tick()
@@ -73,15 +76,20 @@ class Engine:
                 try:
                     reading,snapshot,bss,assoc,frame=f.result()
                     if frame is not None:self.cluster_frames[name]=frame
+                    if self.live_neighbors:
+                        self.neighbor_frames[name]=(snapshot,bss)
+                        if reading and reading.command==NEIGHBOR and reading.target:
+                            self.neighbor_pending[name]=(reading,snapshot)
                     self.snapshots[name]=snapshot
                     if self.client_history and reading and reading.status=="success" and reading.target:
                         self.detail_pending[name]=(reading,snapshot,bss,assoc)
-                    if self.live_clients and reading and reading.target and (reading.status=="success" or reading.command=="show ap debug client-stats"):
+                    if self.live_clients and reading and reading.target and reading.command!=NEIGHBOR and (reading.status=="success" or reading.command=="show ap debug client-stats"):
                         self.live_details[name]=(reading,snapshot,bss,assoc)
                     if reading:self.outcomes[name]={"command":reading.command,"status":reading.status,"observed_at":reading.observed_at}
                 except Exception as exc:
                     self.snapshots[name]=None
                     self.cluster_frames.pop(name,None)
+                    self.neighbor_frames.pop(name,None)
                     self.outcomes[name]={"status":"worker_error","reason":type(exc).__name__}
                     # Avoid a hot failure loop.
                     self.next_tick[name]=now+15
@@ -192,6 +200,22 @@ class Engine:
                         self.live_details.clear();self.live_clients.clear();self.live_client_views=[]
                 except (ValueError,TypeError,KeyError,RuntimeError,sqlite3.Error,OSError) as exc:
                     self.live_details.clear();self.live_clients.clear();self.live_client_views=[]
+                    self.error=type(exc).__name__
+            if self.live_neighbors:
+                try:
+                    now_wall=int(self.wall())
+                    if self.error or self.paused:
+                        self.live_neighbors.clear();self.neighbor_pending.clear();self.neighbor_views={}
+                    elif self.neighbor_pending or self.neighbor_refresh_at!=now_wall:
+                        index=self.live_neighbors.index(radios,active,self.neighbor_frames,now_wall)
+                        for name,(reading,snap) in list(self.neighbor_pending.items()):
+                            self.live_neighbors.ingest(reading,name,snap,index,self.field_quality,now_wall)
+                        self.neighbor_pending.clear()
+                        self.live_neighbors.plan(index,self.field_quality,now_wall,self.workers)
+                        self.neighbor_views=self.live_neighbors.publish(radios,active,self.field_quality,now_wall)
+                        self.neighbor_refresh_at=now_wall
+                except (ValueError,TypeError,KeyError,RuntimeError,sqlite3.Error,OSError) as exc:
+                    self.live_neighbors.clear();self.neighbor_pending.clear();self.neighbor_views={}
                     self.error=type(exc).__name__
             if self.cluster_monitor:
                 self.cluster_monitor.choose(self.cluster_frames,int(self.wall()),self.inflight)

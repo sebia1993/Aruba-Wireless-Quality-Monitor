@@ -6,6 +6,7 @@ and tied to the exact evidence revision reviewed.
 """
 import json,re,uuid,time
 from dataclasses import asdict
+from types import SimpleNamespace
 from contextlib import contextmanager
 
 POLICY="balanced-radio-v1"
@@ -117,6 +118,32 @@ class Incidents:
         c.execute("""UPDATE rf_incidents SET last_at=?,persistent_at=?,ended_at=?,state=?,evidence_rev=?,evidence=?
             WHERE incident_id=?""",(t,persistent,ended,status,rev,payload,ident))
         return ident
+    def record_neighbors(self,r,quality,at,matches):
+        """Append a separately timed, bounded candidate evidence revision."""
+        ident=quality.get("incident_id")
+        if not ident or not IDENT.fullmatch(ident) or quality.get("status")!="PERSISTENT" or quality.get("observed_at")!=r.observed_at:
+            return False
+        if not r.valid or not 0<=at-r.observed_at<=90 or not 1<=len(matches)<=20:
+            return False
+        if any(x.get("candidate") not in ("RF05","RF06") or x.get("confidence")!="medium" for x in matches):
+            return False
+        with self.store.lock,self.store._db(self.store.root/"core.db") as c:
+            row=c.execute("SELECT state,last_at,evidence_rev,evidence,ended_at FROM rf_incidents WHERE incident_id=? AND radio_id=?",(ident,r.radio_id)).fetchone()
+            if not row or row[0]!="PERSISTENT" or row[1]!=r.observed_at or row[4] is not None:return False
+            old=json.loads(row[3])
+            evidence=evidence_for(r,SimpleNamespace(status="PERSISTENT"),quality.get("score"))
+            evidence["neighbor_observed_at"]=at
+            evidence["neighbor_evidence"]=[{k:x[k] for k in ("ap_name","band","channel","width","snr","discovery","neighbor_at","target_radio_at","relation","overlap_mhz","candidate","confidence")} for x in matches]
+            for code in sorted({x["candidate"] for x in matches}):
+                evidence["candidates"].append({"code":code,"label":"Aligned neighbor contention candidate",
+                    "confidence":"medium","basis":["verified_receiving_radio_scope","direct_ota_observation",
+                        "explicit_channel_block_overlap","aligned_persistent_congestion"],
+                    "limit":"Correlation only; actual cause, client impact and service outage unverified"})
+            if old==evidence:return False
+            rev=row[2]+1;payload=json.dumps(evidence,sort_keys=True,allow_nan=False)
+            c.execute("UPDATE rf_incidents SET evidence_rev=?,evidence=? WHERE incident_id=?",(rev,payload,ident))
+            c.execute("INSERT INTO rf_incident_events VALUES(?,?,?,?,?)",(ident,rev,at,"PERSISTENT",payload))
+            return True
     def current_id(self,c,radio_id,context):
         row=c.execute("""SELECT incident_id FROM rf_incidents WHERE radio_id=? AND context=? AND ended_at IS NULL""",
             (radio_id,context)).fetchone()
@@ -171,7 +198,7 @@ class Incidents:
         if (not isinstance(ident,str) or not IDENT.fullmatch(ident) or type(revision) is not int or revision<1
             or not isinstance(request_id,str) or not REQUEST.fullmatch(request_id)
             or not isinstance(user,str) or not USER.fullmatch(user)
-            or verdict not in REVIEW_VERDICTS or reason not in REASONS or candidate not in ("RF04","UNKNOWN")):
+            or verdict not in REVIEW_VERDICTS or reason not in REASONS or candidate not in ("RF04","RF05","RF06","UNKNOWN")):
             raise ValueError("invalid review")
         if candidate=="UNKNOWN" and verdict=="supported":raise ValueError("unknown cause cannot be confirmed")
         with self.transaction() as c:

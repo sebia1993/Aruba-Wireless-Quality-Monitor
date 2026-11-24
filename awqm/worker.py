@@ -17,6 +17,8 @@ from .client import client_table,station_stats,bss_table
 from .field_validation import version_identity,fingerprint
 from .station_validation import collect as collect_station,StationUnavailable
 from .cluster import MEMBERSHIP,AP_LOAD,CLIENT_LOAD,LOAD_COMMANDS,group_membership,ap_load,client_load
+from .live_neighbors import COMMAND as NEIGHBOR,width_value
+from .rf_neighbors import arm_neighbors
 
 PARSERS={
     "show cpuload":cpu_load,
@@ -28,7 +30,7 @@ PARSERS={
     "show ap bss-table":bss_table,
     MEMBERSHIP:group_membership,AP_LOAD:ap_load,CLIENT_LOAD:client_load,
 }
-DETAIL_PARSERS={"show ap debug client-table":client_table,"show ap debug client-stats":station_stats}
+DETAIL_PARSERS={"show ap debug client-table":client_table,"show ap debug client-stats":station_stats,NEIGHBOR:arm_neighbors}
 DENIED=re.compile(r"(?im)^\s*(?:%\s*)?(?:permission denied|access denied|not authorized|authorization failed)")
 UNSUPPORTED=re.compile(r"(?im)^\s*(?:%\s*)?(?:invalid (?:input|command)|unknown command|command not found|unrecognized command|ambiguous command|incomplete command)")
 AUTH_ERRORS={"AuthenticationException","BadAuthenticationType","PasswordRequiredException","BadHostKeyException","HostKeyUnapproved","SharedCredentialRejected","CredentialUnavailable"}
@@ -45,10 +47,10 @@ class Reading:
     target: str|None=None
 
 class ControllerWorker:
-    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False):
+    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False,neighbor_approval=None):
         self.controller=controller;self.session_factory=session_factory
         self.clock=clock;self.wall=wall
-        self.field_approval=field_approval;self.enable_cluster=enable_cluster
+        self.field_approval=field_approval;self.enable_cluster=enable_cluster;self.neighbor_approval=neighbor_approval
         self.live_detail=live_detail;self.client_approval=client_approval;self.station_approval=station_approval
         polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table") and (enable_cluster or p.name!=MEMBERSHIP))
         if enable_cluster:polls=polls+(Poll(AP_LOAD,120,20,2),Poll(CLIENT_LOAD,120,20,2))
@@ -163,6 +165,12 @@ class ControllerWorker:
         return self.jobs.submit(request_id,name,target,self.wall(),ttl)
     def _detail_target(self,job):
         now=int(self.wall())
+        if job.name==NEIGHBOR:
+            b=self.latest.get("show ap bss-table");a=self.latest.get("show ap active details")
+            if any(not x or x.generation!=self.generation or self.outcomes[x.command].status!="success" for x in (b,a)):return False
+            if not 0<=now-b.observed_at<=330 or not 0<=now-a.observed_at<=150:return False
+            rows=[x for x in b.data if x["bssid"]==job.target and x["service"]]
+            return len(rows)==1 and sum(x["name"]==rows[0]["ap_name"] and x["ip"]==rows[0]["ip"] and "A" in x["roles"] for x in a.data)==1
         if job.name.endswith("client-table"):
             r=self.latest.get("show ap active details")
             if not r or r.generation!=self.generation or self.outcomes[r.command].status!="success" or not 0<=now-r.observed_at<=150:
@@ -175,6 +183,23 @@ class ControllerWorker:
         claims=[x for x in r.data if x["client_mac"]==job.target and x["active"]]
         return len(claims)==1 and sum(x["name"]==claims[0]["ap_name"] and "A" in x["roles"] for x in a.data)==1
     def _live_detail_allowed(self,job):
+        if job.name==NEIGHBOR:
+            a=self.neighbor_approval;radio=self.field_approval;now=int(self.wall())
+            if not self.live_detail or not a or not a.automatic or not radio:return False
+            readings=[self.latest.get(k) for k in ("show version","show ap radio-summary","show ap bss-table")]
+            if any(not x or x.generation!=self.generation or self.outcomes[x.command].status!="success" for x in readings):return False
+            v,r,b=readings
+            if not (0<=now-r.observed_at<=90 and 0<=now-b.observed_at<=330):return False
+            if not radio.permits(v.data,fingerprint(self.session),r.observed_at,now,v.observed_at) or not a.permits(radio.tag,r.observed_at,now):return False
+            target=[x for x in b.data if x["bssid"]==job.target and x["service"]]
+            if len(target)!=1:return False
+            t=target[0];width=width_value(t["width"])
+            matches=[x for x in r.data if x["name"]==t["ap_name"] and x["ip"]==t["ip"] and x["band"]==t["band"] and x["channel"]==t["channel"] and x["service"]]
+            if len(matches)!=1 or width is None:return False
+            x=matches[0]
+            return bool(a.block(x["band"],x["mode"].rsplit(":",1)[-1],width) and
+                       all(x[k] is not None for k in ("utilization","interference","noise")) and
+                       (x["utilization"]>=75 or x["interference"]>=30 or x["noise"]>-80))
         if not self.live_detail:return True
         # Service workers explicitly opt in to the live gate. A separate
         # client approval, current version/key, and recent association/BSS
@@ -203,7 +228,7 @@ class ControllerWorker:
             if job.name in self.detail_disabled:
                 self.jobs.finish(job.job_id,"skipped","command_unavailable",self.wall());continue
             if not self._live_detail_allowed(job):
-                self.jobs.defer(job.job_id,"client_validation_or_freshness_required");continue
+                self.jobs.defer(job.job_id,"neighbor_validation_or_freshness_required" if job.name==NEIGHBOR else "client_validation_or_freshness_required");continue
             if not self._detail_target(job):
                 self.jobs.defer(job.job_id,"target_anchor_unverified");continue
             poll=Poll(job.name,60,10,3,True)
@@ -227,12 +252,12 @@ class ControllerWorker:
                     if DENIED.search(raw) or UNSUPPORTED.search(raw):
                         self.detail_disabled.add(job.name)
                         self.jobs.finish(job.job_id,"skipped","permission_denied_or_unsupported",self.wall())
-                        return Reading(job.name,"unsupported",int(self.wall()),generation=self.generation)
+                        return Reading(job.name,"unsupported",int(self.wall()),generation=self.generation,target=job.target if job.name==NEIGHBOR else None)
                     try:
                         value=DETAIL_PARSERS[job.name](raw)
                     except (ValueError,TypeError):
                         self.jobs.finish(job.job_id,"failed","parse_error",self.wall())
-                        return Reading(job.name,"parse_error",int(self.wall()),generation=self.generation)
+                        return Reading(job.name,"parse_error",int(self.wall()),generation=self.generation,target=job.target if job.name==NEIGHBOR else None)
                 reading=Reading(job.name,"success",int(self.wall()),value,generation=self.generation,target=job.target)
                 # Bounded cache; full historical client persistence is not yet enabled.
                 key=(job.name,job.target)
@@ -244,7 +269,7 @@ class ControllerWorker:
             except Exception as exc:
                 self.jobs.finish(job.job_id,"failed",type(exc).__name__,self.wall())
                 self._failed(type(exc).__name__)
-                return Reading(job.name,"transport_error",int(self.wall()),generation=self.generation,target=job.target if self.live_detail and job.name=="show ap debug client-stats" else None)
+                return Reading(job.name,"transport_error",int(self.wall()),generation=self.generation,target=job.target if self.live_detail and job.name in ("show ap debug client-stats",NEIGHBOR) else None)
             finally:
                 self.schedule.protection.account(now,self.clock(),True)
         return None

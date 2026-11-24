@@ -15,6 +15,7 @@ from .live_clients import LiveClients,load_client_approvals
 from .station_validation import load_station_approvals
 from .cluster import ClusterMonitor
 from .retention import Retention,load_retention
+from .live_neighbors import LiveNeighbors,load_neighbor_approvals
 from .diagnostic_view import DiagnosticView
 from .diagnostic_web import create_listener
 from .collector import PinnedSSH
@@ -89,7 +90,9 @@ def pump(engine,maintenance,stop,status_path,usage=shutil.disk_usage,wall=time.t
                                  available=level!="critical" and not bool(result.get("storage_error")),
                                  quality=getattr(engine,"field_quality",{}),
                                  client_views=getattr(engine,"live_client_views",()),
-                                 client_enabled=bool(getattr(engine,"live_clients",None)))
+                                 client_enabled=bool(getattr(engine,"live_clients",None)),
+                                 neighbor_views=getattr(engine,"neighbor_views",{}),
+                                 neighbor_enabled=bool(getattr(engine,"live_neighbors",None)))
                 write_json(status_path,{"state":"running","at":int(now),"disk_level":level,
                     "result":result,"maintenance":getattr(engine,"last_maintenance",{}),
                     "web_enabled":view is not None,"field_validated":False})
@@ -111,6 +114,7 @@ def run_service(root,stop):
     approvals=load_approvals(cfg)
     client_approvals=load_client_approvals(cfg,approvals)
     station_approvals=load_station_approvals(cfg,client_approvals)
+    neighbor_approvals=load_neighbor_approvals(cfg,approvals)
     # Preflight all blobs and known host entries before creating any session.
     import paramiko
     keys=paramiko.HostKeys(str(cfg.known_hosts))
@@ -120,13 +124,14 @@ def run_service(root,stop):
     with exclusive(cfg.root):
         store=Store(safe_path(cfg.root,"data"),mode="diagnostic")
         gate=ConnectionGate(cfg.known_hosts,stop=stop)
-        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode=profile,offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True) for i,t in enumerate(cfg.targets)]
+        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode=profile,offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True,neighbor_approval=neighbor_approvals.get(t.id)) for i,t in enumerate(cfg.targets)]
         # Always open the local history ledger so old incidents remain
         # inspectable after an attestation is revoked or expires.
         quality=QualityLedger(store)
         engine=Engine(workers,store,site=cfg.site,simulation=False,durable_jobs=False,auto=False,
                       quality_ledger=quality,live_clients=LiveClients(client_approvals,station_approvals=station_approvals) if client_approvals else None,
-                      cluster_monitor=ClusterMonitor({t.id:t.ip for t in cfg.targets}))
+                      cluster_monitor=ClusterMonitor({t.id:t.ip for t in cfg.targets}),
+                      live_neighbors=LiveNeighbors(neighbor_approvals,quality.incidents) if neighbor_approvals else None)
         backup_root=safe_path(cfg.root,"backup");audit_path=safe_path(cfg.root,"logs/web-audit.db")
         maintenance=Maintenance(store,backup_root,
             retention=Retention(store,backup_root,audit_path) if retention_enabled else None,audit_path=audit_path)

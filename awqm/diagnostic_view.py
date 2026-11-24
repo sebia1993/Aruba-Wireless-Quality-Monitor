@@ -12,10 +12,10 @@ class DiagnosticView:
     def __init__(self,store,clock,key=None,incidents=None):
         if store.mode!="diagnostic":raise ValueError("diagnostic store required")
         self.store=store;self.clock=clock;self.key=key or secrets.token_bytes(32)
-        self.lock=RLock();self.rows=[];self.index={};self.meta={};self.incidents=incidents;self.client_rows=[];self.client_enabled=False
+        self.lock=RLock();self.rows=[];self.index={};self.meta={};self.incidents=incidents;self.client_rows=[];self.client_enabled=False;self.neighbor_views={};self.neighbor_enabled=False
     def token(self,radio_id):
         return hmac.new(self.key,radio_id.encode("utf-8"),hashlib.sha256).hexdigest()[:32]
-    def publish(self,result,current=(),available=True,quality=None,client_views=(),client_enabled=False):
+    def publish(self,result,current=(),available=True,quality=None,client_views=(),client_enabled=False,neighbor_views=None,neighbor_enabled=False):
         now=int(self.clock())
         with self.lock:
             if available:
@@ -47,6 +47,8 @@ class DiagnosticView:
                 if available:self.rows=rows;self.index=index
             else:
                 self.rows=[dict(r,freshness="stale_or_unconfirmed") for r in self.rows]
+            self.neighbor_enabled=bool(neighbor_enabled)
+            self.neighbor_views=dict(neighbor_views or {}) if available else {}
             self.client_enabled=bool(client_enabled)
             self.client_rows=[dict(r) for r in client_views] if available else []
             self.meta={"published_at":now,"field_validated":False,"mode":"diagnostic",
@@ -136,3 +138,26 @@ class DiagnosticView:
             return {"rows":rows[(page-1)*size:page*size],"total":len(rows),"page":page,"size":size,
                 "enabled":self.client_enabled,"available":fresh,"scope":"local_operator_attested_ephemeral_detail",
                 "persistent_storage":False,"airtime_validated":False,"cause_confirmed":False}
+
+    def neighbors(self,token):
+        if not isinstance(token,str) or len(token)!=32:raise ValueError("invalid Radio")
+        with self.lock:
+            rid=self.index.get(token)
+            if rid is None:raise ValueError("unknown Radio")
+            now=int(self.clock());n=self.neighbor_views.get(rid)
+            fresh=bool(self.meta.get("available") and 0<=now-self.meta.get("published_at",0)<=20)
+            if not fresh or not n or not 0<=now-n["radio_at"]<=90 or not 0<=now-n["observed_at"]<=180 or now>=n["until"]:
+                return {"enabled":self.neighbor_enabled,"available":False,"rows":[],"service_impact":"unverified"}
+            fields=("neighbor_id","ap_name","band","channel","width","snr","discovery","neighbor_at",
+                "target_radio_at","relation","overlap_mhz","candidate","confidence","reason")
+            rows=[]
+            for item in n["rows"]:
+                r={k:item[k] for k in fields}
+                if item.get("target_until") is not None and now>=item["target_until"]:
+                    r.update(candidate=None,confidence="unavailable",relation="unknown",overlap_mhz=None,reason="target_attestation_expired")
+                elif r["candidate"] and (r["neighbor_at"] is None or r["target_radio_at"] is None
+                    or not 0<=now-r["neighbor_at"]<=90 or not 0<=now-r["target_radio_at"]<=90):
+                    r.update(candidate=None,confidence="unavailable",reason="stale_neighbor_evidence")
+                rows.append(r)
+            return {"enabled":self.neighbor_enabled,"available":True,"rows":rows,
+                    "observed_at":n["observed_at"],"truncated":n["truncated"],"service_impact":"unverified"}
