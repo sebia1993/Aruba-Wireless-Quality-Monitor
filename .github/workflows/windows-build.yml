@@ -76,14 +76,14 @@ jobs:
           Copy-Item README.md,VERSION.txt -Destination dist\AWQM
           Copy-Item docs -Destination dist\AWQM\docs -Recurse
           python -m pip freeze | Set-Content -Encoding utf8 dist\AWQM\BUILD-DEPENDENCIES.txt
-          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.12.0-dev_Win11_x64.zip
-          $hash = (Get-FileHash AWQM_0.12.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
-          "$hash  AWQM_0.12.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
+          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.13.0-dev_Win11_x64.zip
+          $hash = (Get-FileHash AWQM_0.13.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  AWQM_0.13.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: AWQM-Windows-dev-x64
           path: |
-            AWQM_0.12.0-dev_Win11_x64.zip
+            AWQM_0.13.0-dev_Win11_x64.zip
             SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 3

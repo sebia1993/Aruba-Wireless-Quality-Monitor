@@ -5,15 +5,15 @@ import hashlib
 COMMAND="show ap debug client-table"
 
 class Selector:
-    def __init__(self,per_wlc=5,per_round=2,cooldown=60):
+    def __init__(self,per_wlc=5,per_round=2,cooldown=60,allow_attested=False):
         self.per_wlc=per_wlc;self.per_round=per_round;self.cooldown=cooldown
-        self.last={}
+        self.last={};self.allow_attested=allow_attested
     def plan(self,rows,now,workers):
         """Only fresh persistent service Radio observations; group by physical AP."""
         self.last={k:v for k,v in self.last.items() if now-v<max(3600,self.cooldown*2)}
         ranked=defaultdict(dict)
         for r in rows:
-            if (r.get("source")!="synthetic" or r.get("status")!="PERSISTENT" or
+            if (r.get("source")!=("attested-radio" if self.allow_attested else "synthetic") or r.get("status")!="PERSISTENT" or
                 not r.get("open_incident") or not r.get("complete") or
                 not 0<=now-r["observed_at"]<=90 or r["controller"] not in workers):
                 continue

@@ -15,7 +15,7 @@ from .client_history import ClientHistory,map_samples
 import json
 
 class Engine:
-    def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time,simulation=False,durable_jobs=False,auto=False,quality_ledger=None):
+    def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time,simulation=False,durable_jobs=False,auto=False,quality_ledger=None,live_clients=None):
         self.workers={w.controller:w for w in workers}
         if not 1<=len(workers)<=4 or len(self.workers)!=len(workers):
             raise ValueError("one to four unique workers required")
@@ -36,6 +36,9 @@ class Engine:
         self.paused=False;self.closed=False;self.lock=Lock()
         self.published_radios=()
         self.quality_ledger=quality_ledger;self.field_quality={}
+        self.live_clients=live_clients
+        if simulation and live_clients:raise ValueError("live client path is separate from demo")
+        self.live_details={};self.live_client_views=[]
     @staticmethod
     def _step(w):
         r=w.tick()
@@ -71,6 +74,8 @@ class Engine:
                     self.snapshots[name]=snapshot
                     if self.client_history and reading and reading.status=="success" and reading.target:
                         self.detail_pending[name]=(reading,snapshot,bss,assoc)
+                    if self.live_clients and reading and reading.status=="success" and reading.target:
+                        self.live_details[name]=(reading,snapshot,bss,assoc)
                     if reading:self.outcomes[name]={"command":reading.command,"status":reading.status,"observed_at":reading.observed_at}
                 except Exception as exc:
                     self.snapshots[name]=None
@@ -166,6 +171,20 @@ class Engine:
             if self.quality_ledger and not self.error and not self.simulation:
                 try:self.field_quality=self.quality_ledger.evaluate(radios,active,int(self.wall()),self.accepted)
                 except (sqlite3.Error,OSError,ValueError,TypeError) as exc:self.error=type(exc).__name__
+            if self.live_clients:
+                try:
+                    now_wall=int(self.wall())
+                    if not self.error and not self.paused:
+                        for name,(reading,snap,bss,assoc) in list(self.live_details.items()):
+                            self.live_clients.ingest(reading,name,snap,assoc,bss,radios,self.field_quality,clients,now_wall)
+                        self.live_details.clear()
+                        self.live_clients.plan(radios,active,self.field_quality,now_wall,self.workers)
+                        self.live_client_views=self.live_clients.publish(radios,active,self.field_quality,clients,now_wall)
+                    else:
+                        self.live_details.clear();self.live_clients.clear();self.live_client_views=[]
+                except (ValueError,TypeError,KeyError,RuntimeError,sqlite3.Error,OSError) as exc:
+                    self.live_details.clear();self.live_clients.clear();self.live_client_views=[]
+                    self.error=type(exc).__name__
             self.published_radios=tuple((r.radio_id,r.observed_at) for r in radios if not self.error and self.accepted.get(r.radio_id)==r.observed_at)
             self.last_result={"mode":"demo" if self.simulation else "diagnostic","field_validated":False,
                 "coherent_controllers":len(active),"expected_controllers":len(self.workers),

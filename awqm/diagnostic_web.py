@@ -163,6 +163,11 @@ def handler_for(view,auth,audit,cfg):
                         body=csv_report(report) if fmt=="csv" else html_report(report)
                         self._send(200,body,"text/csv; charset=utf-8" if fmt=="csv" else "text/html; charset=utf-8",
                             (("Content-Disposition",'attachment; filename="awqm-diagnostic-history.'+fmt+'"'),))
+                elif path.path=="/api/clients":
+                    q=self._query(path,{"q","page"})
+                    # Log detailed-client view access without raw client identifiers.
+                    audit.record(s.username,"client_view")
+                    self._json(200,view.clients_page(q["q"],int(q["page"])))
                 elif path.path=="/api/incidents":
                     q=self._query(path,{"page","status","start","end"})
                     self._json(200,view.incident_list(int(q["page"]),q["status"],int(q["start"]),int(q["end"])))
@@ -177,7 +182,7 @@ def handler_for(view,auth,audit,cfg):
                     remaining=max(0,(cfg.expires_at-int(time.time()))//86400)
                     self._json(200,{"audit":audit.summary(),"certificate_days":remaining,
                         "certificate_warning":remaining<=30,"field_validated":False,
-                        "automatic_detail":False,"client_identity_storage":False})
+                        "automatic_detail":view.client_enabled,"client_identity_storage":False})
                 else:self._send(404)
             except (ValueError,TypeError,OverflowError):self._json(400,{"error":"invalid_request"})
             except (RuntimeError,sqlite3.Error,OSError):self._json(503,{"error":"data_or_audit_unavailable"})

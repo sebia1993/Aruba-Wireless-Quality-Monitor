@@ -11,6 +11,7 @@ import hashlib,time,shutil,threading
 from .web_config import load_web_config
 from .field_validation import load_approvals
 from .quality_ledger import QualityLedger
+from .live_clients import LiveClients,load_client_approvals
 from .diagnostic_view import DiagnosticView
 from .diagnostic_web import create_listener
 from .collector import PinnedSSH
@@ -83,7 +84,9 @@ def pump(engine,maintenance,stop,status_path,usage=shutil.disk_usage,wall=time.t
                 if view is not None:
                     view.publish(result,getattr(engine,"published_radios",()),
                                  available=level!="critical" and not bool(result.get("storage_error")),
-                                 quality=getattr(engine,"field_quality",{}))
+                                 quality=getattr(engine,"field_quality",{}),
+                                 client_views=getattr(engine,"live_client_views",()),
+                                 client_enabled=bool(getattr(engine,"live_clients",None)))
                 write_json(status_path,{"state":"running","at":int(now),"disk_level":level,
                     "result":result,"maintenance":getattr(engine,"last_maintenance",{}),
                     "web_enabled":view is not None,"field_validated":False})
@@ -101,6 +104,7 @@ def run_service(root,stop):
     check_identity(cfg.account);check_layout(cfg)
     web=load_web_config(cfg)
     approvals=load_approvals(cfg)
+    client_approvals=load_client_approvals(cfg,approvals)
     # Preflight all blobs and known host entries before creating any session.
     import paramiko
     keys=paramiko.HostKeys(str(cfg.known_hosts))
@@ -110,12 +114,12 @@ def run_service(root,stop):
     with exclusive(cfg.root):
         store=Store(safe_path(cfg.root,"data"),mode="diagnostic")
         gate=ConnectionGate(cfg.known_hosts,stop=stop)
-        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode="safe",offset=i*15,enable_bss=True,field_approval=approvals.get(t.id)) for i,t in enumerate(cfg.targets)]
+        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode="safe",offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id)) for i,t in enumerate(cfg.targets)]
         # Always open the local history ledger so old incidents remain
         # inspectable after an attestation is revoked or expires.
         quality=QualityLedger(store)
         engine=Engine(workers,store,site=cfg.site,simulation=False,durable_jobs=False,auto=False,
-                      quality_ledger=quality)
+                      quality_ledger=quality,live_clients=LiveClients(client_approvals) if client_approvals else None)
         maintenance=Maintenance(store,safe_path(cfg.root,"backup"))
         view=DiagnosticView(store,time.time,incidents=quality.incidents) if web else None
         server=None;thread=None

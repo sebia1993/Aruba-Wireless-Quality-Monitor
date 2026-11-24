@@ -78,10 +78,31 @@ async function openIncident(id){
   }catch(e){if(!expired&&incidentPanel===ticket)out.replaceChildren(el("p","상세 이력을 조회하지 못했습니다."));}
 }
 
+let clientPage=1,clientVersion=0;
+async function loadClients(){
+  if(view!=="clients"||expired)return;
+  const rev=++clientVersion,out=$("content");
+  out.replaceChildren(el("p","단말 상세 관측 조회 중"));
+  try{
+    const q=new URLSearchParams({q:$("search").value,page:String(clientPage)});
+    const d=await request("/api/clients?"+q);
+    if(rev!==clientVersion||view!=="clients"||expired)return;
+    out.replaceChildren(el("p",d.enabled?"현장 승인된 AP 정밀 조회의 임시 단말 관측입니다. MAC·SSID 원문 미표시, DB 미저장.":"단말 상세 수집 비활성 · 별도 현장 검증 필요"),
+      el("p","품질 점수는 Health·ACK SNR 기반 부분 점수입니다. 전송 활동·재전송·Airtime·원인 기여는 미확인."));
+    const refreshBtn=el("button","관측 갱신");refreshBtn.addEventListener("click",loadClients);out.append(refreshBtn);
+    if(!d.rows.length)out.append(el("p","현재 조건을 충족하는 상세 관측이 없습니다. 단말이 없거나 정상이라는 의미는 아닙니다."));
+    else out.append(table(["임시 단말 ID","AP","WLC","대역","Health %","ACK SNR dB","최근 PHY Mbps","부분 품질 점수","Airtime","관측 시각"],d.rows.map(r=>[r.id.slice(0,16),r.ap_name,r.controller,r.band,r.health,r.snr,r.last_phy_rate,r.quality_score==null?"미확인":r.quality_score+" (부분)","미확인",kst(r.observed_at)])));
+    const controls=el("div",null,"pager"),prev=el("button","이전"),next=el("button","다음");
+    prev.disabled=clientPage<=1;next.disabled=clientPage*d.size>=d.total;
+    prev.addEventListener("click",()=>{clientPage--;loadClients();});next.addEventListener("click",()=>{clientPage++;loadClients();});
+    controls.append(prev,el("span",clientPage+" / "+Math.max(1,Math.ceil(d.total/d.size))+" · "+d.total+"건"),next);out.append(controls);
+  }catch(e){if(!expired&&rev===clientVersion&&view==="clients")out.replaceChildren(el("p","현재 상세 관측 확인 불가"));}
+}
+
 function render(){
   if(expired)return;
   const c=$("content");c.replaceChildren();$("heading").textContent=names[view];
-  if(view==="clients"){c.append(el("p","현재는 전체 활성 단말 관측 수만 제공합니다. 개인 식별 정보와 검증되지 않은 단말 품질·원인 분석은 표시하지 않습니다."));return;}
+  if(view==="clients"){loadClients();return;}
   if(view==="history"){loadIncidents();return;}
   if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out);return;}
   if(!snapshot){c.append(el("p","자료 확인 중"));return;}
@@ -95,4 +116,4 @@ function render(){
 }
 async function refresh(force=false){if(expired||busy&&!force)return;const serial=++revision;busy=true;try{const q=new URLSearchParams({q:$("search").value,page:String(page)});const r=await request("/api/radios?"+q);if(serial!==revision||expired)return;snapshot=r;notice(r.available?"진단 관측 · 현장 승인된 Radio 지표만 정책 점수 제공 · 원인/서비스 장애 확정 금지":"수집 또는 저장 상태 확인 불가 · 마지막 관측을 현재 상태로 해석하지 마십시오.");if(view==="overview"||view==="radios")render();}catch(e){if(!expired&&serial===revision){notice("갱신 실패 · 현재 상태 확인 불가");snapshot=null;if(view==="overview"||view==="radios")render();}}finally{if(serial===revision)busy=false;}}
 $("nav").addEventListener("click",e=>{const v=e.target.dataset.view;if(!v||expired)return;view=v;for(const b of $("nav").querySelectorAll("button"))b.removeAttribute("aria-current");e.target.setAttribute("aria-current","page");render();});
-$("search").addEventListener("input",()=>{page=1;refresh(true);});$("close").addEventListener("click",()=>{selected=null;incidentPanel=null;$("detail").hidden=true;$("detailBody").replaceChildren();});render();refresh();setInterval(refresh,10000);
+$("search").addEventListener("input",()=>{page=1;clientPage=1;if(view==="clients")loadClients();else refresh(true);});$("close").addEventListener("click",()=>{selected=null;incidentPanel=null;$("detail").hidden=true;$("detailBody").replaceChildren();});render();refresh();setInterval(()=>{if(view==="clients")loadClients();else refresh();},10000);

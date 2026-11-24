@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.12.0-dev — Radio 위험 이력 및 운영자 근거 검증. 운영 배포 금지.**
+**현재 단계: v0.13.0-dev — 현장 승인 기반 단말 정밀 조회. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -48,6 +48,10 @@ Windows EXE에서도 동일하게 `AWQM.exe --validate-cli radio local-output.tx
 ## Radio 위험 이력 및 운영자 검증
 
 승인된 Radio 통계의 지속 위험, 회복 관측, 확인 불가 및 관측 조건 변경 이력을 보존합니다. RF04(혼잡 관측)과 원인 미확인을 구분하며, 특정 단말이나 외부 간섭 원인은 확정하지 않습니다. 인증된 운영자는 근거 버전을 선택하여 검증 결과를 기록할 수 있습니다. [장애 관측·근거 검증 안내](docs/INCIDENTS.md).
+
+## 현장 승인 기반 단말 정밀 조회 (기본 비활성)
+
+별도 client-validation.json으로 Radio 검증 및 Client Table 지표 의미·개인정보 처리 승인을 연결해야 합니다. 지속적인 Radio 혼잡 AP만 자동 정밀 조회 대상으로 선정합니다. 임시 식별자 기반 단말 품질 관측을 제공하며 MAC·SSID 원문은 단말 이력 DB에 저장하지 않습니다. 재전송·Airtime·실제 원인 기여는 아직 산정하지 않습니다. [단말 상세 수집 안내](docs/CLIENT_VALIDATION.md).
 
 ## Windows 빌드
 ```powershell

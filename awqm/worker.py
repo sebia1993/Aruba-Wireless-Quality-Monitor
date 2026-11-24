@@ -42,10 +42,11 @@ class Reading:
     target: str|None=None
 
 class ControllerWorker:
-    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None):
+    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None):
         self.controller=controller;self.session_factory=session_factory
         self.clock=clock;self.wall=wall
         self.field_approval=field_approval
+        self.live_detail=live_detail;self.client_approval=client_approval
         polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table"))
         if field_approval is not None:polls=polls+(Poll("show version",600,30,0),)
         self.schedule=Scheduler(start=clock(),offset=offset,polls=polls,mode=mode)
@@ -151,11 +152,29 @@ class ControllerWorker:
             return False
         claims=[x for x in r.data if x["client_mac"]==job.target and x["active"]]
         return len(claims)==1 and sum(x["name"]==claims[0]["ap_name"] and "A" in x["roles"] for x in a.data)==1
+    def _live_detail_allowed(self,job):
+        if not self.live_detail:return True
+        # Service workers explicitly opt in to the live gate. A separate
+        # client approval, current version/key, and recent association/BSS
+        # and RF observations are required before a CLI is sent.
+        a=self.client_approval;radio=self.field_approval
+        now=int(self.wall())
+        if not a or not a.automatic or not radio or job.name!="show ap debug client-table":return False
+        keys=("show version","show ap radio-summary","show ap association","show ap bss-table")
+        readings=[self.latest.get(k) for k in keys]
+        if any(not x or x.generation!=self.generation or self.outcomes[x.command].status!="success" for x in readings):return False
+        v,r,assoc,bss=readings
+        if not (0<=now-r.observed_at<=90 and 0<=now-assoc.observed_at<=90 and 0<=now-bss.observed_at<=330):return False
+        if not radio.permits(v.data,fingerprint(self.session),r.observed_at,now,v.observed_at):return False
+        if not a.permits(radio.tag,r.observed_at,now):return False
+        return any(x["name"]==job.target and x["service"] and x["utilization"] is not None and x["utilization"]>=75 for x in r.data)
     def _detail_tick(self):
         now=self.clock()
         for job in self.jobs.pending(self.wall()):
             if job.name in self.detail_disabled:
                 self.jobs.finish(job.job_id,"skipped","command_unavailable",self.wall());continue
+            if not self._live_detail_allowed(job):
+                self.jobs.defer(job.job_id,"client_validation_or_freshness_required");continue
             if not self._detail_target(job):
                 self.jobs.defer(job.job_id,"target_anchor_unverified");continue
             poll=Poll(job.name,60,10,3,True)
@@ -177,8 +196,9 @@ class ControllerWorker:
                 reading=Reading(job.name,"success",int(self.wall()),value,generation=self.generation,target=job.target)
                 # Bounded cache; full historical client persistence is not yet enabled.
                 key=(job.name,job.target)
-                self.detail_latest.pop(key,None);self.detail_latest[key]=reading
-                while len(self.detail_latest)>100:self.detail_latest.pop(next(iter(self.detail_latest)))
+                if not self.live_detail:
+                    self.detail_latest.pop(key,None);self.detail_latest[key]=reading
+                    while len(self.detail_latest)>100:self.detail_latest.pop(next(iter(self.detail_latest)))
                 self.jobs.finish(job.job_id,"completed","field_validation_pending",self.wall())
                 return reading
             except Exception as exc:

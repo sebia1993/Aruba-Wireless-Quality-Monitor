@@ -12,10 +12,10 @@ class DiagnosticView:
     def __init__(self,store,clock,key=None,incidents=None):
         if store.mode!="diagnostic":raise ValueError("diagnostic store required")
         self.store=store;self.clock=clock;self.key=key or secrets.token_bytes(32)
-        self.lock=RLock();self.rows=[];self.index={};self.meta={};self.incidents=incidents
+        self.lock=RLock();self.rows=[];self.index={};self.meta={};self.incidents=incidents;self.client_rows=[];self.client_enabled=False
     def token(self,radio_id):
         return hmac.new(self.key,radio_id.encode("utf-8"),hashlib.sha256).hexdigest()[:32]
-    def publish(self,result,current=(),available=True,quality=None):
+    def publish(self,result,current=(),available=True,quality=None,client_views=(),client_enabled=False):
         now=int(self.clock())
         with self.lock:
             if available:
@@ -47,6 +47,8 @@ class DiagnosticView:
                 if available:self.rows=rows;self.index=index
             else:
                 self.rows=[dict(r,freshness="stale_or_unconfirmed") for r in self.rows]
+            self.client_enabled=bool(client_enabled)
+            self.client_rows=[dict(r) for r in client_views] if available else []
             self.meta={"published_at":now,"field_validated":False,"mode":"diagnostic",
                 "coherent_controllers":result.get("coherent_controllers"),
                 "expected_controllers":result.get("expected_controllers"),
@@ -115,3 +117,16 @@ class DiagnosticView:
     def incident_review(self,ident,revision,request_id,user,verdict,reason,candidate):
         if self.incidents is None:raise ValueError("incident ledger unavailable")
         return self.incidents.review(ident,revision,request_id,user,verdict,reason,candidate)
+
+    def clients_page(self,query="",page=1,size=100):
+        if not isinstance(query,str) or len(query)>128 or type(page) is not int or not 1<=page<=10000 or not 1<=size<=100:
+            raise ValueError("invalid client page")
+        with self.lock:
+            now=int(self.clock())
+            fresh=bool(self.meta.get("available") and 0<=now-self.meta.get("published_at",0)<=20)
+            fields=("id","ap_name","controller","band","observed_at","health","snr","last_phy_rate","quality_score","quality_status","airtime","retry","candidate","scope")
+            rows=[{k:r[k] for k in fields} for r in self.client_rows
+                if fresh and 0<=now-r["observed_at"]<=180 and now<r.get("valid_until",0) and any(query.casefold() in str(r[k]).casefold() for k in ("ap_name","id","controller","band"))]
+            return {"rows":rows[(page-1)*size:page*size],"total":len(rows),"page":page,"size":size,
+                "enabled":self.client_enabled,"available":fresh,"scope":"local_operator_attested_ephemeral_detail",
+                "persistent_storage":False,"airtime_validated":False,"cause_confirmed":False}
