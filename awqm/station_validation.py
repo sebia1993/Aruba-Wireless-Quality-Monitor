@@ -4,7 +4,7 @@ Only documented successful-transmission counters are compared. No attempt
 failure rate, actual traffic Airtime, or causal inference is produced.
 """
 from dataclasses import dataclass
-import json,re,time
+import json,re,time,hashlib
 from .service_config import safe_path
 from .aos8 import associations,ParseError
 from .analysis import retry_ratio
@@ -19,6 +19,7 @@ class StationApproval:
     client_tag:str
     approved_at:int
     valid_until:int
+    tag:str=""
     def permits(self,tag,at,now):
         return bool(tag and tag==self.client_tag and self.approved_at<=at<=now<self.valid_until)
 
@@ -46,7 +47,8 @@ def load_station_approvals(cfg,clients,now=None):
             raise ValueError("reviewer reference required")
         if not isinstance(r["checks"],dict) or set(r["checks"])!=CHECKS or any(v is not True for v in r["checks"].values()):
             raise ValueError("all station checks required")
-        out[r["controller"]]=StationApproval(a.tag,r["approved_at"],r["valid_until"])
+        tag=hashlib.sha256(json.dumps({"site":cfg.site,"contract":"aos8-station-success-retry-v1","record":r},sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+        out[r["controller"]]=StationApproval(a.tag,r["approved_at"],r["valid_until"],tag)
     return out
 
 def age_seconds(s):

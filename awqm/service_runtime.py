@@ -13,6 +13,7 @@ from .field_validation import load_approvals
 from .quality_ledger import QualityLedger
 from .live_clients import LiveClients,load_client_approvals
 from .station_validation import load_station_approvals
+from .client_correlation import load_correlation_approvals
 from .cluster import ClusterMonitor
 from .retention import Retention,load_retention
 from .live_neighbors import LiveNeighbors,load_neighbor_approvals
@@ -124,6 +125,7 @@ def run_service(root,stop):
     approvals=load_approvals(cfg)
     client_approvals=load_client_approvals(cfg,approvals)
     station_approvals=load_station_approvals(cfg,client_approvals)
+    correlation_approvals=load_correlation_approvals(cfg,station_approvals)
     neighbor_approvals=load_neighbor_approvals(cfg,approvals)
     history_approvals=load_history_approvals(cfg,approvals,retention_enabled)
     history_key=load_key(cfg) if history_approvals else None
@@ -143,7 +145,7 @@ def run_service(root,stop):
         quality=QualityLedger(store)
         history=AssociationHistory(store,cfg.site,history_key,history_approvals) if history_key else None
         engine=Engine(workers,store,site=cfg.site,simulation=False,durable_jobs=False,auto=False,
-                      quality_ledger=quality,live_clients=LiveClients(client_approvals,station_approvals=station_approvals) if client_approvals else None,
+                      quality_ledger=quality,live_clients=LiveClients(client_approvals,station_approvals=station_approvals,correlation_approvals=correlation_approvals) if client_approvals else None,
                       cluster_monitor=ClusterMonitor({t.id:t.ip for t in cfg.targets}),
                       live_neighbors=LiveNeighbors(neighbor_approvals,quality.incidents) if neighbor_approvals else None,association_history=history)
         backup_root=safe_path(cfg.root,"backup");audit_path=safe_path(cfg.root,"logs/web-audit.db")
