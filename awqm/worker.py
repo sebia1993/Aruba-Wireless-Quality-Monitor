@@ -129,7 +129,7 @@ class ControllerWorker:
             self.lock.release()
     def submit_detail(self,request_id,name,target,ttl=300):
         # Separate queue lock allows reservation even while the worker awaits SSH.
-        return self.jobs.submit(request_id,name,target,self.clock(),ttl)
+        return self.jobs.submit(request_id,name,target,self.wall(),ttl)
     def _detail_target(self,job):
         now=int(self.wall())
         if job.name.endswith("client-table"):
@@ -145,36 +145,36 @@ class ControllerWorker:
         return len(claims)==1 and sum(x["name"]==claims[0]["ap_name"] and "A" in x["roles"] for x in a.data)==1
     def _detail_tick(self):
         now=self.clock()
-        for job in self.jobs.pending(now):
+        for job in self.jobs.pending(self.wall()):
             if job.name in self.detail_disabled:
-                self.jobs.finish(job.job_id,"skipped","command_unavailable",now);continue
+                self.jobs.finish(job.job_id,"skipped","command_unavailable",self.wall());continue
             if not self._detail_target(job):
                 self.jobs.defer(job.job_id,"target_anchor_unverified");continue
             poll=Poll(job.name,60,10,3,True)
             available=min(10-self.schedule.protection.budget(now,60,True),150-self.schedule.protection.budget(now,300))
             if not self.schedule.protection.allowed(poll,now) or available<1:
                 self.jobs.defer(job.job_id,"controller_protection");continue
-            if not self.jobs.start(job.job_id,now):continue
+            if not self.jobs.start(job.job_id,self.wall()):continue
             try:
                 raw=self.session.run(job.name,target=job.target,timeout=min(10,available),idle_timeout=min(10,available))
                 if DENIED.search(raw) or UNSUPPORTED.search(raw):
                     self.detail_disabled.add(job.name)
-                    self.jobs.finish(job.job_id,"skipped","permission_denied_or_unsupported",self.clock())
+                    self.jobs.finish(job.job_id,"skipped","permission_denied_or_unsupported",self.wall())
                     return Reading(job.name,"unsupported",int(self.wall()),generation=self.generation)
                 try:
                     value=DETAIL_PARSERS[job.name](raw)
                 except (ValueError,TypeError):
-                    self.jobs.finish(job.job_id,"failed","parse_error",self.clock())
+                    self.jobs.finish(job.job_id,"failed","parse_error",self.wall())
                     return Reading(job.name,"parse_error",int(self.wall()),generation=self.generation)
                 reading=Reading(job.name,"success",int(self.wall()),value,generation=self.generation)
                 # Bounded cache; full historical client persistence is not yet enabled.
                 key=(job.name,job.target)
                 self.detail_latest.pop(key,None);self.detail_latest[key]=reading
                 while len(self.detail_latest)>100:self.detail_latest.pop(next(iter(self.detail_latest)))
-                self.jobs.finish(job.job_id,"completed","field_validation_pending",self.clock())
+                self.jobs.finish(job.job_id,"completed","field_validation_pending",self.wall())
                 return reading
             except Exception as exc:
-                self.jobs.finish(job.job_id,"failed",type(exc).__name__,self.clock())
+                self.jobs.finish(job.job_id,"failed",type(exc).__name__,self.wall())
                 self._failed(type(exc).__name__)
                 return Reading(job.name,"transport_error",int(self.wall()),generation=self.generation)
             finally:

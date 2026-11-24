@@ -18,6 +18,44 @@ function clientButton(c){const b=el("button",c.client_name);b.addEventListener("
 function airtime(c){return c.airtime===null?"미확인":c.airtime.toFixed(1)+"% · "+methods[c.airtime_method];}
 function clientRows(rows){return rows.map(c=>[clientButton(c),c.ap_name,c.band,c.ssid,c.activity==="active"?"활성":c.activity==="idle"?"유휴":"미확인",c.quality,c.retry===null?null:c.retry.toFixed(1)+"%",airtime(c),c.impact_score,candidateNames[c.candidate]||"—",confidence[c.confidence]]);}
 const clientHeaders=["단말","AP","대역","SSID","활동","품질","재전송","전송시간","영향 점수","원인 후보","신뢰도"];
+const pendingRequests=new Map();
+let sendingJob=false;
+const jobNames={queued:"대기",deferred:"보류",running:"실행 중",completed:"완료",failed:"실패",cancelled:"취소",expired:"만료",skipped:"생략"};
+const jobReasons={target_anchor_unverified:"최신 앵커 확인 대기",controller_protection:"장비 보호 정책",restart_revalidate:"재시작 후 재검증",interrupted_outcome_unknown:"이전 실행 결과 미확인",field_validation_pending:"모의 파싱 완료",operator_cancel:"예약 취소",deadline_elapsed:"대기 만료"};
+async function jobAction(path,data){
+  if(sendingJob)return null;sendingJob=true;
+  try{
+    const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-AWQM-Demo":snapshot.demo_token},body:JSON.stringify(data)});
+    if(!r.ok)throw Error("요청 거절 또는 접수 상태 미확인");
+    return await r.json();
+  }catch(e){
+    document.querySelector(".notice").textContent="모의 작업 응답 미확인 · 같은 요청 ID로 재시도할 수 있습니다.";
+    return null;
+  }finally{sendingJob=false;}
+}
+function reserveButton(r){
+  const b=el("button","모의 정밀 분석 예약");
+  b.addEventListener("click",async()=>{
+    if(sendingJob)return;
+    const key=r.controller+"|"+r.ap_name;
+    const id=pendingRequests.get(key)||("manual-"+crypto.randomUUID());
+    pendingRequests.set(key,id);b.disabled=true;
+    const job=await jobAction("/api/demo/jobs",{controller:r.controller,request_id:id,ap_name:r.ap_name});
+    if(job){pendingRequests.delete(key);await refresh();}
+    else {b.disabled=false;b.textContent="같은 요청으로 다시 확인";}
+  });return b;
+}
+function jobRows(jobs){
+  return jobs.map(j=>{
+    const action=el("span","—");
+    if(["queued","deferred"].includes(j.status)){
+      const b=el("button","취소");b.addEventListener("click",async()=>{
+        if(await jobAction("/api/demo/jobs/cancel",{controller:j.controller,job_id:j.job_id}))await refresh();
+      });action.replaceChildren(b);
+    }
+    return [j.controller,j.target,j.job_id.slice(0,12),j.request_id.startsWith("auto-")?"자동":"수동",jobNames[j.status]||j.status,jobReasons[j.reason]||j.reason||"—",action];
+  });
+}
 function detail(){
   const d=$("detailBody");$("detail").hidden=!selected;if(!selected)return;
   if(selected.type==="client"){
@@ -40,6 +78,10 @@ function detail(){
     el("p","품질 점수 "+(r.score??"산정 불가")+" · "+r.status),
     el("p","수집 시각: "+new Date(r.observed_at*1000).toLocaleString("ko-KR")),
     el("h3","모의 원인 후보 및 접속 단말"),table(clientHeaders,clientRows(cs)));
+  if(snapshot.engine_demo){
+    d.append(el("p","가상 CLI 수집 엔진 · 단말 상세 시계열 연결은 후속 작업"),reserveButton(r),
+      table(["WLC","대상","작업 ID","유형","상태","사유","관리"],jobRows((snapshot.jobs||[]).filter(j=>j.controller===r.controller&&j.target===r.ap_name))));
+  }
 }
 function render(){
   const c=$("content");c.replaceChildren();$("heading").textContent=names[view];
@@ -69,9 +111,16 @@ function render(){
       const group=list.filter(x=>x.airtime_method===method);
       if(group.length)c.append(el("h3",methods[method]+" · "+group.length+"대"),table(clientHeaders,clientRows(group)));
     }
-    if(!list.length)c.append(el("p","해당 조건에 맞는 단말 없음"));
+    if(!list.length)c.append(el("p",snapshot.engine_demo?"가상 수집 모드의 단말 시계열 분석 연결은 후속 작업입니다.":"해당 조건에 맞는 단말 없음"));
   }else if(view==="admin"){
     c.append(el("p","모의 전용 · 실제 SSH 비활성 · 사내망 HTTPS/Aruba 인증/Windows Service 미구현"));
+    if(snapshot.engine_demo){
+      const e=snapshot.engine||{};
+      c.append(el("h3","가상 수집 엔진"),
+        el("p","유효 WLC "+(e.coherent_controllers??0)+" / "+(e.expected_controllers??4)+" · AP Radio "+(e.mapped_radios??0)+" · 활성 단말 "+(e.active_clients??0)),
+        el("p","DB 저장 상태: "+(e.storage_error||"정상")),
+        el("h3","자동·수동 작업 대기열"),table(["WLC","대상","작업 ID","유형","상태","사유","관리"],jobRows(snapshot.jobs||[])));
+    }
   }
   detail();
 }

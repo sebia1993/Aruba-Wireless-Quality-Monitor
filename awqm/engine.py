@@ -4,17 +4,25 @@ This module is exercised by injected fixture sessions. No production web
 listener, credentials, device access, or Windows service is started here.
 """
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict,replace
 from threading import Lock
 import time
+import sqlite3
 from .aos8 import merge_radios,merge_associations
+from .durable_jobs import DurableJobs
+from .selection import Selector
 
 class Engine:
-    def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time):
+    def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time,simulation=False,durable_jobs=False,auto=False):
         self.workers={w.controller:w for w in workers}
         if not 1<=len(workers)<=4 or len(self.workers)!=len(workers):
             raise ValueError("one to four unique workers required")
-        if store.mode!="diagnostic":raise ValueError("separate diagnostic storage required")
+        if store.mode!=("demo" if simulation else "diagnostic"):raise ValueError("separate mode storage required")
+        if auto and not simulation:raise ValueError("automatic analysis requires validated data; demo only")
+        self.simulation=simulation;self.selector=Selector() if auto else None
+        if durable_jobs:
+            for w in workers:
+                w.jobs=DurableJobs(store.root/"jobs.db",w.controller,now=wall())
         self.store=store;self.site=site;self.clock=clock;self.wall=wall
         self.pool=ThreadPoolExecutor(max_workers=len(workers),thread_name_prefix="awqm-wlc")
         self.inflight={};self.snapshots={};self.outcomes={};self.next_tick={}
@@ -30,7 +38,7 @@ class Engine:
         return self.workers[controller].submit_detail(request_id,name,target,ttl)
     def cancel(self,controller,job_id):
         w=self.workers[controller]
-        return w.jobs.cancel(job_id,w.clock())
+        return w.jobs.cancel(job_id,w.wall())
     def pulse(self):
         """Nonblocking relative to SSH workers; SQLite commit is serialized here.
 
@@ -53,6 +61,8 @@ class Engine:
                     self.outcomes[name]={"status":"worker_error","reason":type(exc).__name__}
                     # Avoid a hot failure loop.
                     self.next_tick[name]=now+15
+                    if isinstance(exc, (sqlite3.Error,OSError)):
+                        self.error=type(exc).__name__
             active=[]
             for name,s in self.snapshots.items():
                 if s is None:continue
@@ -65,6 +75,7 @@ class Engine:
                 active.append(s)
             radios,unresolved=merge_radios(active,self.site)
             clients,conflicts=merge_associations(active)
+            if self.simulation:radios=[replace(r,source="synthetic") for r in radios]
             fresh=[r for r in radios if r.observed_at>self.accepted.get(r.radio_id,-1)]
             if not self.error:
                 try:
@@ -74,7 +85,15 @@ class Engine:
                         self.accepted.update({r.radio_id:r.observed_at for r in batch})
                 except Exception as exc:
                     self.error=type(exc).__name__
-            self.last_result={"mode":"diagnostic","field_validated":False,
+            if self.selector and not self.error and not self.paused and fresh:
+                # Only current merged samples, not old persisted or conflicted APs.
+                current={(r.radio_id,r.observed_at) for r in fresh}
+                try:
+                    self.selector.plan([r for r in self.store.snapshot()["radios"]
+                        if (r["radio_id"],r["observed_at"]) in current],self.wall(),self.workers)
+                except (sqlite3.Error,OSError) as exc:
+                    self.error=type(exc).__name__
+            self.last_result={"mode":"demo" if self.simulation else "diagnostic","field_validated":False,
                 "coherent_controllers":len(active),"expected_controllers":len(self.workers),
                 "mapped_radios":len(radios),"active_clients":len(clients),
                 "unresolved_radios":len(unresolved),"client_conflicts":len(conflicts),
@@ -93,7 +112,7 @@ class Engine:
             self.error=None
     def job_status(self,controller):
         w=self.workers[controller]
-        return [asdict(j) for j in w.jobs.list(w.clock())]
+        return [asdict(j) for j in w.jobs.list(w.wall())]
     def close(self):
         with self.lock:
             if self.closed:return
