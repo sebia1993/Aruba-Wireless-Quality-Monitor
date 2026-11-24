@@ -189,9 +189,11 @@ class Engine:
             self.closed=True
         self.pool.shutdown(wait=True,cancel_futures=True)
         for w in self.workers.values():w.close()
-    def run(self,stop,interval=.25):
+    def run(self,stop,interval=.25,maintenance=None):
         try:
             while not stop.is_set():
                 self.pulse()
+                if maintenance is not None and not self.error:
+                    self.last_maintenance=maintenance.tick()
                 stop.wait(interval)
         finally:self.close()

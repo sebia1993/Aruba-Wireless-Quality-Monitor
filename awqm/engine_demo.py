@@ -5,6 +5,7 @@ from http.server import ThreadingHTTPServer
 from .engine import Engine
 from .fixture_session import workers
 from .storage import Store
+from .maintenance import Maintenance
 from .web import handler_for
 
 def serve_engine(port=8765,once=False):
@@ -35,9 +36,10 @@ def serve_engine(port=8765,once=False):
             finally:engine.close()
             return
         engine=Engine(workers(time.monotonic,time.time),store,simulation=True,durable_jobs=True,auto=True)
+        maintenance=Maintenance(store,Path(root)/"backups")
         stop=threading.Event()
         def pump():
-            try:engine.run(stop)
+            try:engine.run(stop,maintenance=maintenance)
             finally:stop.set()
         thread=threading.Thread(target=pump,daemon=True)
         server=ThreadingHTTPServer(("127.0.0.1",port),handler_for(store,engine))

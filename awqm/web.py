@@ -55,6 +55,7 @@ def handler_for(store,engine=None):
                 if engine is not None:
                     snapshot["engine_demo"]=True
                     snapshot["engine"]=dict(engine.last_result)
+                    snapshot["maintenance"]=getattr(engine,"last_maintenance",{})
                     snapshot["jobs"]=[dict(j,controller=k) for k in engine.workers for j in engine.job_status(k)]
                     snapshot["demo_token"]=token
                 body=json.dumps(snapshot,ensure_ascii=False).encode()

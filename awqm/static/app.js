@@ -167,12 +167,14 @@ function render(){
       c.append(el("h3","가상 수집 엔진"),
         el("p","유효 WLC "+(e.coherent_controllers??0)+" / "+(e.expected_controllers??4)+" · AP Radio "+(e.mapped_radios??0)+" · 활성 단말 "+(e.active_clients??0)),
         el("p","DB 저장 상태: "+(e.storage_error||"정상")),
+        el("p","자동 유지보수: "+(snapshot.maintenance?.status||"대기")+" · 디스크 "+(snapshot.maintenance?.disk_level||"미확인")),
+        el("p","최근 백업: "+(snapshot.maintenance?.last_backup||"없음")+" · 원본 자동 삭제 보류"),
         el("h3","자동·수동 작업 대기열"),table(["WLC","대상","작업 ID","유형","상태","사유","관리"],jobRows(snapshot.jobs||[])));
     }
   }
   detail();
 }
 let refreshing=false;
-async function refresh(){if(refreshing)return;refreshing=true;try{const r=await fetch("/api/snapshot",{cache:"no-store"});if(!r.ok)throw Error();snapshot=await r.json();document.querySelector(".notice").textContent="개발용 모의 화면 · 모든 수치와 분석 근거는 실제 사내 데이터가 아닙니다.";render();}catch(e){document.querySelector(".notice").textContent="갱신 실패 · 마지막 모의 데이터 표시";}finally{refreshing=false;}}
+async function refresh(){if(refreshing)return;refreshing=true;try{const r=await fetch("/api/snapshot",{cache:"no-store"});if(r.status===401){document.querySelector(".notice").textContent="인증 세션 만료 · 새로고침 후 다시 로그인하세요.";snapshot=null;selected=null;render();return;}if(!r.ok)throw Error();snapshot=await r.json();document.querySelector(".notice").textContent="개발용 모의 화면 · 모든 수치와 분석 근거는 실제 사내 데이터가 아닙니다.";render();}catch(e){document.querySelector(".notice").textContent="갱신 실패 · 마지막 모의 데이터 표시";}finally{refreshing=false;}}
 $("nav").addEventListener("click",e=>{const v=e.target.dataset.view;if(!v)return;view=v;for(const b of $("nav").querySelectorAll("button"))b.removeAttribute("aria-current");e.target.setAttribute("aria-current","page");selected=null;render();});
 $("search").addEventListener("input",render);$("close").addEventListener("click",()=>{selected=null;detail();});refresh();setInterval(refresh,10000);

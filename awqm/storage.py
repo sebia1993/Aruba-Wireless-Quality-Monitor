@@ -359,7 +359,7 @@ class Store:
                 deleted.append(day)
         return deleted
 
-    def backup(self,destination,include_raw=False):
+    def backup(self,destination,include_raw=False,include_aggregates=True):
         """Consistent, checked online SQLite backup to a new directory.
 
         No copying of a live main DB file. Serialized, explicit maintenance.
@@ -375,7 +375,7 @@ class Store:
             temp.mkdir()
             try:
                 paths=[self.root/"core.db"]+[p for p in self.root.glob("radio_*.db")
-                    if MONTH.fullmatch(p.name) or include_raw and DAY.fullmatch(p.name)]
+                    if (include_aggregates and MONTH.fullmatch(p.name)) or (include_raw and DAY.fullmatch(p.name))]
                 for src in paths:
                     with self._db(src) as a:
                         b=sqlite3.connect(temp/src.name)
@@ -384,7 +384,7 @@ class Store:
                             if b.execute("PRAGMA quick_check").fetchone()[0]!="ok":
                                 raise RuntimeError("backup integrity failure")
                         finally:b.close()
-                (temp/"manifest.json").write_text(json.dumps({"mode":self.mode,"include_raw":include_raw,
+                (temp/"manifest.json").write_text(json.dumps({"mode":self.mode,"include_raw":include_raw,"include_aggregates":include_aggregates,
                     "files":[p.name for p in paths],"created_at":datetime.now(timezone.utc).isoformat()},indent=2),encoding="utf-8")
                 temp.rename(dest)
             except Exception:

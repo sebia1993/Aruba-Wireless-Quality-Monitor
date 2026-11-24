@@ -3,12 +3,21 @@ from awqm.web import serve
 from awqm.probe import main as probe_main
 from awqm.diagnostic import main as diagnostic_main
 from awqm.engine_demo import serve_engine
+from awqm.secure_preview import main as auth_main
+from awqm.dpapi import smoke as dpapi_smoke
 
 def main():
     import sys
     if len(sys.argv)>1 and sys.argv[1]=="--validate-cli":
         sys.argv.pop(1)
         probe_main()
+        return
+    if sys.argv[1:]==["--dpapi-smoke-test"]:
+        dpapi_smoke()
+        return
+    if len(sys.argv)>1 and sys.argv[1]=="--auth-preview":
+        sys.argv.pop(1)
+        auth_main()
         return
     if len(sys.argv)>1 and sys.argv[1]=="--collect-once":
         sys.argv.pop(1)
