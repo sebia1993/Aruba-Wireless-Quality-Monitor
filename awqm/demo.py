@@ -18,8 +18,7 @@ def seed(store, now=None):
     for offset in (120,60,0):
         rows=[asdict(r) for r in synthetic_rows(now-offset)]
         fixture=json.dumps({"schema":"awqm.synthetic.radio.v1","complete":True,"count":len(rows),"rows":rows})
-        for row in normalized_snapshot(fixture):
-            store.save(row)
+        store.save_batch(normalized_snapshot(fixture))
 
 
 def synthetic_clients(radios):

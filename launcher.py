@@ -1,6 +1,7 @@
 import argparse
 from awqm.web import serve
 from awqm.probe import main as probe_main
+from awqm.diagnostic import main as diagnostic_main
 
 def main():
     import sys
@@ -8,13 +9,17 @@ def main():
         sys.argv.pop(1)
         probe_main()
         return
+    if len(sys.argv)>1 and sys.argv[1]=="--collect-once":
+        sys.argv.pop(1)
+        diagnostic_main()
+        return
     p=argparse.ArgumentParser(description="AWQM development-only demo")
     p.add_argument("--demo",action="store_true",help="explicitly enable synthetic localhost mode")
     p.add_argument("--port",type=int,default=8765)
     p.add_argument("--smoke-test",action="store_true",help="initialize demo data and exit")
     args=p.parse_args()
     if not args.demo:
-        p.error("Production collection is not enabled. Use --demo or --validate-cli.")
+        p.error("Production collection is not enabled. Use --demo, --validate-cli or the authorized local --collect-once trial.")
     if not 1024<=args.port<=65535:
         p.error("port must be 1024..65535")
     serve(args.port,args.smoke_test)

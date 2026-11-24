@@ -51,8 +51,7 @@ def serve(port=8765, once=False):
         stopped=threading.Event()
         def refresh():
             while not stopped.wait(60):
-                for row in synthetic_rows():
-                    store.save(row)
+                store.save_batch(synthetic_rows())
         worker=threading.Thread(target=refresh,daemon=True)
         worker.start()
         print(f"AWQM synthetic demo: http://127.0.0.1:{port}",flush=True)
