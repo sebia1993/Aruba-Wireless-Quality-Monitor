@@ -16,6 +16,7 @@ from .jobs import Jobs
 from .client import client_table,station_stats,bss_table
 from .field_validation import version_identity,fingerprint
 from .station_validation import collect as collect_station,StationUnavailable
+from .cluster import MEMBERSHIP,AP_LOAD,CLIENT_LOAD,LOAD_COMMANDS,group_membership,ap_load,client_load
 
 PARSERS={
     "show cpuload":cpu_load,
@@ -25,6 +26,7 @@ PARSERS={
     "show ap database long":inventory,
     "show ap association":associations,
     "show ap bss-table":bss_table,
+    MEMBERSHIP:group_membership,AP_LOAD:ap_load,CLIENT_LOAD:client_load,
 }
 DETAIL_PARSERS={"show ap debug client-table":client_table,"show ap debug client-stats":station_stats}
 DENIED=re.compile(r"(?im)^\s*(?:%\s*)?(?:permission denied|access denied|not authorized|authorization failed)")
@@ -43,12 +45,13 @@ class Reading:
     target: str|None=None
 
 class ControllerWorker:
-    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None):
+    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False):
         self.controller=controller;self.session_factory=session_factory
         self.clock=clock;self.wall=wall
-        self.field_approval=field_approval
+        self.field_approval=field_approval;self.enable_cluster=enable_cluster
         self.live_detail=live_detail;self.client_approval=client_approval;self.station_approval=station_approval
-        polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table"))
+        polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table") and (enable_cluster or p.name!=MEMBERSHIP))
+        if enable_cluster:polls=polls+(Poll(AP_LOAD,120,20,2),Poll(CLIENT_LOAD,120,20,2))
         if field_approval is not None:polls=polls+(Poll("show version",600,30,0),)
         self.schedule=Scheduler(start=clock(),offset=offset,polls=polls,mode=mode)
         self.session=None;self.next_connect=clock()+offset;self.failures=0
@@ -83,7 +86,7 @@ class ControllerWorker:
         if status=="success":
             self.latest[name]=r
         return r
-    def tick(self):
+    def tick(self,cluster_load=False):
         """At most one command. No backlog replay or concurrent CLI."""
         if not self.lock.acquire(blocking=False):return None
         try:
@@ -102,6 +105,12 @@ class ControllerWorker:
                 self.generation+=1
                 self.schedule.reconnect(self.clock())
                 for k in self.disabled:self.schedule.due[k]=float("inf")
+            if self.enable_cluster:
+                # Only the coordinator-selected representative may execute
+                # cluster-wide AP/client load polls.
+                for cmd in LOAD_COMMANDS:
+                    if cmd in self.disabled or not cluster_load:self.schedule.due[cmd]=float("inf")
+                    elif self.schedule.due[cmd]==float("inf"):self.schedule.due[cmd]=self.clock()
             p=self.schedule.next(self.clock())
             if p is None:return self._detail_tick()
             try:
@@ -139,6 +148,16 @@ class ControllerWorker:
             try:
                 if self.live_detail:self.jobs.purge_station(self.wall())
             finally:self.lock.release()
+    def cluster_frame(self):
+        if not self.enable_cluster:return None
+        with self.lock:
+            readings={}
+            if self.session is not None:
+                for cmd in ("show cpuload",MEMBERSHIP,*LOAD_COMMANDS):
+                    r=self.outcomes.get(cmd)
+                    if r and r.generation==self.generation:readings[cmd]=r
+            return {"connected":self.session is not None and not self.blocked,
+                    "readings":readings,"disabled":tuple(self.disabled)}
     def submit_detail(self,request_id,name,target,ttl=300):
         # Separate queue lock allows reservation even while the worker awaits SSH.
         return self.jobs.submit(request_id,name,target,self.wall(),ttl)

@@ -99,6 +99,21 @@ async function loadClients(){
   }catch(e){if(!expired&&rev===clientVersion&&view==="clients")out.replaceChildren(el("p","현재 상세 관측 확인 불가"));}
 }
 
+function clusterPanel(d){
+  const c=el("section");c.append(el("h3","WLC 클러스터 관측"));
+  if(!d){c.append(el("p","클러스터 관측 자료 미확인"));return c;}
+  c.append(el("p","대표 조회 "+d.representative+" · 멤버십 수집 "+d.membership_sources+" / "+d.expected+" · 현장 검증 전 · 장비 Down/Hang 판단 아님"));
+  const labels={connected_observed:"연결 교차 관측",self_only:"자체 관측",peer_disagreement:"Peer 상태 상충",peer_issue_observed:"Peer 이상 관측",self_issue_observed:"자체 이상 관측",peer_only:"Peer 관측만 있음",unknown:"미확인"};
+  const m=Object.fromEntries(["ap","client"].map(k=>[k,new Map(d.load[k].rows.map(r=>[r.controller,r]))]));
+  c.append(table(["WLC","CPU %","멤버십","Role","Active AP","Standby AP","Active Client","Standby Client"],d.nodes.map(r=>[r.controller,r.cpu,labels[r.state]||r.state,r.role,m.ap.get(r.controller)?.active,m.ap.get(r.controller)?.standby,m.client.get(r.controller)?.active,m.client.get(r.controller)?.standby])));
+  for(const [key,title] of [["ap","AP"],["client","Client"]]){
+    const l=d.load[key],status={unknown:"미확인",single_source:"단일 출처",crosschecked:"교차 확인",conflicting_observations:"관측값 상충"}[l.status]||l.status;
+    c.append(el("p",title+" 전체 Active "+(l.active_total??"미확인")+" / Standby "+(l.standby_total??"미확인")+" · "+status+" · "+(l.source||"—")+" · "+kst(l.observed_at)));
+  }
+  if(d.links.length)c.append(table(["관측 WLC","대상 WLC","연결 상태","연결 유형","시각"],d.links.map(r=>[r.from,r.to,r.state,r.link,kst(r.observed_at)])));
+  return c;
+}
+
 function render(){
   if(expired)return;
   const c=$("content");c.replaceChildren();$("heading").textContent=names[view];
@@ -106,7 +121,7 @@ function render(){
   if(view==="history"){loadIncidents();return;}
   if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out);return;}
   if(!snapshot){c.append(el("p","자료 확인 중"));return;}
-  if(view==="overview"){const k=el("div",null,"kpis");k.append(metric("관측 WLC",snapshot.coherent_controllers==null?null:snapshot.coherent_controllers+" / "+snapshot.expected_controllers),metric("저장된 Radio",snapshot.inventory_radios),metric("현재 매핑 Radio",snapshot.mapped_radios),metric("활성 단말 관측",snapshot.active_clients));c.append(k,el("p","최근 게시: "+kst(snapshot.published_at)+" · "+(snapshot.available?"관측 자료 제공":"현재 관측 확인 불가")));}
+  if(view==="overview"){const k=el("div",null,"kpis");k.append(metric("관측 WLC",snapshot.coherent_controllers==null?null:snapshot.coherent_controllers+" / "+snapshot.expected_controllers),metric("저장된 Radio",snapshot.inventory_radios),metric("현재 매핑 Radio",snapshot.mapped_radios),metric("활성 단말 관측",snapshot.active_clients));c.append(k,el("p","최근 게시: "+kst(snapshot.published_at)+" · "+(snapshot.available?"관측 자료 제공":"현재 관측 확인 불가")),clusterPanel(snapshot.cluster));}
   c.append(table(["AP","WLC","대역","채널","사용률 %","간섭률 %","NF dBm","품질 점수","위험 관측","관측 시각 KST","수집 상태"],snapshot.rows.map(r=>{const b=el("button",r.ap_name);b.addEventListener("click",()=>openHistory(r));const cell=el("div");cell.append(b);if(r.incident_id){const i=el("button","위험 이력");i.addEventListener("click",()=>openIncident(r.incident_id));cell.append(i);}return [cell,r.controller,r.band,r.channel,r.utilization,r.interference,r.noise,r.quality_score==null?"미검증":r.quality_score,r.risk_status==="UNKNOWN"?"미확인":r.risk_status,kst(r.observed_at),r.freshness==="observed"?(r.quality==="local_operator_attested"?"최근 관측 · 현장 승인 지표":"최근 관측 · 미검증"):"오래됨 / 확인 불가"];})));
   if(!snapshot.rows.length)c.append(el("p","저장 자료 또는 검색 결과 없음"));
   const pager=el("div",null,"pager"),prev=el("button","이전"),next=el("button","다음");

@@ -15,7 +15,7 @@ from .client_history import ClientHistory,map_samples
 import json
 
 class Engine:
-    def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time,simulation=False,durable_jobs=False,auto=False,quality_ledger=None,live_clients=None):
+    def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time,simulation=False,durable_jobs=False,auto=False,quality_ledger=None,live_clients=None,cluster_monitor=None):
         self.workers={w.controller:w for w in workers}
         if not 1<=len(workers)<=4 or len(self.workers)!=len(workers):
             raise ValueError("one to four unique workers required")
@@ -39,16 +39,17 @@ class Engine:
         self.live_clients=live_clients
         if simulation and live_clients:raise ValueError("live client path is separate from demo")
         self.live_details={};self.live_client_views=[]
+        self.cluster_monitor=cluster_monitor;self.cluster_frames={};self.cluster_view=None
     @staticmethod
-    def _step(w):
-        r=w.tick()
+    def _step(w,cluster_load=False):
+        r=w.tick(cluster_load=cluster_load) if w.enable_cluster else w.tick()
         snapshot=w.snapshot()
         b=w.latest.get("show ap bss-table")
         a=w.latest.get("show ap association")
         # Only a successfully refreshed, same-generation metadata observation.
         if not b or b.generation!=w.generation or w.outcomes[b.command].status!="success" or not 0<=w.wall()-b.observed_at<=330:b=None
         if not a or a.generation!=w.generation or w.outcomes[a.command].status!="success" or not 0<=w.wall()-a.observed_at<=150:a=None
-        return r,snapshot,b,a
+        return r,snapshot,b,a,w.cluster_frame()
     def submit(self,controller,request_id,name,target,ttl=300):
         # Caller must authenticate/authorize before using this internal API.
         if self.closed:raise RuntimeError("engine closed")
@@ -70,7 +71,8 @@ class Engine:
                 if not f.done():continue
                 del self.inflight[name]
                 try:
-                    reading,snapshot,bss,assoc=f.result()
+                    reading,snapshot,bss,assoc,frame=f.result()
+                    if frame is not None:self.cluster_frames[name]=frame
                     self.snapshots[name]=snapshot
                     if self.client_history and reading and reading.status=="success" and reading.target:
                         self.detail_pending[name]=(reading,snapshot,bss,assoc)
@@ -79,6 +81,7 @@ class Engine:
                     if reading:self.outcomes[name]={"command":reading.command,"status":reading.status,"observed_at":reading.observed_at}
                 except Exception as exc:
                     self.snapshots[name]=None
+                    self.cluster_frames.pop(name,None)
                     self.outcomes[name]={"status":"worker_error","reason":type(exc).__name__}
                     # Avoid a hot failure loop.
                     self.next_tick[name]=now+15
@@ -186,17 +189,20 @@ class Engine:
                 except (ValueError,TypeError,KeyError,RuntimeError,sqlite3.Error,OSError) as exc:
                     self.live_details.clear();self.live_clients.clear();self.live_client_views=[]
                     self.error=type(exc).__name__
+            if self.cluster_monitor:
+                self.cluster_monitor.choose(self.cluster_frames,int(self.wall()),self.inflight)
+                self.cluster_view=self.cluster_monitor.report(self.cluster_frames,int(self.wall()))
             self.published_radios=tuple((r.radio_id,r.observed_at) for r in radios if not self.error and self.accepted.get(r.radio_id)==r.observed_at)
             self.last_result={"mode":"demo" if self.simulation else "diagnostic","field_validated":False,
                 "coherent_controllers":len(active),"expected_controllers":len(self.workers),
                 "mapped_radios":len(radios),"active_clients":len(clients),
                 "unresolved_radios":len(unresolved),"client_conflicts":len(conflicts),
-                "storage_error":self.error,"paused":self.paused,
+                "storage_error":self.error,"paused":self.paused,"cluster":self.cluster_view,
                 "controllers":{k:self.outcomes.get(k,{"status":"waiting"}) for k in self.workers}}
             if not self.error and not self.paused:
                 for name,w in self.workers.items():
                     if name not in self.inflight and now>=self.next_tick.get(name,0):
-                        self.inflight[name]=self.pool.submit(self._step,w)
+                        self.inflight[name]=self.pool.submit(self._step,w,bool(self.cluster_monitor and name==self.cluster_monitor.representative))
                         self.next_tick[name]=now+.25
             return dict(self.last_result)
         finally:self.lock.release()

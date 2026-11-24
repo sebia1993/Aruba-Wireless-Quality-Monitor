@@ -76,7 +76,7 @@ class DiagnosticView:
                 data.append(x)
             if stale:
                 for k in ("coherent_controllers","mapped_radios","active_clients","unresolved_radios","client_conflicts"):meta[k]=None
-                meta["available"]=False
+                meta["available"]=False;meta["cluster"]=None
             return {**meta,"rows":data,"total":len(rows),"page":page,"size":size,"inventory_radios":len(self.rows)}
     def history(self,token,start,end):
         if not isinstance(token,str) or len(token)!=32 or not 0<=start<end or end-start>7*86400:

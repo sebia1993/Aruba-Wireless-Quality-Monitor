@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.15.0-dev — 단말 성공 프레임 재시도 분석 및 Airtime 검증 기반. 운영 배포 금지.**
+**현재 단계: v0.16.0-dev — 단말 성공 프레임 재시도 분석 및 Airtime 검증 기반. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -60,6 +60,10 @@ Windows EXE에서도 동일하게 `AWQM.exe --validate-cli radio local-output.tx
 ## 별도 Station Stats 현장 검증 (기본 비활성)
 
 현장 승인된 단말 상세 수집에 한해 Station Stats의 성공 프레임 재시도 구간 분석을 별도 승인으로 활성화할 수 있습니다. 동일 접속 조건과 최소 프레임 수가 충족되지 않으면 미확인으로 표시합니다. Airtime 실측은 아직 활성화하지 않습니다. [Station Stats 검증 안내](docs/STATION_VALIDATION.md).
+
+## WLC 클러스터 상태 및 부하 관측
+
+WLC별 CPU·Peer 상태 및 Active/Standby AP·단말 수를 종합 현황에서 확인할 수 있습니다. 클러스터 전체 부하는 한 대표 출처로 계산하고, 동일 관측을 중복 합산하지 않습니다. 누락 및 상태 상충은 미확인으로 처리하며 장비 Hang/Down을 확정하지 않습니다. [클러스터 관측 안내](docs/CLUSTER.md).
 
 ## Windows 빌드
 ```powershell
