@@ -1,0 +1,51 @@
+name: AWQM Windows development build
+on:
+  push:
+    branches:
+      - 'develop/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: awqm-build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-build.txt
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Source demo smoke test
+        run: python launcher.py --demo --smoke-test
+      - name: Build Windows folder EXE
+        run: python -m PyInstaller --noconfirm --clean --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
+      - name: Frozen executable smoke test
+        shell: pwsh
+        run: |
+          & .\dist\AWQM\AWQM.exe --demo --smoke-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package development ZIP
+        shell: pwsh
+        run: |
+          Copy-Item README.md,VERSION.txt -Destination dist\AWQM
+          Copy-Item docs -Destination dist\AWQM\docs -Recurse
+          python -m pip freeze | Set-Content -Encoding utf8 dist\AWQM\BUILD-DEPENDENCIES.txt
+          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.1.0-dev_Win11_x64.zip
+          $hash = (Get-FileHash AWQM_0.1.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  AWQM_0.1.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AWQM-Windows-dev-x64
+          path: |
+            AWQM_0.1.0-dev_Win11_x64.zip
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 3
