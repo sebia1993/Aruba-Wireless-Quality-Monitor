@@ -73,3 +73,37 @@ def check_layout(cfg,require_credentials=True):
             if p.is_dir():stack.append(p)
     for p in checked:check_acl(p,sid)
     return sid
+
+
+def check_program_acl(path):
+    """Conservative administrator-owned executable tree check.
+
+    Read/execute grants are permitted to other principals; grants of write,
+    ownership or deletion rights are not. This is not a full Windows effective
+    permissions evaluator. Unknown ACE types are rejected.
+    """
+    import win32security
+    sd=win32security.GetNamedSecurityInfo(str(path),win32security.SE_FILE_OBJECT,
+        win32security.OWNER_SECURITY_INFORMATION|win32security.DACL_SECURITY_INFORMATION)
+    trusted={"S-1-5-18","S-1-5-32-544",current_sid()}
+    try:
+        sid,_,_=win32security.LookupAccountName(None,"NT SERVICE\\TrustedInstaller")
+        trusted.add(win32security.ConvertSidToStringSid(sid))
+    except Exception:
+        # Do not trust an unknown owner on a host without this principal.
+        pass
+    if win32security.ConvertSidToStringSid(sd.GetSecurityDescriptorOwner()) not in trusted:
+        raise ValueError("unexpected program owner")
+    dacl=sd.GetSecurityDescriptorDacl()
+    if dacl is None:raise ValueError("null program DACL")
+    # FILE_WRITE_DATA/APPEND_DATA/WRITE_EA/DELETE_CHILD/WRITE_ATTRIBUTES,
+    # DELETE/WRITE_DAC/WRITE_OWNER/GENERIC_WRITE/GENERIC_ALL/MAXIMUM_ALLOWED.
+    write_mask=0x2|0x4|0x10|0x40|0x100|0x10000|0x40000|0x80000|0x40000000|0x10000000|0x02000000
+    for i in range(dacl.GetAceCount()):
+        ace=dacl.GetAce(i)
+        if len(ace)!=3 or ace[0][0] not in (0,1):raise ValueError("unverified program ACL entry")
+        typ,flags=ace[0]
+        principal=win32security.ConvertSidToStringSid(ace[2])
+        if typ==0 and ace[1]&write_mask and principal not in trusted:
+            if principal=="S-1-3-0" and flags&8:continue
+            raise ValueError("unexpected program write grant")

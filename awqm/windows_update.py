@@ -1,16 +1,18 @@
 """Local Windows adapter for stopped-service update preparation.
 
-No SCM mutation, service start/stop, in-place program swap or restore.
+Explicit program-only switching requires STOPPED and DISABLED SCM.
+No automatic service start/stop or operational state overwrite.
 Administrative access and an independently trusted candidate SHA are required.
 """
 import json,os,re,sys
 from pathlib import Path
 from contextlib import contextmanager
 from .service_config import safe_path,fixed_local
-from .windows_security import account_sid,check_acl,check_layout
-from .update_snapshot import prepare,verify,restore_copy,_safe_part
+from .windows_security import account_sid,check_acl,check_layout,check_program_acl
+from .update_snapshot import prepare,verify,restore_copy,_safe_part,_walk,_path
 from .service_runtime import exclusive
 from .winservice import SERVICE_NAME
+from .program_switch import apply,inspect,reverse,locations
 
 def require_admin():
     import win32security
@@ -31,7 +33,7 @@ def bundle_path(cfg,ident,create=False):
     return safe_path(root,ident)
 
 @contextmanager
-def scm_stopped(cfg,installed):
+def scm_stopped(cfg,installed,require_disabled=False):
     import win32service as w
     scm=w.OpenSCManager(None,None,w.SC_MANAGER_CONNECT)
     svc=None
@@ -49,6 +51,8 @@ def scm_stopped(cfg,installed):
                 raise ValueError("SCM service identity mismatch")
             if q[1] not in (w.SERVICE_AUTO_START,w.SERVICE_DEMAND_START,w.SERVICE_DISABLED):
                 raise ValueError("unexpected SCM start type")
+            if require_disabled and q[1]!=w.SERVICE_DISABLED:
+                raise RuntimeError("disable service startup before switching")
         guard()
         yield guard
     finally:
@@ -79,4 +83,29 @@ def manage_update(cfg,args):
         bundle=bundle_path(cfg,args.id)
         dest=bundle_path(cfg,args.output_id)
         print(json.dumps(restore_copy(bundle,dest,protect),ensure_ascii=False,indent=2))
+    elif args.action in ("switch-program","switch-status","reverse-program"):
+        installed=fixed_local(Path(os.environ["ProgramFiles"])/"AWQM")
+        bundle=bundle_path(cfg,args.id)
+        # Windows cannot move the running frozen program tree. Run a
+        # separately verified, admin-protected manager outside both trees.
+        if not getattr(sys,"frozen",False):raise ValueError("packaged external manager required")
+        executable=fixed_local(_path(Path(sys.executable)))
+        paths=locations(installed,args.id)[:3]
+        if any(p==executable or p in executable.parents for p in (*paths,cfg.root)):
+            raise ValueError("run a trusted external manager outside installation and data roots")
+        # Verify the external manager runtime tree as well as its EXE.
+        # The operator must use a dedicated trusted package directory.
+        _walk(executable.parent,check_program_acl)
+        with scm_stopped(cfg,installed,require_disabled=True) as guard,exclusive(cfg.root):
+            if args.action=="switch-program":
+                result=apply(installed,cfg.root,bundle,args.id,args.archive,args.sha256,guard,
+                             program_protect=check_program_acl,state_protect=protect)
+            elif args.action=="reverse-program":
+                result=reverse(installed,cfg.root,bundle,args.id,guard,
+                               program_protect=check_program_acl,state_protect=protect)
+            else:
+                guard()
+                result=inspect(installed,cfg.root,bundle,args.id,program_protect=check_program_acl,state_protect=protect)
+        print(json.dumps(result,ensure_ascii=False,indent=2))
+        print("Service startup remains disabled; no automatic activation or live data restoration.")
     else:raise ValueError("unsupported update operation")

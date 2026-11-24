@@ -101,7 +101,9 @@ def control(action):
     import win32service as w
     perms={"status":w.SERVICE_QUERY_STATUS,"start":w.SERVICE_START|w.SERVICE_QUERY_STATUS,
            "stop":w.SERVICE_STOP|w.SERVICE_QUERY_STATUS,"remove":0x00010000|w.SERVICE_QUERY_STATUS,
-           "enable-auto":w.SERVICE_CHANGE_CONFIG|w.SERVICE_QUERY_STATUS}
+           "enable-auto":w.SERVICE_CHANGE_CONFIG|w.SERVICE_QUERY_STATUS,
+           "disable-startup":w.SERVICE_CHANGE_CONFIG|w.SERVICE_QUERY_STATUS,
+           "enable-manual":w.SERVICE_CHANGE_CONFIG|w.SERVICE_QUERY_STATUS}
     scm=w.OpenSCManager(None,None,w.SC_MANAGER_CONNECT)
     svc=None
     try:
@@ -115,10 +117,13 @@ def control(action):
         elif action=="stop":
             if state!=w.SERVICE_RUNNING:raise ValueError("service is not running")
             w.ControlService(svc,w.SERVICE_CONTROL_STOP);print("Stop requested; check status")
-        elif action=="enable-auto":
-            w.ChangeServiceConfig(svc,w.SERVICE_NO_CHANGE,w.SERVICE_AUTO_START,w.SERVICE_NO_CHANGE,
+        elif action in ("enable-auto","disable-startup","enable-manual"):
+            if action!="enable-auto" and state!=w.SERVICE_STOPPED:raise ValueError("stop service first")
+            start_type={"enable-auto":w.SERVICE_AUTO_START,"disable-startup":w.SERVICE_DISABLED,
+                        "enable-manual":w.SERVICE_DEMAND_START}[action]
+            w.ChangeServiceConfig(svc,w.SERVICE_NO_CHANGE,start_type,w.SERVICE_NO_CHANGE,
                 None,None,0,None,None,None,None)
-            print("Automatic startup configured; no start request issued")
+            print("Startup configuration changed; no start request issued")
         elif action=="remove":
             if state!=w.SERVICE_STOPPED:raise ValueError("stop service before removal")
             w.DeleteService(svc);print("Service removal requested; data and credentials retained")
@@ -145,7 +150,7 @@ def main():
     q.add_argument("controller");q.add_argument("--replace",action="store_true")
     q=sub.add_parser("install",help="register using the configured dedicated account, administrator required")
     q.add_argument("--auto-start",action="store_true")
-    for name in ("status","start","stop","enable-auto","remove"):
+    for name in ("status","start","stop","enable-auto","enable-manual","disable-startup","remove"):
         sub.add_parser(name)
     sub.add_parser("collection-status",help="show persistent desired collection state")
     for action in ("collection-pause","collection-resume"):
@@ -159,6 +164,11 @@ def main():
     q.add_argument("--id",required=True)
     q=sub.add_parser("restore-update-copy",help="verify rollback files into a new protected directory")
     q.add_argument("--id",required=True);q.add_argument("--output-id",required=True)
+    q=sub.add_parser("switch-program",help="offline verified program-only switch; requires disabled stopped SCM")
+    q.add_argument("--id",required=True);q.add_argument("--archive",type=Path,required=True);q.add_argument("--sha256",required=True)
+    for action in ("switch-status","reverse-program"):
+        q=sub.add_parser(action,help="inspect or reverse a pre-start program switch")
+        q.add_argument("--id",required=True)
     sub.add_parser("provision-history-key",help="create a protected local history pseudonym key")
     sub.add_parser("smoke-test",help="verify imports only; no service change")
     a=p.parse_args()
@@ -169,7 +179,7 @@ def main():
             print("AWQM manager imports passed (no SCM operation)")
         elif a.action=="provision":provision(load_config(default_root()),a.controller,a.replace)
         elif a.action=="provision-history-key":provision_history_key(load_config(default_root()))
-        elif a.action in ("prepare-update","verify-update","restore-update-copy"):
+        elif a.action in ("prepare-update","verify-update","restore-update-copy","switch-program","switch-status","reverse-program"):
             from .windows_update import manage_update
             manage_update(load_config(default_root()),a)
         elif a.action.startswith("collection-"):collection_control(load_config(default_root()),a.action,getattr(a,"controller",None),getattr(a,"revision",None))
