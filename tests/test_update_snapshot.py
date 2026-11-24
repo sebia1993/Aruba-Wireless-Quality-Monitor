@@ -1,5 +1,6 @@
 import json,sqlite3,tempfile,unittest,zipfile
 from pathlib import Path
+from contextlib import closing
 from unittest.mock import patch
 from types import SimpleNamespace
 from awqm.storage import Store
@@ -18,7 +19,7 @@ class SnapshotTests(unittest.TestCase):
         for name in ("config","secrets","data","logs","backup"):(self.state/name).mkdir()
         (self.state/"config/service.json").write_text('{"fixture":true}')
         (self.state/"config/operations.initialized").write_text("AWQM-operations-v1\n")
-        with sqlite3.connect(self.state/"config/operations.db") as c:
+        with closing(sqlite3.connect(self.state/"config/operations.db")) as c, c:
             c.execute("CREATE TABLE state(paused INTEGER)");c.execute("INSERT INTO state VALUES(1)")
         (self.state/"secrets/fixture.dpapi").write_bytes(b"synthetic encrypted placeholder")
         (self.state/"logs/service-status.json").write_text('{"state":"stopped"}')
@@ -68,7 +69,7 @@ class SnapshotTests(unittest.TestCase):
         wal=self.state/"data/core.db-wal";wal.write_bytes(b"unclean")
         with self.assertRaises(RuntimeError):self.prepare()
         self.assertFalse(self.dest.exists());wal.unlink()
-        with sqlite3.connect(self.state/"data/association.db") as c:c.execute("CREATE TABLE fixture(id INTEGER)")
+        with closing(sqlite3.connect(self.state/"data/association.db")) as c, c:c.execute("CREATE TABLE fixture(id INTEGER)")
         with self.assertRaises(ValueError):self.prepare()
         self.assertFalse(self.dest.exists())
         self.prepare(include_association=True)
