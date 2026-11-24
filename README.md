@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.9.0-dev — Windows 진단 서비스·관리 프로그램·수집 자격 증명. 운영 배포 금지.**
+**현재 단계: v0.10.0-dev — Windows 서비스의 인증된 진단 웹 조회 및 감사 로그. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -36,6 +36,10 @@ Windows EXE에서도 동일하게 `AWQM.exe --validate-cli radio local-output.tx
 ## Windows 진단 서비스 (현장 검증 후보 기능)
 
 빌드 ZIP에 AWQM_Service.exe 및 AWQM_Manager.exe를 추가합니다. 실제 사용은 사내 승인, 비관리자 전용 서비스 계정과 보호된 NTFS 폴더, 검증된 WLC Host Key 및 DPAPI 자격 증명 준비 이후에만 가능합니다. 운영용 RF 분석이나 실데이터 웹 공유는 아직 활성화하지 않습니다. [서비스 구성 및 검증 절차](docs/WINDOWS_SERVICE.md).
+
+## 진단 서비스의 HTTPS 웹 조회 (선택)
+
+기본적으로 웹은 비활성화됩니다. 운영자가 사내 승인된 IP/CIDR, 등록된 인증 WLC, 인증서 SAN 및 기존 개인 ID 권한을 보호된 config/web.json에 명시한 경우에만 서비스의 진단 조회 화면을 활성화합니다. Radio 필드 의미와 호환성은 아직 미검증이며 사용자 식별·자동 원인 판정은 제공하지 않습니다. [진단 웹 설정 및 제한](docs/DIAGNOSTIC_WEB.md).
 
 ## Windows 빌드
 ```powershell

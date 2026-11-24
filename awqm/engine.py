@@ -34,6 +34,7 @@ class Engine:
         self.inflight={};self.snapshots={};self.outcomes={};self.next_tick={}
         self.accepted={};self.last_result={};self.error=None
         self.paused=False;self.closed=False;self.lock=Lock()
+        self.published_radios=()
     @staticmethod
     def _step(w):
         r=w.tick()
@@ -160,6 +161,7 @@ class Engine:
                 except (sqlite3.Error,OSError,ValueError,TypeError) as exc:
                     self.error=type(exc).__name__
                     self.active_detail_clients=[]
+            self.published_radios=tuple((r.radio_id,r.observed_at) for r in radios if not self.error and self.accepted.get(r.radio_id)==r.observed_at)
             self.last_result={"mode":"demo" if self.simulation else "diagnostic","field_validated":False,
                 "coherent_controllers":len(active),"expected_controllers":len(self.workers),
                 "mapped_radios":len(radios),"active_clients":len(clients),

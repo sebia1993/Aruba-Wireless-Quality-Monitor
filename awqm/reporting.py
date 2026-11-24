@@ -49,16 +49,18 @@ def csv_report(report):
     # Each row retains explicit source, filter metadata, and truncated flag.
     writer.writerow(["mode","field_validated","range_start_kst","range_end_kst","resolution","truncated"]+report["fields"])
     for r in report["rows"]:
-        writer.writerow(["demo",False,timestamp(report["start"]),timestamp(report["end"]),report["resolution"],report["truncated"]]+[cell(r[k]) for k in report["fields"]])
+        writer.writerow([report["mode"],False,timestamp(report["start"]),timestamp(report["end"]),report["resolution"],report["truncated"]]+[cell(r[k]) for k in report["fields"]])
     return ("\ufeff"+out.getvalue()).encode("utf-8")
 
 def html_report(report):
     esc=lambda x:html.escape("" if x is None else str(x),quote=True)
     rows="".join("<tr>"+"".join("<td>"+esc(r[k])+"</td>" for k in report["fields"])+"</tr>" for r in report["rows"])
     headers="".join("<th>"+esc(k)+"</th>" for k in report["fields"])
+    heading="AWQM 모의 이력 보고서" if report["mode"]=="demo" else "AWQM 현장 검증 전 진단 이력 보고서"
+    notice="모의 데이터" if report["mode"]=="demo" else "실제 진단 관측 · 필드 의미 및 호환성 미검증"
     return ("<!doctype html><html lang='ko'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>AWQM 모의 이력 보고서</title><h1>AWQM 모의 Radio 이력 보고서</h1>"
-        "<p>모의 데이터 · 현장 검증 전 · 실제 서비스 영향 및 원인 미확인</p>"
+        "<title>"+esc(heading)+"</title><h1>"+esc(heading)+"</h1>"
+        "<p>"+esc(notice)+" · 현장 검증 전 · 실제 서비스 영향 및 원인 미확인</p>"
         "<p>Radio: "+esc(report["radio_id"])+"</p><p>조회 범위(KST): "+esc(timestamp(report["start"]))+
         " ~ "+esc(timestamp(report["end"]))+" (종료 시각 제외)</p><p>해상도: "+esc(report["resolution"])+
         " · 관측 행: "+esc(report["count"])+" · 제한 초과: "+esc(report["truncated"])+"</p>"

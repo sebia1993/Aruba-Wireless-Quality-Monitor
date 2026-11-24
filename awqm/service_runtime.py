@@ -7,7 +7,10 @@ detail requests or public data export. User must authorize local trial.
 from threading import Lock
 from contextlib import contextmanager
 from pathlib import Path
-import hashlib,time,shutil
+import hashlib,time,shutil,threading
+from .web_config import load_web_config
+from .diagnostic_view import DiagnosticView
+from .diagnostic_web import create_listener
 from .collector import PinnedSSH
 from .ssh_shell import ShellSession
 from .worker import ControllerWorker
@@ -59,7 +62,7 @@ def exclusive(root):
         yield
     finally:h.Close()
 
-def pump(engine,maintenance,stop,status_path,usage=shutil.disk_usage,wall=time.time,interval=.25):
+def pump(engine,maintenance,stop,status_path,usage=shutil.disk_usage,wall=time.time,interval=.25,view=None):
     last_status=-1e20
     last_disk=-1e20;level="unknown"
     try:
@@ -75,18 +78,25 @@ def pump(engine,maintenance,stop,status_path,usage=shutil.disk_usage,wall=time.t
                 result=engine.pulse() or engine.last_result
                 if not engine.error:engine.last_maintenance=maintenance.tick()
             if now-last_status>=5:
+                if view is not None:
+                    view.publish(result,getattr(engine,"published_radios",()),
+                                 available=level!="critical" and not bool(result.get("storage_error")))
                 write_json(status_path,{"state":"running","at":int(now),"disk_level":level,
                     "result":result,"maintenance":getattr(engine,"last_maintenance",{}),
-                    "web_enabled":False,"field_validated":False})
+                    "web_enabled":view is not None,"field_validated":False})
                 last_status=now
             stop.wait(interval)
     finally:
+        # Refuse new web authentication while waiting for workers to stop.
+        stop.set()
+        if view is not None:view.publish({"paused":True},available=False)
         engine.close()
         write_json(status_path,{"state":"stopped","at":int(wall()),"web_enabled":False,"field_validated":False})
 
 def run_service(root,stop):
     cfg=load_config(root)
     check_identity(cfg.account);check_layout(cfg)
+    web=load_web_config(cfg)
     # Preflight all blobs and known host entries before creating any session.
     import paramiko
     keys=paramiko.HostKeys(str(cfg.known_hosts))
@@ -99,4 +109,17 @@ def run_service(root,stop):
         workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode="safe",offset=i*15,enable_bss=True) for i,t in enumerate(cfg.targets)]
         engine=Engine(workers,store,site=cfg.site,simulation=False,durable_jobs=False,auto=False)
         maintenance=Maintenance(store,safe_path(cfg.root,"backup"))
-        pump(engine,maintenance,stop,safe_path(cfg.root,"logs/service-status.json"))
+        view=DiagnosticView(store,time.time) if web else None
+        server=None;thread=None
+        try:
+            if web:
+                server=create_listener(web,cfg,engine.workers,gate,view,stop)
+                thread=threading.Thread(target=server.serve_forever,name="awqm-https",daemon=True)
+                thread.start()
+            pump(engine,maintenance,stop,safe_path(cfg.root,"logs/service-status.json"),view=view)
+        finally:
+            stop.set()
+            if server is not None:
+                if thread is not None and thread.is_alive():server.shutdown();thread.join()
+                server.server_close()
+            engine.close()

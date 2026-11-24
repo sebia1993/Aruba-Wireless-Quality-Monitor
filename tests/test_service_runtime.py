@@ -56,6 +56,7 @@ class ConfigTests(unittest.TestCase):
             stopped=False
             def is_set(self):return self.stopped
             def wait(self,interval):self.stopped=True
+            def set(self):self.stopped=True
         class Engine:
             closed=False
             def pulse(self):raise AssertionError("critical disk must block dispatch")

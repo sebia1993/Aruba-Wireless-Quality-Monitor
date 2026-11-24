@@ -51,19 +51,21 @@ class Session:
 
 class Auth:
     def __init__(self,roles,verifier,clock=time.monotonic,idle=1800,absolute=28800,
-                 global_limit=10,user_limit=3,window=60,max_sessions=100):
+                 global_limit=10,user_limit=3,window=60,max_sessions=100,audit_sink=None):
         self.roles=validate_roles(roles);self.verifier=verifier;self.clock=clock
         self.idle=idle;self.absolute=absolute;self.global_limit=global_limit;self.user_limit=user_limit
         self.window=window;self.max_sessions=max_sessions
         self.lock=RLock();self.verify_lock=Lock()
         self.global_attempts=deque();self.user_attempts={}
-        self.sessions={};self.audit=deque(maxlen=1000)
+        self.sessions={};self.audit=deque(maxlen=1000);self.audit_sink=audit_sink
     def _key(self,token):
         return hashlib.sha256(token.encode("ascii")).hexdigest()
     def _event(self,user,event):
         # No password, token, CLI output or exception text.
-        self.audit.append({"username":user if user in self.roles else None,
-                           "event":event,"at":int(time.time())})
+        entry={"username":user if user in self.roles else None,
+               "event":event,"at":int(time.time())}
+        if self.audit_sink:self.audit_sink(entry)
+        self.audit.append(entry)
     def _prune(self,now):
         for k,s in list(self.sessions.items()):
             if now-s.created>=self.absolute or now-s.touched>=self.idle or self.roles.get(s.username)!=s.role:
@@ -91,6 +93,7 @@ class Auth:
         if not self.verify_lock.acquire(blocking=False):raise AuthBusy("authentication busy")
         try:
             try:ok=self.verifier(user,password) is True
+            except AuthBusy:raise
             except Exception:ok=False
         finally:self.verify_lock.release()
         with self.lock:
@@ -99,8 +102,8 @@ class Auth:
                 self._event(user,"denied");raise AuthDenied("authentication failed")
             if len(self.sessions)>=self.max_sessions:raise AuthBusy("session capacity reached")
             token=secrets.token_urlsafe(32);csrf=secrets.token_urlsafe(32)
-            self.sessions[self._key(token)]=Session(user,role,now,now,csrf)
             self._event(user,"login")
+            self.sessions[self._key(token)]=Session(user,role,now,now,csrf)
             return token
     def session(self,token,role=None,touch=True):
         if not isinstance(token,str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}",token):raise AuthDenied("session required")
