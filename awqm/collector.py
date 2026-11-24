@@ -56,6 +56,8 @@ class TaskQueue:
                 raise ValueError("task not running")
             self._running=None
 
+class HostKeyUnapproved(RuntimeError):pass
+
 class PinnedSSH:
     """Explicit testable transport primitive. Live CLI shell/paging/capability handling is pending."""
     def __init__(self, host, known_hosts, port=22):
@@ -68,6 +70,9 @@ class PinnedSSH:
         client.load_host_keys(self.known_hosts)
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
         try:
+            key_name=self.host if self.port==22 else f"[{self.host}]:{self.port}"
+            if client.get_host_keys().lookup(key_name) is None:
+                raise HostKeyUnapproved("no approved host key")
             client.connect(self.host,port=self.port,username=username,password=password,
                            timeout=10,auth_timeout=15,banner_timeout=15,look_for_keys=False,allow_agent=False)
             client.get_transport().set_keepalive(30)

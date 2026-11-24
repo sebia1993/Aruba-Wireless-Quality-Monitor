@@ -1,2 +1,3 @@
 # Runtime dependencies for the SSH foundation (demo uses Python stdlib only).
 paramiko>=3.5,<5
+pywin32>=308,<400; sys_platform == 'win32'

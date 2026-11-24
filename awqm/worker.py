@@ -26,7 +26,7 @@ PARSERS={
 DETAIL_PARSERS={"show ap debug client-table":client_table,"show ap debug client-stats":station_stats}
 DENIED=re.compile(r"(?im)^\s*(?:%\s*)?(?:permission denied|access denied|not authorized|authorization failed)")
 UNSUPPORTED=re.compile(r"(?im)^\s*(?:%\s*)?(?:invalid (?:input|command)|unknown command|command not found|unrecognized command|ambiguous command|incomplete command)")
-AUTH_ERRORS={"AuthenticationException","BadAuthenticationType","PasswordRequiredException","BadHostKeyException"}
+AUTH_ERRORS={"AuthenticationException","BadAuthenticationType","PasswordRequiredException","BadHostKeyException","HostKeyUnapproved","SharedCredentialRejected","CredentialUnavailable"}
 BACKOFF=(15,30,60,120,300)
 
 @dataclass(frozen=True)

@@ -8,6 +8,15 @@ from awqm.dpapi import smoke as dpapi_smoke
 
 def main():
     import sys
+    from pathlib import Path
+    name=Path(sys.executable).name.lower() if getattr(sys,"frozen",False) else ""
+    if name=="awqm_service.exe":
+        from awqm.winservice import main as service_main
+        service_main();return
+    if name=="awqm_manager.exe" or sys.argv[1:2]==["--manager"]:
+        if name!="awqm_manager.exe":sys.argv.pop(1)
+        from awqm.manager import main as manager_main
+        manager_main();return
     if len(sys.argv)>1 and sys.argv[1]=="--validate-cli":
         sys.argv.pop(1)
         probe_main()
