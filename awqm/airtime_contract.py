@@ -19,8 +19,9 @@ class Counter:
     validated:bool=False
 
 def measured(previous,current):
-    if previous is None or current is None or not previous.validated or not current.validated:return None
-    if not previous.epoch or not previous.metric_id:return None
+    if not isinstance(previous,Counter) or not isinstance(current,Counter) or previous.validated is not True or current.validated is not True:return None
+    if any(not isinstance(v,str) or not 1<=len(v)<=256 for v in (previous.epoch,previous.metric_id,current.epoch,current.metric_id)):return None
+    if any(type(v) is not int or not 0<=v<=2**64-1 for v in (previous.value,current.value)):return None
     if (previous.unit,previous.scope,previous.epoch,previous.metric_id)!=(current.unit,current.scope,current.epoch,current.metric_id):return None
     if previous.unit not in ("us","ms","ns") or previous.scope not in ("tx","rx","whole_interval"):return None
     if type(previous.at) is not int or type(current.at) is not int:return None

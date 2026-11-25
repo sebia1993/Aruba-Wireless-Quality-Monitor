@@ -37,7 +37,7 @@ class DataRollbackTests(unittest.TestCase):
         self.switch_and_write()
         tx=self.dest.parent/(self.dest.name+".data-rollback")
         def fail(a,b):
-            if a==tx/"staged"/"data":raise OSError("simulated rename failure")
+            if a.name=="data" and a.parent.name=="staged" and b.name=="data":raise OSError("simulated rename failure")
             a.rename(b)
         with self.assertRaises(OSError):self.undo(rename=fail)
         self.assertFalse((self.state/"data").exists())
@@ -89,7 +89,7 @@ class DataRollbackTests(unittest.TestCase):
         self.switch_and_write()
         tx=self.dest.parent/(self.dest.name+".data-rollback")
         def fail(a,b):
-            if a==tx/"staged"/"data":raise OSError("simulated interruption")
+            if a.name=="data" and a.parent.name=="staged" and b.name=="data":raise OSError("simulated interruption")
             a.rename(b)
         with self.assertRaises(OSError):self.undo(rename=fail)
         (tx/"displaced/data/extra").write_bytes(b"changed")

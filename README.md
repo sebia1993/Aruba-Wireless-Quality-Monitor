@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.35.0-dev — SSH 의존성 보안 개선 및 검증. 운영 배포 금지.**
+**현재 단계: v0.36.0-dev — SSH 의존성 보안 개선 및 검증. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -144,6 +144,10 @@ Windows ZIP의 실제 설치 패키지 버전을 별도 CI에서 취약점 조�
 ## 업데이트 이후 데이터 복구
 
 설정과 자격 증명이 이전 사본과 동일한 중지·시작 비활성 서비스에 한해, 신규 데이터와 로그를 별도 보존하고 이전 데이터 및 프로그램을 복원합니다. 자동 시작하지 않습니다. [복구 조건 및 제한](docs/DATA_ROLLBACK.md).
+
+## Airtime 현장 검증용 오프라인 검사
+
+`--validate-cli client-info-airtime`와 `--compare-file`로 두 출력의 TID 필드 구조·변화 수를 확인합니다. 실제 Airtime 수치나 원인 확정은 하지 않습니다. [검증 기준](docs/AIRTIME_VALIDATION.md).
 
 ## Windows 빌드
 ```powershell

@@ -47,3 +47,7 @@ Current launcher defaults to no live access; explicit --demo, --engine-demo, --v
 - v0.34.0-dev: absolute diagnostic HTTP socket lifetime, bounded request/header envelope and stricter framing, synchronized WSS admission handoff, real loopback regression. Already running operations are not cancelled by a socket deadline. CI pending.
 
 - v0.35.0-dev: guarded post-start data/log rollback and previous program reversal, immutable configuration/secrets requirement, explicit displacement acknowledgment and association history permission, retained newer files and hash-checked resumption after directory/program rename faults. v0.34 Windows and advisory CI passed; v0.35 CI pending. No automatic activation or actual field rollback.
+
+- v0.36.0-dev: offline client-info-airtime probe for opaque TID field layout and same-reported-context changes, no raw client identity or counter values in output, no inferred unit/coverage or live percentage; hardened numeric contract. Actual field semantics still unverified. CI pending.
+
+- v0.35 initial Windows CI: 201 tests (198 passed, 2 failed, one platform skip). The two injected rename failures were not triggered on Windows; v0.36 changes the fixture predicate to match the actual rename phase rather than the unnormalized temporary path. Repeat CI required.

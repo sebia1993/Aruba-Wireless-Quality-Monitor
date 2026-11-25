@@ -11,19 +11,33 @@ from .cluster import group_membership,ap_load,client_load
 from .association_history import user_table
 from .controller_resources import memory,datapath
 from .ap_anchors import standby,uac_database
+from .client_info_airtime import client_info,parse as parse_client_info,inspect as inspect_client_info
 PARSERS={"radio":radio_summary,"inventory":inventory,"active":active_details,"association":associations,"cpu":cpu_load,
-         "client":client_table,"stats":station_stats,"bss":bss_table,"version":version_identity,"neighbors":arm_neighbors,"cluster":group_membership,"ap-load":ap_load,"client-load":client_load,"users":user_table,"memory":memory,"datapath":datapath,"standby":standby,"uac-ap":uac_database}
+         "client":client_table,"stats":station_stats,"bss":bss_table,"version":version_identity,"neighbors":arm_neighbors,"cluster":group_membership,"ap-load":ap_load,"client-load":client_load,"users":user_table,"memory":memory,"datapath":datapath,"standby":standby,"uac-ap":uac_database,"client-info-airtime":client_info}
 
 def main():
     p=argparse.ArgumentParser(description="Local AOS 8 CLI parser validation (no SSH connection)")
     p.add_argument("kind",choices=PARSERS)
     p.add_argument("file",type=Path)
     p.add_argument("--detail",action="store_true",help="show parsed fields locally; may include sensitive data")
+    p.add_argument("--compare-file",type=Path,help="second local client-info-airtime output; no ratio calculation")
     a=p.parse_args()
+    if a.compare_file and a.kind!="client-info-airtime":p.error("--compare-file is only for client-info-airtime")
     try:
         if a.file.stat().st_size>16_000_000:
             raise ParseError("input too large")
-        result=PARSERS[a.kind](a.file.read_text(encoding="utf-8-sig"))
+        raw=a.file.read_text(encoding="utf-8-sig")
+        if a.kind=="client-info-airtime":
+            first=parse_client_info(raw)
+            second=None
+            if a.compare_file:
+                if a.compare_file.stat().st_size>16_000_000:raise ParseError("input too large")
+                second=parse_client_info(a.compare_file.read_text(encoding="utf-8-sig"))
+            # Safe summary even when --detail is supplied: no raw fields,
+            # peer IDs, MACs, driver interfaces or counter values.
+            print(json.dumps({"kind":a.kind,**inspect_client_info(first,second)},ensure_ascii=False,indent=2))
+            return
+        result=PARSERS[a.kind](raw)
     except (OSError,UnicodeError,ParseError) as exc:
         p.exit(2,"Parser validation failed: "+str(exc)+"\n")
     if isinstance(result,list):
