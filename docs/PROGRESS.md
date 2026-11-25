@@ -1,4 +1,6 @@
-# AWQM development progress (v0.41 development candidate)
+# AWQM development progress (v0.42 development candidate)
+
+The [v0.41 folder package](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45536314896) and [single executable](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45536519893) passed full candidate CI. On Windows 11, 10 synthetic operators completed 50 browser searches and dashboard reads with a render P95 of 0.482 seconds. The v0.42 candidate extends search across authorized diagnostic views, validates the comparison group used for client quality, and checks the SCM recovery policy before enabling startup. The 109,920,000-row trial remains deferred by the owner.
 
 The previous 78.9% estimate below is historical. The v0.40 CSV blocker closed in Chromium run 45532402678. The v0.41 candidate adds separate Radio and incident pages, correct measurement and event timestamps, controller CPU recovery guards, bounded per-Radio aggregation, backup review checks and Windows service readiness/shutdown handling. The full retained-history trial was deferred by the owner pending local storage. Real Windows 11 service lifecycle, field attestation and the 72-hour run still require their own evidence.
 

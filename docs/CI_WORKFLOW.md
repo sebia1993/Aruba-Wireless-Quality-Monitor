@@ -38,3 +38,7 @@ build, browser, dependency audit and remaining field qualification.
 The corrected selector at 084b41a passed the [quick checks](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45532402766).
 Both Chromium viewports saved a native CSV identical to the independently
 verified HTTPS response in the [browser run](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45532402678).
+
+## Windows service lifecycle
+
+The full folder-package workflow installs the frozen service under a temporary, dedicated local account on a disposable GitHub-hosted Windows Server runner. The fixture configures a synthetic controller and suspends its collection before startup. The service must decrypt its own DPAPI credential and publish a running heartbeat with collection paused. The job exercises the SCM failure-recovery policy, upgrades from a separately built v0.41.0 baseline, and restores the previous installation after a candidate start. The artifact records each verified phase and the candidate ZIP digest. Reboot on the target Windows 11 edition, field collection and the long run remain separate qualification steps.

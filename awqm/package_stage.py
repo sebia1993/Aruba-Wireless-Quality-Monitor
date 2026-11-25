@@ -1,6 +1,7 @@
 """Offline package verification/staging. Never installs, executes or stops services."""
-import argparse,hashlib,json,re,shutil,stat,tempfile,zipfile
+import argparse,hashlib,json,os,re,shutil,stat,tempfile,zipfile
 from pathlib import Path
+from uuid import uuid4
 from .maintenance import write_json
 
 REQUIRED={"awqm.exe","awqm_service.exe","awqm_manager.exe","version.txt","readme.md","build-dependencies.txt"}
@@ -48,6 +49,62 @@ def entries(z):
     if not any(k.startswith("_internal/") and not v for k,v in seen.items()) or not any(k.startswith("docs/") and not v for k,v in seen.items()):raise ValueError("missing runtime or documentation")
     return out
 
+def _publish(root, dest):
+    if os.name != "nt":
+        root.rename(dest)
+        return
+
+    import win32con as c
+    import win32file as files
+    import win32security as security
+
+    # An ordinary empty sibling gets exactly the destination's creation DACL,
+    # including Windows' default when the parent has no inheritable ACEs.
+    pending = dest.parent / (".awqm-publish-" + uuid4().hex)
+    pending.mkdir()
+    dacl_info = security.DACL_SECURITY_INFORMATION
+    try:
+        descriptor = security.GetNamedSecurityInfo(str(pending), security.SE_FILE_OBJECT, dacl_info)
+        acl = descriptor.GetSecurityDescriptorDacl()
+        if acl is None:
+            raise ValueError("staging destination requires a protected parent")
+        protected = descriptor.GetSecurityDescriptorControl()[0] & security.SE_DACL_PROTECTED
+        inheritance = (security.PROTECTED_DACL_SECURITY_INFORMATION if protected
+                       else security.UNPROTECTED_DACL_SECURITY_INFORMATION)
+    finally:
+        pending.rmdir()
+
+    # Keep the identity of the verified directory across its move out of the
+    # private scratch. Holding DELETE access here would block Windows from
+    # propagating the ACL to children even when SetSecurityInfo succeeds.
+    share = c.FILE_SHARE_READ | c.FILE_SHARE_WRITE
+    flags = c.FILE_FLAG_BACKUP_SEMANTICS | files.FILE_FLAG_OPEN_REPARSE_POINT
+    handle = files.CreateFile(str(root), c.READ_CONTROL | c.WRITE_DAC, share | c.FILE_SHARE_DELETE,
+                              None, c.OPEN_EXISTING, flags, None)
+    def move_pending(path):
+        moving = files.CreateFile(str(pending), c.DELETE, share, None, c.OPEN_EXISTING, flags, None)
+        try:
+            source = files.GetFileInformationByHandle(handle)
+            found = files.GetFileInformationByHandle(moving)
+            if (found[4], found[8:]) != (source[4], source[8:]):
+                raise RuntimeError("staging directory changed during publication")
+            files.SetFileInformationByHandle(moving, files.FileRenameInfo,
+                                             {"ReplaceIfExists": False, "RootDirectory": None, "FileName": str(path)})
+        finally:
+            moving.Close()
+    try:
+        root.rename(pending)
+        try:
+            security.SetSecurityInfo(handle, security.SE_FILE_OBJECT, dacl_info | inheritance,
+                                     None, None, acl, None)
+            move_pending(dest)
+        except BaseException:
+            move_pending(root)
+            raise
+    finally:
+        handle.Close()
+
+
 def stage(archive,expected_sha256,destination):
     archive=Path(archive).resolve(strict=True);dest=Path(destination).absolute()
     if any(p.is_symlink() or getattr(p,"is_junction",lambda:False)() for p in (dest,*dest.parents)):raise ValueError("reparse point destination prohibited")
@@ -82,7 +139,7 @@ def stage(archive,expected_sha256,destination):
                 "files":sum(not i.is_dir() for i,_ in members),"production_approved":False}
         write_json(root/"STAGE-RECEIPT.json",result)
         if dest.exists() or dest.is_symlink():raise ValueError("destination already exists")
-        root.rename(dest)
+        _publish(root, dest)
         return result
 
 def main():

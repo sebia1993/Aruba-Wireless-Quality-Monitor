@@ -1,5 +1,6 @@
 """Explicit local Windows service management; never exposes passwords in argv."""
 import argparse,getpass,os,sys,warnings,json
+from contextlib import ExitStack
 from pathlib import Path
 from uuid import uuid4
 from .service_config import default_root,load_config,envelope,fixed_local
@@ -8,6 +9,28 @@ from .winservice import SERVICE_NAME,DISPLAY_NAME
 from .association_history import key_path,key_envelope
 from .operations import configured_ops
 from .windows_security import current_sid
+
+
+class ServiceRegistrationError(RuntimeError):
+    """Carries a fixed local operator message about service registration."""
+
+
+def recovery_actions(w):
+    return ((w.SC_ACTION_RESTART, 30000), (w.SC_ACTION_RESTART, 60000),
+            (w.SC_ACTION_RESTART, 300000), (w.SC_ACTION_NONE, 0))
+
+
+def verify_recovery(w, service):
+    policy = w.QueryServiceConfig2(service, w.SERVICE_CONFIG_FAILURE_ACTIONS)
+    on_error_stop = w.QueryServiceConfig2(service, w.SERVICE_CONFIG_FAILURE_ACTIONS_FLAG)
+    if (not isinstance(policy, dict) or policy.get("ResetPeriod") != 86400 or
+            tuple(policy.get("Actions") or ()) != recovery_actions(w) or not on_error_stop):
+        raise ServiceRegistrationError("AWQM recovery policy verification failed. Review the service registration.")
+
+
+def set_start_type(w, service, start_type):
+    w.ChangeServiceConfig(service, w.SERVICE_NO_CHANGE, start_type, w.SERVICE_NO_CHANGE,
+                          None, None, 0, None, None, None, None)
 
 def prompt(label):
     if not sys.stdin.isatty():raise ValueError("interactive console required")
@@ -79,36 +102,42 @@ def install(cfg,auto=False):
     binary=fixed_local(Path(sys.executable).parent/"AWQM_Service.exe")
     if binary.parent!=expected or not binary.is_file():raise ValueError("install folder must be Program Files\\AWQM")
     _walk(expected, check_program_acl)
-    password=prompt("Windows dedicated service account password: ")
-    scm=w.OpenSCManager(None,None,w.SC_MANAGER_CREATE_SERVICE)
-    svc=None
-    try:
-        svc=w.CreateService(scm,SERVICE_NAME,DISPLAY_NAME,w.SERVICE_ALL_ACCESS,
-            w.SERVICE_WIN32_OWN_PROCESS,w.SERVICE_AUTO_START if auto else w.SERVICE_DEMAND_START,
-            w.SERVICE_ERROR_NORMAL,'"'+str(binary)+'"',None,0,None,cfg.account,password)
+    with ExitStack() as handles:
+        scm=w.OpenSCManager(None,None,w.SC_MANAGER_CREATE_SERVICE)
+        handles.callback(w.CloseServiceHandle, scm)
+        password=prompt("Windows dedicated service account password: ")
+        try:
+            svc=w.CreateService(scm,SERVICE_NAME,DISPLAY_NAME,w.SERVICE_ALL_ACCESS,
+                w.SERVICE_WIN32_OWN_PROCESS,w.SERVICE_DISABLED,
+                w.SERVICE_ERROR_NORMAL,'"'+str(binary)+'"',None,0,None,cfg.account,password)
+        finally:
+            del password
+        handles.callback(w.CloseServiceHandle, svc)
         try:
             w.ChangeServiceConfig2(svc,w.SERVICE_CONFIG_DESCRIPTION,"Read-only field-unvalidated diagnostic collection")
-            # Explicit finite recovery: 30s, 60s, 300s, then no further action.
             w.ChangeServiceConfig2(svc,w.SERVICE_CONFIG_FAILURE_ACTIONS,{
                 "ResetPeriod":86400,"RebootMsg":"","Command":"",
-                "Actions":[(w.SC_ACTION_RESTART,30000),(w.SC_ACTION_RESTART,60000),(w.SC_ACTION_RESTART,300000),(w.SC_ACTION_NONE,0)]})
+                "Actions":recovery_actions(w)})
             w.ChangeServiceConfig2(svc,w.SERVICE_CONFIG_FAILURE_ACTIONS_FLAG,True)
-        except Exception:
-            w.DeleteService(svc)
+            verify_recovery(w, svc)
+            set_start_type(w, svc, w.SERVICE_AUTO_START if auto else w.SERVICE_DEMAND_START)
+        except BaseException:
+            try:
+                w.DeleteService(svc)
+            except Exception:
+                raise ServiceRegistrationError(
+                    "AWQM installation failed and removal of its new registration could not be confirmed. "
+                    "Inspect the stopped service before retrying installation.") from None
             raise
-    finally:
-        del password
-        if svc is not None:w.CloseServiceHandle(svc)
-        w.CloseServiceHandle(scm)
     print("AWQM service registered; not started. Start type:", "automatic" if auto else "manual")
 
 def control(action):
     import win32service as w
-    perms={"status":w.SERVICE_QUERY_STATUS,"start":w.SERVICE_START|w.SERVICE_QUERY_STATUS,
+    perms={"status":w.SERVICE_QUERY_STATUS,"start":w.SERVICE_START|w.SERVICE_QUERY_STATUS|w.SERVICE_QUERY_CONFIG,
            "stop":w.SERVICE_STOP|w.SERVICE_QUERY_STATUS,"remove":0x00010000|w.SERVICE_QUERY_STATUS,
-           "enable-auto":w.SERVICE_CHANGE_CONFIG|w.SERVICE_QUERY_STATUS,
+           "enable-auto":w.SERVICE_CHANGE_CONFIG|w.SERVICE_QUERY_STATUS|w.SERVICE_QUERY_CONFIG,
            "disable-startup":w.SERVICE_CHANGE_CONFIG|w.SERVICE_QUERY_STATUS,
-           "enable-manual":w.SERVICE_CHANGE_CONFIG|w.SERVICE_QUERY_STATUS}
+           "enable-manual":w.SERVICE_CHANGE_CONFIG|w.SERVICE_QUERY_STATUS|w.SERVICE_QUERY_CONFIG}
     scm=w.OpenSCManager(None,None,w.SC_MANAGER_CONNECT)
     svc=None
     try:
@@ -118,16 +147,18 @@ def control(action):
             print("SCM state:",{1:"STOPPED",2:"START_PENDING",3:"STOP_PENDING",4:"RUNNING",5:"CONTINUE_PENDING",6:"PAUSE_PENDING",7:"PAUSED"}.get(state,state))
         elif action=="start":
             if state!=w.SERVICE_STOPPED:raise ValueError("service is not stopped")
+            verify_recovery(w, svc)
             w.StartService(svc,None);print("Start requested; check status")
         elif action=="stop":
             if state!=w.SERVICE_RUNNING:raise ValueError("service is not running")
             w.ControlService(svc,w.SERVICE_CONTROL_STOP);print("Stop requested; check status")
         elif action in ("enable-auto","disable-startup","enable-manual"):
             if action!="enable-auto" and state!=w.SERVICE_STOPPED:raise ValueError("stop service first")
+            if action!="disable-startup":
+                verify_recovery(w, svc)
             start_type={"enable-auto":w.SERVICE_AUTO_START,"disable-startup":w.SERVICE_DISABLED,
                         "enable-manual":w.SERVICE_DEMAND_START}[action]
-            w.ChangeServiceConfig(svc,w.SERVICE_NO_CHANGE,start_type,w.SERVICE_NO_CHANGE,
-                None,None,0,None,None,None,None)
+            set_start_type(w, svc, start_type)
             print("Startup configuration changed; no start request issued")
         elif action=="remove":
             if state!=w.SERVICE_STOPPED:raise ValueError("stop service before removal")
@@ -194,4 +225,5 @@ def main():
         elif a.action.startswith("collection-"):collection_control(load_config(default_root()),a.action,getattr(a,"controller",None),getattr(a,"revision",None))
         elif a.action=="install":install(load_config(default_root()),a.auto_start)
         else:control(a.action)
+    except ServiceRegistrationError as exc:p.exit(2,str(exc)+"\n")
     except Exception as exc:p.exit(2,"AWQM manager operation failed: "+type(exc).__name__+"\n")
