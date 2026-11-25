@@ -35,4 +35,6 @@ checks as appropriate, integrate once into portable, then explicitly run
 full candidate qualification. Record distinct outcomes for source checks,
 build, browser, dependency audit and remaining field qualification.
 
-Initial quick-check execution detected a syntax error in the new selector test; the test string is corrected and repeat CI is required.
+The corrected selector at 084b41a passed the [quick checks](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45532402766).
+Both Chromium viewports saved a native CSV identical to the independently
+verified HTTPS response in the [browser run](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45532402678).

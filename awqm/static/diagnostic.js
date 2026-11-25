@@ -3,12 +3,13 @@ const $=id=>document.getElementById(id);
 const names={overview:"종합 현황",radios:"AP 품질 관측",clients:"사용자 분석",history:"장애 및 이력",admin:"운영 관리"};
 let view="overview",page=1,snapshot=null,selected=null,busy=false,revision=0,expired=false;
 let updateSocket=null,updateTimer=null,lastSignal=0,lastAutomatic=0,lastPublication=null;
+const detailRoute=/^#(radio|incident)\/([0-9a-f]{32})$/.exec(location.hash);
 const kst=t=>t==null?"미확인":new Date(t*1000).toLocaleString("ko-KR",{timeZone:"Asia/Seoul"});
 function el(tag,value,cls){const n=document.createElement(tag);if(value!=null)n.textContent=String(value);if(cls)n.className=cls;return n;}
 function table(headers,rows){const wrap=el("div",null,"table-wrap"),t=el("table"),head=el("thead"),tr=el("tr");for(const h of headers)tr.append(el("th",h));head.append(tr);t.append(head);const b=el("tbody");for(const row of rows){const r=el("tr");for(const value of row){const c=el("td");if(value instanceof Node)c.append(value);else c.textContent=value??"미확인";r.append(c);}b.append(r);}t.append(b);wrap.append(t);return wrap;}
 function metric(n,v){const b=el("div",null,"kpi");b.append(el("span",n),el("strong",v??"미확인"));return b;}
 function notice(s){$("notice").textContent=s;}
-function invalidate(){expired=true;closeUpdates();snapshot=null;selected=null;incidentPanel=null;$("content").replaceChildren(el("p","인증 만료. 새로고침 후 다시 로그인하세요."));$("detail").hidden=true;$("detailBody").replaceChildren();notice("인증 세션 만료");}
+function invalidate(){expired=true;closeUpdates();snapshot=null;selected=null;incidentPanel=null;document.body.classList.remove("detail-page");$("content").replaceChildren(el("p","인증 만료. 새로고침 후 다시 로그인하세요."));$("detail").hidden=true;$("detailBody").replaceChildren();notice("인증 세션 만료");}
 async function request(path){const r=await fetch(path,{cache:"no-store"});if(r.status===401){invalidate();throw Error("expired");}if(!r.ok)throw Error("unavailable");return r.json();}
 function neighborPanel(r){
   const panel=el("section");panel.append(el("h3","RF Neighbor 관측"),el("p","논리적 RF 관계 · 물리 위치 또는 실제 간섭 원인 확정 아님"));
@@ -127,10 +128,16 @@ function historyChart(report){
   box.append(svg,legend,el("p","조회 범위의 실제 저장 관측만 표시합니다. 빈 구간은 미수집·미집계·보존기간 만료 등일 수 있으며 정상 상태로 해석하지 않습니다."));
   return box;
 }
+function detailLink(kind,id){
+  const link=el("a",detailRoute?"목록으로 돌아가기":"전체 페이지에서 열기");
+  link.href=detailRoute?"/":"/#"+kind+"/"+id;
+  if(!detailRoute){link.target="_blank";link.rel="noopener";}
+  return link;
+}
 function openHistory(r){
   incidentPanel=null;selected={id:r.id,name:r.ap_name,band:r.band};$("detail").hidden=false;
   const d=$("detailBody");d.replaceChildren(el("h3",r.ap_name+" · "+r.band),el("p","원본·집계 이력 · 실제 서비스 영향 및 원인 미확인"));
-  d.append(el("p","AP 앵커 관측 (상세 화면을 연 시점의 자료, 현재 상태 보장 아님)"));
+  d.append(detailLink("radio",r.id),el("p","AP 앵커 관측 (상세 화면을 연 시점의 자료, 현재 상태 보장 아님)"));
   if(r.ap_anchor?.observations?.length)d.append(table(["관측 WLC","자료 유형","보고 역할","관측 시각"],r.ap_anchor.observations.map(x=>[x.source,x.kind==="standby"?"Standby AP":"UAC AP DB",x.roles.join(", ")||"미확인",kst(x.observed_at)])));
   else d.append(el("p","현재 검증된 추가 앵커 관측 없음"));
   const end=el("input");end.type="datetime-local";end.setAttribute("aria-label","종료 시각 KST");
@@ -216,10 +223,15 @@ async function openIncident(id){
   try{
     const d=await request("/api/incident?"+new URLSearchParams({id}));
     if(incidentPanel!==ticket||expired)return;
+    const reload=el("button","상세 다시 조회");
+    reload.addEventListener("click",()=>openIncident(id));
     out.replaceChildren(el("h3",d.ap_name+" · "+d.band+" · "+id.slice(0,12)),
-      el("p",incidentLabels[d.display_state]||d.display_state),el("p","서비스 영향: 미검증 · 실제 원인 확정 아님"),
+      el("p","조회 당시 상태 · "+(incidentLabels[d.display_state]||d.display_state)+" · "+kst(Date.now()/1000)),reload,
+      el("p","서비스 영향: 미검증 · 실제 원인 확정 아님"),
       el("p","최초 "+kst(d.first_at)+" · 마지막 "+kst(d.last_at)),
-      table(["관측 시각","상태","사용률","간섭률","NF","후보"],d.timeline.map(x=>[kst(x.at),incidentLabels[x.state]||x.state,x.evidence.utilization,x.evidence.interference,x.evidence.noise,x.evidence.candidates.map(c=>candidateLabels[c.code]||c.code).join(" / ")])));
+      table(["근거 기록 시각","Radio 관측 시각","상태","사용률","간섭률","NF","후보"],d.timeline.map(x=>[
+        kst(x.at),kst(x.evidence.observed_at),incidentLabels[x.state]||x.state,x.evidence.utilization,
+        x.evidence.interference,x.evidence.noise,x.evidence.candidates.map(c=>candidateLabels[c.code]||c.code).join(" / ")])));
     const exports=el("div",null,"pager"),copy=el("button","주간보고 요약 복사"),copyText=el("textarea");
     copyText.hidden=true;copyText.readOnly=true;copyText.rows=10;copyText.setAttribute("aria-label","주간보고 요약");
     copy.addEventListener("click",async()=>{
@@ -231,7 +243,7 @@ async function openIncident(id){
         catch(e){copyText.select();copy.textContent="텍스트 선택 · 직접 복사";}
       }catch(e){if(!expired)copy.textContent="요약 조회 실패";}
     });
-    exports.append(copy);
+    exports.append(detailLink("incident",id),copy);
     for(const fmt of ["csv","html"]){
       const a=el("a",fmt.toUpperCase()+" 보고서");a.href="/api/incident/report."+fmt+"?"+new URLSearchParams({id});
       a.download="awqm-incident-report."+fmt;exports.append(a);
@@ -424,7 +436,27 @@ $("search").addEventListener("input",()=>{
   if(view==="clients")loadClients();
   else if(view==="overview"||view==="radios"){snapshot=null;render();refresh(true);}
 });
-$("close").addEventListener("click",clearDetail);render();refresh();
+$("close").addEventListener("click",clearDetail);
+async function showDetailPage(kind,id){
+  view="detail";
+  document.body.classList.add("detail-page");
+  const title=kind==="radio"?"Radio 관측 상세":"위험 이력 상세";
+  $("heading").textContent=title;
+  document.title=title+" · AWQM";
+  $("detail").hidden=false;
+  const out=$("detailBody");
+  out.replaceChildren(el("p","상세 정보 조회 중"));
+  if(kind==="incident"){
+    await openIncident(id);
+  }else{
+    try{openHistory(await request("/api/radio?"+new URLSearchParams({id})));}
+    catch(e){if(!expired)out.replaceChildren(el("p","Radio 정보를 찾을 수 없습니다. 목록에서 다시 선택하세요."));}
+  }
+  if(!expired&&!out.querySelector('a[href="/"]'))out.append(detailLink(kind,id));
+}
+if(detailRoute)showDetailPage(detailRoute[1],detailRoute[2]);
+else{render();refresh();}
+window.addEventListener("hashchange",()=>location.reload());
 function closeUpdates(){
   if(updateTimer!==null){clearTimeout(updateTimer);updateTimer=null;}
   if(updateSocket){const s=updateSocket;updateSocket=null;try{s.close();}catch(e){}}
@@ -432,10 +464,15 @@ function closeUpdates(){
 function automaticRefresh(){
   if(expired||document.hidden||Date.now()-lastAutomatic<4000)return;
   lastAutomatic=Date.now();
-  if(view==="clients")loadClients();else refresh();
+  if(detailRoute){
+    request("/api/publication").then(state=>{
+      if(!expired)notice(state.available?"저장된 상세 정보 · 조회 시점 기준":"현재 수집 상태 확인 불가 · 저장된 상세 정보");
+    }).catch(()=>{if(!expired)notice("현재 수집 상태 확인 불가");});
+  }else if(view==="clients")loadClients();else refresh();
 }
 function connectUpdates(){
-  if(expired||document.hidden||updateSocket||location.protocol!=="https:"||!("WebSocket" in window))return;
+  // A session has one WSS slot. Detail tabs retain the HTTPS fallback.
+  if(detailRoute||expired||document.hidden||updateSocket||location.protocol!=="https:"||!("WebSocket" in window))return;
   let s;
   try{s=new WebSocket("wss://"+location.host+"/ws/updates");}catch(e){return;}
   updateSocket=s;lastPublication=null;

@@ -50,14 +50,16 @@ def summary(detail):
 
 HEADERS=("record_type","incident_id","ap_name","controller","band","revision","observed_at_kst",
     "state","utilization_percent","interference_percent","noise_dbm","quality_score","candidates",
-    "neighbor_evidence","client_correlation_evidence","review_verdict","review_reason","review_candidate","service_impact","truncated")
+    "neighbor_evidence","client_correlation_evidence","review_verdict","review_reason","review_candidate","service_impact","truncated",
+    "event_at_kst")
 
 def rows(detail):
     common={"incident_id":detail["incident_id"],"ap_name":detail["ap_name"],"controller":detail["controller"],
         "band":detail["band"],"service_impact":"unverified",
         "truncated":bool(detail.get("timeline_truncated") or detail.get("reviews_truncated"))}
-    def observation(kind,revision,at,state,e):
-        return dict(common,record_type=kind,revision=revision,observed_at_kst=time_label(at),state=state,
+    def observation(kind,revision,state,e,event_at=None):
+        return dict(common,record_type=kind,revision=revision,observed_at_kst=time_label(e.get("observed_at")),
+            event_at_kst=time_label(event_at) if event_at is not None else None,state=state,
             utilization_percent=e.get("utilization"),interference_percent=e.get("interference"),
             noise_dbm=e.get("noise"),quality_score=e.get("quality_score"),
             candidates=",".join(c["code"] for c in e.get("candidates",[])),
@@ -67,11 +69,11 @@ def rows(detail):
                 " / min degraded "+str(e["client_correlation"]["min_degraded"])+" / low confidence" if e.get("client_correlation") else ""),
             neighbor_evidence="; ".join(line(n.get("ap_name"))+" "+line(n.get("candidate"))+" CH "+line(n.get("channel"))+
                 " / overlap "+line(n.get("overlap_mhz"))+" MHz / OTA "+time_label(n.get("neighbor_at")) for n in e.get("neighbor_evidence",[])))
-    yield observation("summary",detail["revision"],detail["evidence"].get("observed_at"),detail.get("display_state",detail["state"]),detail["evidence"])
+    yield observation("summary",detail["revision"],detail.get("display_state",detail["state"]),detail["evidence"])
     for x in detail["timeline"]:
-        yield observation("evidence",x["revision"],x["at"],x["state"],x["evidence"])
+        yield observation("evidence",x["revision"],x["state"],x["evidence"],x["at"])
     for x in detail["reviews"]:
-        yield dict(common,record_type="review",revision=x["revision"],observed_at_kst=time_label(x["at"]),
+        yield dict(common,record_type="review",revision=x["revision"],event_at_kst=time_label(x["at"]),
             review_verdict=x["verdict"],review_reason=x["reason"],review_candidate=x["candidate"])
 
 def incident_csv(detail):

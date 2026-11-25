@@ -70,14 +70,17 @@ class DiagnosticView:
             at=self.meta.get("published_at");now=int(self.clock())
             return {"type":"publication","revision":self.publication_revision,
                     "available":bool(self.meta.get("available") and at is not None and 0<=now-at<=20)}
-    def page(self,query="",page=1,size=100):
+    def page(self,query="",page=1,size=100,*,token=None):
         if not isinstance(query,str) or len(query)>128 or not 1<=page<=10000 or not 1<=size<=100:
             raise ValueError("invalid query")
         query=query.casefold()
         with self.lock:
             meta=dict(self.meta);meta.pop("operations",None);now=int(self.clock())
             stale=not meta.get("available") or not 0<=now-meta.get("published_at",0)<=20
-            rows=[r for r in self.rows if any(query in str(r[k]).casefold() for k in ("ap_name","controller","band","channel"))]
+            if token is None:
+                rows=[r for r in self.rows if any(query in str(r[k]).casefold() for k in ("ap_name","controller","band","channel"))]
+            else:
+                rows=[r for r in self.rows if r["id"]==token]
             data=[]
             for r in rows[(page-1)*size:page*size]:
                 x=dict(r)

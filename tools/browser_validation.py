@@ -16,6 +16,7 @@ import time
 from http.client import HTTPSConnection
 from ipaddress import IPv4Network
 from pathlib import Path
+from dataclasses import replace
 from types import SimpleNamespace
 from urllib.parse import urlsplit, urljoin
 from cryptography import x509
@@ -24,12 +25,14 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from playwright.sync_api import sync_playwright, expect
 from awqm import __version__
 from awqm.audit import AuditLog
+from awqm.aos8 import ControllerSnapshot
 from awqm.auth import Auth
 from awqm.diagnostic_view import DiagnosticView
 from awqm.diagnostic_web import RestrictedTLS, handler_for
 from awqm.https_validation import certificate
 from awqm.maintenance import write_json
 from awqm.model import Radio
+from awqm.quality_ledger import QualityLedger
 from awqm.secure_preview import tls_context
 from awqm.storage import Store
 from awqm.web_config import WebConfig, cert_expiry
@@ -87,10 +90,17 @@ def fixture(root):
         rows.append(Radio(ident,ident,f"DEMO-BROWSER-{n:04d}","WLC-1","5GHz",44,
                           now,40,5,-94,2,source="aos8-cli-unvalidated",epoch="fixture-1"))
     store.save_batch(rows)
-    view=DiagnosticView(store,lambda:now)
+    ledger=QualityLedger(store)
+    risk=replace(rows[-1],utilization=85,observed_at=now+1)
+    store.save(risk)
+    rows[-1]=risk
+    snap=ControllerSnapshot(risk.controller,risk.observed_at,[],[],[],field_tag="fixture",
+                            field_until=now+3600,field_connection="fixture",field_profile="safe")
+    quality=ledger.evaluate([risk],[snap],now+1,{risk.radio_id:risk.observed_at})
+    view=DiagnosticView(store,lambda:now+1,incidents=ledger.incidents)
     meta={"coherent_controllers":1,"expected_controllers":4,"mapped_radios":len(rows),
           "active_clients":204}
-    view.publish(meta,[(r.radio_id,r.observed_at) for r in rows])
+    view.publish(meta,[(r.radio_id,r.observed_at) for r in rows],quality=quality)
     return view
 
 
@@ -107,8 +117,8 @@ def submit_form(page,url,action,button):
             f"native form rejected: {action}, status={response.status}, origin={classification}")
 
 
-def login(page,url,role):
-    response=page.goto(url,wait_until="domcontentloaded")
+def login(page,url,role,fragment=""):
+    response=page.goto(url+fragment,wait_until="domcontentloaded")
     require(response is not None and response.header_value("referrer-policy")=="same-origin",
             "login document referrer policy mismatch")
     expect(page.locator('input[name="username"]')).to_be_visible()
@@ -116,7 +126,7 @@ def login(page,url,role):
     page.locator('input[name="password"]').fill(PASSWORD)
     submit_form(page,url,"/auth/login",page.get_by_role("button",name="로그인",exact=True))
     expect(page.locator("#role")).to_have_text("권한: "+role)
-    expect(page.locator("#nav")).to_be_visible()
+    if not fragment:expect(page.locator("#nav")).to_be_visible()
 
 
 def browser_test(output):
@@ -186,6 +196,19 @@ def browser_test(output):
                             expect(table).to_have_count(1)
                             page.get_by_role("button",name="DEMO-BROWSER-0001",exact=True).click()
                             expect(page.locator("#detail")).to_be_visible()
+                            with page.expect_popup() as popup:
+                                page.get_by_role("link", name="전체 페이지에서 열기").click()
+                            detail_page = popup.value
+                            try:
+                                expect(detail_page.locator("#detailBody h3").first).to_contain_text("DEMO-BROWSER-0001")
+                                expect(detail_page.locator("#content")).to_be_hidden()
+                                detail_page.reload()
+                                detail_page.get_by_role("button", name="이력 조회", exact=True).click()
+                                expect(detail_page.get_by_role("link", name="CSV 다운로드")).to_be_visible()
+                                detail_page.get_by_role("link", name="목록으로 돌아가기").click()
+                                expect(detail_page.locator("#content .kpis")).to_be_visible()
+                            finally:
+                                detail_page.close()
                             page.get_by_role("button",name="이력 조회",exact=True).click()
                             expect(page.get_by_role("link",name="CSV 다운로드")).to_be_visible()
                             link=page.get_by_role("link",name="CSV 다운로드")
@@ -220,7 +243,20 @@ def browser_test(output):
                             expect(page.get_by_role("button",name="DEMO-BROWSER-0102",exact=True)).to_be_visible()
                             page.locator('[data-view="history"]').click()
                             expect(page.locator("#search")).to_be_disabled()
-                            expect(page.get_by_text("저장된 정책 위험 이력 없음",exact=False)).to_be_visible()
+                            page.locator("#content").get_by_role("button",name="DEMO-BROWSER-0102").click()
+                            with page.expect_popup() as popup:
+                                page.get_by_role("link",name="전체 페이지에서 열기").click()
+                            incident_page=popup.value
+                            try:
+                                expect(incident_page.get_by_role("heading",name="위험 이력 상세")).to_be_visible()
+                                expect(incident_page.get_by_text("조회 당시 상태",exact=False)).to_be_visible()
+                                with incident_page.expect_response(lambda reply: "/api/incident?" in reply.url):
+                                    incident_page.get_by_role("button",name="상세 다시 조회").click()
+                                expect(incident_page.get_by_role("link",name="CSV 보고서")).to_be_visible()
+                                expect(incident_page.get_by_text("Radio 혼잡 관측",exact=True).first).to_be_visible()
+                            finally:
+                                incident_page.close()
+                            result["scenarios"][f"{width}x{height}-{theme}-detail-pages"]="pass"
                             page.locator('[data-view="admin"]').click()
                             expect(page.locator("#search")).to_be_disabled()
                             require(verified_get(context,url,"/api/admin/status",cert)[0]==403,
@@ -258,7 +294,10 @@ def browser_test(output):
                     context=browser.new_context()
                     try:
                         page=context.new_page()
-                        login(page,url,"admin")
+                        fragment="#radio/"+view.token("browser-fixture-0001")
+                        login(page,url,"admin",fragment)
+                        expect(page.locator("#detailBody h3").first).to_contain_text("DEMO-BROWSER-0001")
+                        page.get_by_role("link",name="목록으로 돌아가기").click()
                         page.locator('[data-view="admin"]').click()
                         page.get_by_role("button",name="관리자 상태 조회",exact=True).click()
                         expect(page.get_by_text("감사 기록",exact=False)).to_be_visible()

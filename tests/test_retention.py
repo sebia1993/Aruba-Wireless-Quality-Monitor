@@ -61,6 +61,23 @@ class RetentionTests(unittest.TestCase):
             r=ret.run(day_start("20261112"),dst.name)
             self.assertEqual(r["raw_deleted"],[])
             self.assertEqual(r["raw_held"][DAY],"open_incident_evidence")
+
+    def test_review_added_after_backup_holds_raw_until_review_is_backed_up(self):
+        with tempfile.TemporaryDirectory() as root:
+            p = Path(root)
+            store, ledger = prepare(p)
+            backups = p / "backups"
+            old = verified_backup(store, backups / "aggregate-before-review")
+            incident = ledger.incidents.list(start=T-1, end=T+86400)["rows"][0]
+            ledger.incidents.review(incident["incident_id"], 1, "review-1", "operator",
+                                    "inconclusive", "insufficient_evidence", "RF04")
+            retention = Retention(store, backups)
+            now = day_start("20261112")
+            result = retention.run(now, old.name)
+            self.assertEqual(result["raw_deleted"], [])
+            self.assertEqual(result["raw_held"][DAY], "review_backup_behind")
+            updated = verified_backup(store, backups / "aggregate-with-review")
+            self.assertEqual(retention.run(now, updated.name)["raw_deleted"], [DAY])
     def test_late_arrival_or_corruption_is_held(self):
         with tempfile.TemporaryDirectory() as root:
             p=Path(root);s,l=prepare(p);backup=p/"backup";backup.mkdir()

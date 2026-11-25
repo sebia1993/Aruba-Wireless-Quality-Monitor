@@ -26,6 +26,8 @@ DEFAULT_POLLS=(
     Poll("show user-table standby",300,90,5),
 )
 
+CPU_FRESH_SECONDS = 90
+
 class Protection:
     def __init__(self):
         self.level="unknown"
@@ -35,24 +37,45 @@ class Protection:
         self.last_at=None
         self.history=deque()
     def cpu(self,value,now):
-        self.last_cpu=value; self.last_at=now
-        if value is None or not 0<=value<=100:
-            self.level="unknown"; self.high=self.low=0
+        if value is not None and not 0<=value<=100:
+            value=None
+        distinct_sample=now!=self.last_at
+        if self.last_at is not None:
+            if now<self.last_at:
+                return
+            # At one timestamp, accept only a more conservative valid reading.
+            if not distinct_sample and value is not None and self.last_cpu is not None and value<=self.last_cpu:
+                return
+            if now-self.last_at>CPU_FRESH_SECONDS:
+                self.high=self.low=0
+        self.last_cpu=value
+        self.last_at=now
+        if value is None:
+            # An unreadable poll breaks the streak but cannot clear a restriction.
+            if self.level not in ("limited","critical"):
+                self.level="unknown"
+            self.high=self.low=0
             return
         if value>=85:
             self.level="critical"; self.high=2; self.low=0
         elif value>=70:
-            self.high+=1; self.low=0
+            if distinct_sample or self.high==0:
+                self.high+=1
+            self.low=0
             if self.high>=2 and self.level!="critical":
                 self.level="limited"
         elif value<60:
-            self.low+=1; self.high=0
+            if distinct_sample:
+                self.low+=1
+            self.high=0
             if self.low>=3 or self.level=="unknown":
                 self.level="normal"
         else:
             self.high=self.low=0
     def effective(self,now):
-        return "unknown" if self.last_at is None or not 0<=now-self.last_at<=90 else self.level
+        if self.last_cpu is None or not 0<=now-self.last_at<=CPU_FRESH_SECONDS:
+            return "unknown"
+        return self.level
     def account(self,start,end,detail=False):
         if end>=start:
             self.history.append((start,end,detail))
@@ -64,7 +87,7 @@ class Protection:
         if poll.name=="show cpuload":
             return True
         level=self.effective(now)
-        if level=="critical":
+        if self.level=="critical":
             return poll.name=="show lc-cluster group-membership"
         if poll.detail and (level!="normal" or self.last_cpu is None or self.last_cpu>=70 or self.budget(now,60,True)>=10):
             return False

@@ -67,6 +67,10 @@ def provision_history_key(cfg):
 
 def install(cfg,auto=False):
     import win32service as w
+    from .windows_security import check_program_acl
+    from .windows_update import require_admin
+    from .update_snapshot import _walk
+    require_admin()
     account_sid(cfg.account);check_layout(cfg)
     # The service binary and its bundled libraries must be installed under
     # Program Files, not a mutable downloads/user-writable directory.
@@ -74,6 +78,7 @@ def install(cfg,auto=False):
     expected=fixed_local(Path(os.environ["ProgramFiles"])/"AWQM")
     binary=fixed_local(Path(sys.executable).parent/"AWQM_Service.exe")
     if binary.parent!=expected or not binary.is_file():raise ValueError("install folder must be Program Files\\AWQM")
+    _walk(expected, check_program_acl)
     password=prompt("Windows dedicated service account password: ")
     scm=w.OpenSCManager(None,None,w.SC_MANAGER_CREATE_SERVICE)
     svc=None

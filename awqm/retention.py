@@ -56,6 +56,15 @@ def _incident_evidence(c,backup,start,end):
         if not saved or saved[0]<rev:return "incident_backup_behind"
         saved_events=backup.execute("SELECT COUNT(*) FROM rf_incident_events WHERE incident_id=? AND revision<=?",(ident,rev)).fetchone()[0]
         if saved_events!=rev:return "incident_backup_incomplete"
+        # Reviews are append-only and do not advance the incident revision.
+        # A matching revision alone cannot establish that a later review was saved.
+        review_columns = "request_id,incident_id,evidence_rev,username,at,verdict,reason,candidate"
+        reviews = c.execute(f"SELECT {review_columns} FROM rf_incident_reviews WHERE incident_id=?", (ident,))
+        for review in reviews:
+            archived = backup.execute(f"SELECT {review_columns} FROM rf_incident_reviews WHERE request_id=?",
+                                      (review[0],)).fetchone()
+            if archived != review:
+                return "review_backup_behind"
     # Pre-ledger quality records or inconsistent migrations must not be
     # mistaken for evidence preserved elsewhere.
     orphan=c.execute("""SELECT 1 FROM radio_quality_events q WHERE q.observed_at>=? AND q.observed_at<?

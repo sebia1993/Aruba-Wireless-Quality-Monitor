@@ -1,4 +1,6 @@
-# AWQM development progress (v0.40.0-dev)
+# AWQM development progress (v0.41 development candidate)
+
+The previous 78.9% estimate below is historical. The v0.40 CSV blocker closed in Chromium run 45532402678. The v0.41 candidate adds separate Radio and incident pages, correct measurement and event timestamps, controller CPU recovery guards, bounded per-Radio aggregation, backup review checks and Windows service readiness/shutdown handling. The full retained-history trial was deferred by the owner pending local storage. Real Windows 11 service lifecycle, field attestation and the 72-hour run still require their own evidence.
 
 Planning is approved and complete. This is a provisional engineering estimate,
 not a measured test-pass percentage or field readiness claim. Each of the ten
