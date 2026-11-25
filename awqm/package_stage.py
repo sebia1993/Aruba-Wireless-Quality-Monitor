@@ -63,22 +63,34 @@ def _publish(root, dest):
     pending = dest.parent / (".awqm-publish-" + uuid4().hex)
     pending.mkdir()
     dacl_info = security.DACL_SECURITY_INFORMATION
+    share = c.FILE_SHARE_READ | c.FILE_SHARE_WRITE
+    flags = c.FILE_FLAG_BACKUP_SEMANTICS | files.FILE_FLAG_OPEN_REPARSE_POINT
     try:
-        descriptor = security.GetNamedSecurityInfo(str(pending), security.SE_FILE_OBJECT, dacl_info)
-        acl = descriptor.GetSecurityDescriptorDacl()
-        if acl is None:
-            raise ValueError("staging destination requires a protected parent")
-        protected = descriptor.GetSecurityDescriptorControl()[0] & security.SE_DACL_PROTECTED
-        inheritance = (security.PROTECTED_DACL_SECURITY_INFORMATION if protected
-                       else security.UNPROTECTED_DACL_SECURITY_INFORMATION)
-    finally:
+        sample = files.CreateFile(str(pending), c.READ_CONTROL | c.DELETE, share,
+                                  None, c.OPEN_EXISTING, flags, None)
+    except BaseException:
         pending.rmdir()
+        raise
+    try:
+        attributes = files.GetFileInformationByHandle(sample)[0]
+        if not attributes & c.FILE_ATTRIBUTE_DIRECTORY or attributes & c.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ValueError("unexpected ACL sample directory")
+        try:
+            descriptor = security.GetSecurityInfo(sample, security.SE_FILE_OBJECT, dacl_info)
+            acl = descriptor.GetSecurityDescriptorDacl()
+            if acl is None:
+                raise ValueError("staging destination requires a protected parent")
+            protected = descriptor.GetSecurityDescriptorControl()[0] & security.SE_DACL_PROTECTED
+            inheritance = (security.PROTECTED_DACL_SECURITY_INFORMATION if protected
+                           else security.UNPROTECTED_DACL_SECURITY_INFORMATION)
+        finally:
+            files.SetFileInformationByHandle(sample, files.FileDispositionInfo, True)
+    finally:
+        sample.Close()
 
     # Keep the identity of the verified directory across its move out of the
     # private scratch. Holding DELETE access here would block Windows from
     # propagating the ACL to children even when SetSecurityInfo succeeds.
-    share = c.FILE_SHARE_READ | c.FILE_SHARE_WRITE
-    flags = c.FILE_FLAG_BACKUP_SEMANTICS | files.FILE_FLAG_OPEN_REPARSE_POINT
     handle = files.CreateFile(str(root), c.READ_CONTROL | c.WRITE_DAC, share | c.FILE_SHARE_DELETE,
                               None, c.OPEN_EXISTING, flags, None)
     def move_pending(path):

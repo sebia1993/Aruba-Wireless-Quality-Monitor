@@ -166,10 +166,10 @@ Windows ZIP의 실제 설치 패키지 버전을 별도 CI에서 취약점 조�
 ## Windows 빌드
 ```powershell
 python -m pip install -r requirements-build.txt
-python -m PyInstaller --noconfirm --clean --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
+python -m PyInstaller --noconfirm --clean --onedir --name AWQM --hidden-import win32timezone --add-data "awqm/static;awqm/static" launcher.py
 dist\AWQM\AWQM.exe --demo
 ```
-위 명령은 기존 보호된 onedir 개발 경로입니다. 휴대형 단일 실행 파일은 별도로 `python -m PyInstaller --noconfirm --clean --onefile --name AWQM --add-data "awqm/static;awqm/static" launcher.py`로 빌드합니다. 휴대형 CI의 직접 EXE artifact와 승인된 사전 릴리스의 단일 ZIP은 개발 검증용입니다. 정식 릴리스로 간주하지 않습니다.
+위 명령은 기존 보호된 onedir 개발 경로입니다. 휴대형 단일 실행 파일은 별도로 `python -m PyInstaller --noconfirm --clean --onefile --name AWQM --hidden-import win32timezone --add-data "awqm/static;awqm/static" launcher.py`로 빌드합니다. 휴대형 CI의 직접 EXE artifact와 승인된 사전 릴리스의 단일 ZIP은 개발 검증용입니다. 정식 릴리스로 간주하지 않습니다.
 
 - [확정 설계 기준 및 개발 범위](docs/DESIGN.md)
 - [CLI 출력 검증 안내](docs/CLI_VALIDATION.md)

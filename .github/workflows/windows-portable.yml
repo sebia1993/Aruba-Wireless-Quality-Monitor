@@ -41,7 +41,7 @@ jobs:
       - name: Representative actual SQLite lifecycle validation
         run: python launcher.py --validate-scale lifecycle --output lifecycle-validation
       - name: Build Windows single EXE
-        run: python -m PyInstaller --noconfirm --clean --onefile --name AWQM --add-data "awqm/static;awqm/static" launcher.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --name AWQM --hidden-import win32timezone --add-data "awqm/static;awqm/static" launcher.py
       - name: Test isolated standalone EXE (no SCM or SSH)
         shell: pwsh
         run: |

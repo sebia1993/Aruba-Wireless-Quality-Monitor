@@ -12,7 +12,7 @@ The single-executable portable preview is **not** a qualified Windows service ho
 
 ```powershell
 python -m pip install -r requirements-build.txt
-python -m PyInstaller --noconfirm --clean --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
+python -m PyInstaller --noconfirm --clean --onedir --name AWQM --hidden-import win32timezone --add-data "awqm/static;awqm/static" launcher.py
 Copy-Item dist\AWQM\AWQM.exe dist\AWQM\AWQM_Service.exe
 Copy-Item dist\AWQM\AWQM.exe dist\AWQM\AWQM_Manager.exe
 Copy-Item VERSION.txt,README.md -Destination dist\AWQM
