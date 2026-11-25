@@ -111,19 +111,19 @@ jobs:
           Copy-Item docs -Destination dist\AWQM\docs -Recurse
           python -m pip freeze | Set-Content -Encoding utf8 dist\AWQM\BUILD-DEPENDENCIES.txt
           Copy-Item dist\AWQM\BUILD-DEPENDENCIES.txt -Destination BUILD-DEPENDENCIES.txt
-          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.38.0-dev_Win11_x64.zip
-          $hash = (Get-FileHash AWQM_0.38.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
-          "$hash  AWQM_0.38.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
+          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.39.0-dev_Win11_x64.zip
+          $hash = (Get-FileHash AWQM_0.39.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  AWQM_0.39.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
       - name: Frozen offline package verification and staging
         shell: pwsh
         run: |
-          & .\dist\AWQM\AWQM.exe --stage-package AWQM_0.38.0-dev_Win11_x64.zip --sha256 (Get-FileHash AWQM_0.38.0-dev_Win11_x64.zip -Algorithm SHA256).Hash --output staged-verification
+          & .\dist\AWQM\AWQM.exe --stage-package AWQM_0.39.0-dev_Win11_x64.zip --sha256 (Get-FileHash AWQM_0.39.0-dev_Win11_x64.zip -Algorithm SHA256).Hash --output staged-verification
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: AWQM-Windows-dev-x64
           path: |
-            AWQM_0.38.0-dev_Win11_x64.zip
+            AWQM_0.39.0-dev_Win11_x64.zip
             SHA256SUMS.txt
             BUILD-DEPENDENCIES.txt
             capacity-validation/capacity-result.json
@@ -165,5 +165,30 @@ jobs:
             audit-input/BUILD-DEPENDENCIES.txt
             dependency-audit.json
             dependency-audit-summary.json
+          if-no-files-found: warn
+          retention-days: 3
+
+  browser-ui:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+      - name: Install isolated browser validation dependencies
+        run: python -m pip install -r requirements-browser.txt
+      - name: Install Chromium for CI only
+        run: python -m playwright install chromium
+      - name: Actual synthetic diagnostic browser validation
+        run: python -m tools.browser_validation --output browser-validation
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AWQM-browser-evidence
+          path: browser-validation/browser-result.json
           if-no-files-found: warn
           retention-days: 3

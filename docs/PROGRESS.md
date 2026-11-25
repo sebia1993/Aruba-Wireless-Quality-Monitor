@@ -1,4 +1,4 @@
-# AWQM development progress (v0.38.0-dev)
+# AWQM development progress (v0.39.0-dev)
 
 Planning is approved and complete. This is a provisional engineering estimate,
 not a measured test-pass percentage or field readiness claim. Each of the ten
@@ -38,3 +38,6 @@ v0.36 Windows CI and exact dependency audit passed (45528221718). v0.37 fixes du
 
 
 v0.38 adds representative actual Store lifecycle validation: 32 Radios / 120 minute cycles, durable stage interruption and restart, duplicate/revision safety, exact raw/aggregate verification, checksummed backup/restore and approved retirement on the restored synthetic copy. CI pending; 78.9% unchanged pending verified results and reassessment. Full-cardinality throughput and service qualification still open.
+
+
+v0.39 fixes stale detail/search after menu navigation, isolates in-flight callbacks, and adds separate actual Chromium browser CI for operator/admin login, search/pagination, detail/history export, WSS and revocation at two viewports. CI pending; existing 78.9% estimate retained until verified evidence. Browser dependencies are excluded from build packaging.

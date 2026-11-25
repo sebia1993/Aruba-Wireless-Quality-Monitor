@@ -399,8 +399,32 @@ function render(){
   pager.append(prev,el("span",page+" / "+Math.max(1,Math.ceil(snapshot.total/snapshot.size))+" · "+snapshot.total+"건"),next);c.append(pager);
 }
 async function refresh(force=false){if(expired||busy&&!force)return;const serial=++revision;busy=true;try{const q=new URLSearchParams({q:$("search").value,page:String(page)});const r=await request("/api/radios?"+q);if(serial!==revision||expired)return;snapshot=r;notice(r.available?"진단 관측 · 현장 승인된 Radio 지표만 정책 점수 제공 · 원인/서비스 장애 확정 금지":"수집 또는 저장 상태 확인 불가 · 마지막 관측을 현재 상태로 해석하지 마십시오.");if(view==="overview"||view==="radios"){const offsets=force?[]:[...$("content").querySelectorAll(".table-wrap")].map(n=>[n.scrollLeft,n.scrollTop]);render();if(offsets.length)[...$("content").querySelectorAll(".table-wrap")].forEach((n,i)=>{if(offsets[i]){n.scrollLeft=offsets[i][0];n.scrollTop=offsets[i][1];}});}}catch(e){if(!expired&&serial===revision){notice("갱신 실패 · 현재 상태 확인 불가");snapshot=null;if(view==="overview"||view==="radios")render();}}finally{if(serial===revision)busy=false;}}
-$("nav").addEventListener("click",e=>{const v=e.target.dataset.view;if(!v||expired)return;view=v;for(const b of $("nav").querySelectorAll("button"))b.removeAttribute("aria-current");e.target.setAttribute("aria-current","page");render();});
-$("search").addEventListener("input",()=>{page=1;clientPage=1;if(view==="clients")loadClients();else refresh(true);});$("close").addEventListener("click",()=>{selected=null;incidentPanel=null;$("detail").hidden=true;$("detailBody").replaceChildren();});render();refresh();
+function clearDetail(){
+  selected=null;incidentPanel=null;$("detail").hidden=true;$("detailBody").replaceChildren();
+}
+function navigate(v){
+  if(expired||!Object.hasOwn(names,v)||view===v)return;
+  // Invalidate in-flight callbacks before switching screens. Never display
+  // the previous AP/incident detail or a page from another search context.
+  revision++;clientVersion++;incidentVersion++;busy=false;clearDetail();
+  view=v;page=1;clientPage=1;incidentPage=1;
+  for(const b of $("nav").querySelectorAll("button")){
+    if(b.dataset.view===v)b.setAttribute("aria-current","page");
+    else b.removeAttribute("aria-current");
+  }
+  $("search").disabled=v==="history"||v==="admin";
+  if(v==="overview"||v==="radios"){
+    snapshot=null;render();refresh(true);
+  }else render();
+}
+$("nav").addEventListener("click",e=>{const v=e.target.dataset.view;if(v)navigate(v);});
+$("search").addEventListener("input",()=>{
+  if(expired||$("search").disabled)return;
+  clearDetail();page=1;clientPage=1;
+  if(view==="clients")loadClients();
+  else if(view==="overview"||view==="radios"){snapshot=null;render();refresh(true);}
+});
+$("close").addEventListener("click",clearDetail);render();refresh();
 function closeUpdates(){
   if(updateTimer!==null){clearTimeout(updateTimer);updateTimer=null;}
   if(updateSocket){const s=updateSocket;updateSocket=null;try{s.close();}catch(e){}}
