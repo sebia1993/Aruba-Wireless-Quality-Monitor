@@ -43,6 +43,18 @@ class DeviceSettingsEntryTests(unittest.TestCase):
                     self.assertEqual(len(json.loads(body)["slots"]), 4)
                     self.assertEqual(json.loads(body)["local_ownership"], "idle")
                     self.assertNotIn('"password":', body)
+                    handoff = {"action":"prepare_handoff"}
+                    for origin, key in ((base[:-1], "wrong"), ("http://outside.invalid", token)):
+                        with self.assertRaises(HTTPError) as result:
+                            request(origin, key, handoff)
+                        self.assertEqual(result.exception.code, 403)
+                        result.exception.close()
+                    with request(base[:-1], token, handoff) as response:
+                        self.assertTrue(json.load(response)["handoff_pending"])
+                    with request(base[:-1], token, read) as response:
+                        self.assertTrue(json.load(response)["handoff_pending"])
+                    with request(base[:-1], token, {"action":"enable_local"}) as response:
+                        self.assertFalse(json.load(response)["handoff_pending"])
                     search = {"action":"search","table":"AP","query":"test","page":0}
                     for origin, key in ((base[:-1], "wrong"), ("http://outside.invalid", token)):
                         with self.assertRaises(HTTPError) as result:

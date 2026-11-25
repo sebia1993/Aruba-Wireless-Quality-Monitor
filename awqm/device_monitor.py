@@ -262,6 +262,16 @@ class DeviceMonitor:
         with self._lock:
             self._stop_locked(id)
 
+    def stop_all(self):
+        """Cancel every current/pending local session under one monitor lock.
+
+        This is a request, not a drain acknowledgment. Retain observations and
+        the owner until the worker finally closes its transport.
+        """
+        with self._lock:
+            for id in tuple(self._slots):
+                self._stop_locked(id)
+
     def forget(self, id):
         with self._lock:
             self._stop_locked(id)

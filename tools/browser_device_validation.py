@@ -32,6 +32,13 @@ class Monitor:
     def stop(self, id):
         self.states[id].update(running=False, status="중지됨")
 
+    def stop_all(self):
+        for id in self.states:
+            self.stop(id)
+
+    def ownership_state(self):
+        return "active" if any(s["running"] for s in self.states.values()) else "idle"
+
     def forget(self, id):
         self.states.pop(id, None)
 
@@ -118,6 +125,17 @@ def verify(output):
                 raise RuntimeError("Alert deduplication failed")
             page.locator("#refresh").click()
             expect(page.locator("#alert-history")).to_contain_text("SSH 연결 실패")
+            page.locator("#device-nav [data-view=overview]").click()
+            page.locator("#prepare-handoff").click()
+            expect(page.locator("#handoff-status")).to_contain_text("전환 준비 완료")
+            page.locator("#device-nav [data-view=settings]").click()
+            expect(page.locator("#save")).to_be_disabled()
+            expect(page.locator("#test")).to_be_disabled()
+            page.locator("#device-nav [data-view=overview]").click()
+            page.locator("#enable-local").click()
+            expect(page.locator("#handoff-status")).to_contain_text("로컬 조회 요청 가능")
+            if len(devices.monitor.requests) != 2:
+                raise RuntimeError("Handoff must not reconnect to WLC")
             page.locator("#device-nav [data-view=settings]").click()
             page.locator("#slot").select_option("WLC-1")
             page.locator("#stop").click()
@@ -135,7 +153,7 @@ def verify(output):
                       "browser_close_keeps_collection":True,"account_reuse":True,
                       "password_not_returned_to_form":True,"persisted_interval":True,"stop_and_remove":True,
                       "persisted_alert_preference":True,"deduplicated_alert_log":True,
-                      "cached_all_wlc_search":True}
+                      "cached_all_wlc_search":True,"explicit_local_handoff":True}
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")
             print(json.dumps(result))
         finally:

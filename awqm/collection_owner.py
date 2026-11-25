@@ -22,7 +22,7 @@ class CollectionBusy(RuntimeError):
         # exception text to the browser.
         self.reason = reason if reason in {
             "owner_active", "owner_unavailable", "service_active",
-            "service_unknown", "close_unconfirmed",
+            "service_unknown", "close_unconfirmed", "handoff_pending",
         } else "unknown"
 
 

@@ -46,6 +46,13 @@ function render() {
     active:"로컬 수집 권한 사용 중",draining:"로컬 SSH 종료 처리 중 · 전환 대기",
     close_unconfirmed:"SSH/수집 권한 종료 미확인 · AWQM 종료 필요",unknown:"로컬 수집 권한 미확인"};
   $("local-ownership").textContent=ownershipLabels[snapshot.local_ownership]||ownershipLabels.unknown;
+  $("handoff-status").textContent=snapshot.handoff_pending?
+    (snapshot.local_ownership==="idle"?"전환 준비 완료 · 로컬 조회 차단 중 · 운영 서비스는 트레이에서 시작":
+    "전환 준비 중 · 새 로컬 조회 차단 · SSH 종료 확인 필요"):"로컬 조회 요청 가능 · 실제 접속 전 수집 권한 확인";
+  $("prepare-handoff").disabled=busy;
+  $("enable-local").disabled=busy||!snapshot.handoff_pending||snapshot.local_ownership!=="idle";
+  $("test").disabled=busy||!!snapshot.handoff_pending;
+  $("save").disabled=busy||!!snapshot.handoff_pending;
   const cards=$("cards");cards.replaceChildren();
   for(const s of snapshot.slots) {
     const card=el("div");card.className="kpi";
@@ -94,7 +101,7 @@ function form(action) {
 async function act(data, message, after) {
   if(busy)return;
   busy=true;
-  const controls=["test","save","stop","remove","default-account","save-interval","save-alerts","slot","observed-slot"];
+  const controls=["test","save","stop","remove","default-account","save-interval","save-alerts","slot","observed-slot","prepare-handoff","enable-local"];
   for(const id of controls)$(id).disabled=true;
   try {
     await api(data);status(message);
@@ -120,6 +127,8 @@ $("clear-search").addEventListener("click",()=>{resetSearch();refresh();});
 $("previous").addEventListener("click",()=>{page=Math.max(0,page-1);refresh();});
 $("next").addEventListener("click",()=>{page++;refresh();});
 $("refresh").addEventListener("click",refresh);
+$("prepare-handoff").addEventListener("click",()=>act({action:"prepare_handoff"},"서비스 전환 준비를 요청했습니다. SSH 종료 상태를 확인하세요."));
+$("enable-local").addEventListener("click",()=>act({action:"enable_local"},"로컬 조회 요청을 허용했습니다. 자동 접속은 하지 않습니다."));
 $("test").addEventListener("click",()=>act(form("test"),"연결 테스트를 요청했습니다.",()=>{resetSearch();show("observations");}));
 $("save").addEventListener("click",()=>act(form("save"),"장비를 저장하고 수집을 요청했습니다.",()=>{resetSearch();show("observations");}));
 $("stop").addEventListener("click",()=>act({action:"stop",id:selected},"조회 중지를 요청했습니다."));

@@ -5,6 +5,7 @@ import re
 from threading import RLock
 import time
 
+from .collection_owner import CollectionBusy
 from .device_monitor import DeviceMonitor
 from .device_profiles import DeviceProfile, Profiles
 
@@ -58,6 +59,7 @@ class DeviceWeb:
         self.monitor = monitor if monitor is not None else DeviceMonitor()
         self.lock = RLock()
         self.closed = False
+        self.handoff_pending = False
         self.interval = self.profiles.poll_interval()
         self.alerts_enabled = self.profiles.alerts_enabled()
         self.monitored = set()
@@ -101,6 +103,10 @@ class DeviceWeb:
     def _saved(self):
         return {p.id: p for p in self.profiles.list()}
 
+    def _ownership(self):
+        owner_state = getattr(self.monitor, "ownership_state", None)
+        return owner_state() if owner_state else "unknown"
+
     def _snapshot(self, id, table, page, *, query=None):
         saved = self._saved()
         entries = []
@@ -124,8 +130,8 @@ class DeviceWeb:
         else:
             headers, rows = _search_rows(states, table, query)
         start = page * PAGE_SIZE
-        owner_state = getattr(self.monitor, "ownership_state", None)
-        return {"local_ownership": owner_state() if owner_state else "unknown",
+        return {"local_ownership": self._ownership(),
+                "handoff_pending": self.handoff_pending,
                 "slots": entries, "default_username": self.profiles.default_username(),
                 "interval": self.interval, "alerts_enabled": self.alerts_enabled,
                 "alerts": list(self.alert_history), "table": {"name": table, "headers": headers,
@@ -155,6 +161,26 @@ class DeviceWeb:
                         or any(ord(ch) < 32 or ord(ch) == 127 for ch in query)):
                     raise ValueError("검색 범위를 확인하세요.")
                 return self._snapshot(None, table, page, query=query.strip())
+            if action in ("prepare_handoff", "enable_local"):
+                if set(data) != {"action"}:
+                    raise ValueError("수집 전환 요청을 확인하세요.")
+                if action == "prepare_handoff":
+                    # Serialize with every web start/save request. Set the latch
+                    # before cancellation so an error cannot reopen collection.
+                    self.handoff_pending = True
+                    self.monitored.clear()
+                    self.alert_conditions.clear()
+                    self.monitor.stop_all()
+                else:
+                    # No automatic reconnect and no inference about SCM state.
+                    # A subsequent explicit start still acquires the shared
+                    # machine guard and checks the actual SCM state.
+                    if self._ownership() != "idle":
+                        raise CollectionBusy("local collection drain unconfirmed",
+                                             reason="handoff_pending")
+                    self.handoff_pending = False
+                return {"ok": True, "local_ownership": self._ownership(),
+                        "handoff_pending": self.handoff_pending}
             if action == "interval":
                 if set(data) != {"action", "seconds"}:
                     raise ValueError("수집 주기를 확인하세요.")
@@ -194,6 +220,10 @@ class DeviceWeb:
                 "action", "id", "host", "username", "password", "remember", "fingerprint", "known_hosts"
             }:
                 raise ValueError("장비 설정 요청을 확인하세요.")
+            if self.handoff_pending:
+                # In particular, a stale tab must not change saved credentials
+                # or restart a session while the operator is handing off.
+                raise CollectionBusy("explicit local enable required", reason="handoff_pending")
             profile = DeviceProfile(id, data["host"], data["username"], data["fingerprint"], data["known_hosts"])
             password, remember = data["password"], data["remember"]
             if type(remember) is not bool or not isinstance(password, str) or len(password) > 1024:
