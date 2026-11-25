@@ -86,7 +86,7 @@ class RestrictedTLS(ThreadingHTTPServer):
             try:self.shutdown_request(conn if conn is not None else request)
             finally:self.capacity.release()
 
-def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_deadline=30):
+def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_deadline=30,maintenance_status=None):
     notifications=Notifications(view,auth,cfg,stop)
     class Handler(BaseHTTPRequestHandler):
         protocol_version="HTTP/1.0"
@@ -286,7 +286,9 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
                     remaining=max(0,(cfg.expires_at-int(time.time()))//86400)
                     self._json(200,{"audit":audit.summary(),"certificate_days":remaining,
                         "certificate_warning":remaining<=30,"field_validated":False,
-                        "automatic_detail":view.client_enabled,"raw_client_identity_storage":False,"pseudonymous_association_history":view.association_history is not None})
+                        "automatic_detail":view.client_enabled,"raw_client_identity_storage":False,
+                        "pseudonymous_association_history":view.association_history is not None,
+                        "maintenance":maintenance_status() if maintenance_status else {"available":False}})
                 else:self._send(404)
             except (ValueError,TypeError,OverflowError):self._json(400,{"error":"invalid_request"})
             except (RuntimeError,sqlite3.Error,OSError):self._json(503,{"error":"data_or_audit_unavailable"})
@@ -340,7 +342,7 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
             except (RuntimeError,sqlite3.Error,OSError):self._send(503)
     return Handler
 
-def create_listener(cfg,service_cfg,workers,gate,view,stop,manual_enabled=False,operations=None):
+def create_listener(cfg,service_cfg,workers,gate,view,stop,manual_enabled=False,operations=None,maintenance_status=None):
     worker=workers[cfg.controller]
     target=next(t for t in service_cfg.targets if t.id==cfg.controller)
     verifier=CoordinatedVerifier(worker,gate,ArubaVerifier(target.ip,service_cfg.known_hosts),stop,operations=operations)
@@ -348,4 +350,4 @@ def create_listener(cfg,service_cfg,workers,gate,view,stop,manual_enabled=False,
     # Conservative defaults; actual AAA lockout threshold is site-specific.
     auth=Auth(cfg.roles,verifier,user_limit=2,global_limit=20,window=300,audit_sink=audit.auth_event)
     manual=ManualReservations(view,workers,audit,stop,operations=operations) if manual_enabled else None
-    return RestrictedTLS(cfg,handler_for(view,auth,audit,cfg,manual,operations,stop),tls_context(cfg.cert,cfg.key))
+    return RestrictedTLS(cfg,handler_for(view,auth,audit,cfg,manual,operations,stop,maintenance_status=maintenance_status),tls_context(cfg.cert,cfg.key))

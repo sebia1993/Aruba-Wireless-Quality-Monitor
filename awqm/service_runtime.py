@@ -185,7 +185,8 @@ def run_service(root,stop,on_ready=None):
         resources.callback(maintenance.close)
         view=DiagnosticView(store,time.time,incidents=quality.incidents,association_history=history) if web else None
         if web:
-            server=create_listener(web,cfg,engine.workers,gate,view,stop,manual_enabled=manual_enabled,operations=operations)
+            server=create_listener(web,cfg,engine.workers,gate,view,stop,manual_enabled=manual_enabled,
+                operations=operations,maintenance_status=lambda: maintenance.web_status(retention_enabled,archive_days))
             resources.callback(server.server_close)
             thread=threading.Thread(target=server.serve_forever,name="awqm-https",daemon=True)
             thread.start()

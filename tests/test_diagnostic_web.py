@@ -125,7 +125,8 @@ class DiagnosticHTTPTests(unittest.TestCase):
             manual=ManualReservations(view,{"w1":worker},audit,threading.Event(),lambda:t)
             from awqm.operations import Operations
             operations=Operations(p/"ops.db",("w1",))
-            server=RestrictedTLS(proxy,handler_for(view,auth,audit,proxy,manual,operations),tls_context(c,k))
+            server=RestrictedTLS(proxy,handler_for(view,auth,audit,proxy,manual,operations,
+                maintenance_status=lambda:{"available":True,"retention_enabled":False,"policy_editable":False}),tls_context(c,k))
             proxy.authority=f"127.0.0.1:{server.server_port}"
             self.assertFalse(server.verify_request(None,("192.0.2.10",1234)))
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -175,6 +176,9 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 self.assertEqual(req("GET","/api/admin/collection")[0],401)
                 admin_token=auth.login("admin","fixture")
                 admin_h={"Cookie":"__Host-awqm_session="+admin_token}
+                status,_,raw=req("GET","/api/admin/status",headers=admin_h)
+                self.assertEqual(status,200)
+                self.assertEqual(json.loads(raw)["maintenance"],{"available":True,"retention_enabled":False,"policy_editable":False})
                 status,_,raw=req("GET","/api/admin/collection",headers=admin_h)
                 self.assertEqual(status,200);self.assertEqual(json.loads(raw)["desired"]["revision"],0)
                 op_form={"csrf":auth.session(admin_token).csrf,"target":"all","action":"pause","revision":"0"}

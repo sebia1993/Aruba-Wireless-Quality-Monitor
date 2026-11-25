@@ -227,8 +227,28 @@ jobs:
           }
           python -m pip install -r requirements.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m tools.device_settings_validation "$app" "device-settings-result.json" --wait-for-refresh
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Hosted Windows images may start OpenSSH on TCP/22, which is the
+          # fixed real WLC port and must remain unchanged in the shipped EXE.
+          # Only the disposable hosted runner's own service may be stopped.
+          $sshd = Get-Service -Name sshd -ErrorAction SilentlyContinue
+          $restoreSshd = $false
+          if ($sshd -and $sshd.Status -ne 'Stopped' -and $env:RUNNER_ENVIRONMENT -eq 'github-hosted') {
+            Stop-Service -Name sshd -ErrorAction Stop
+            $sshd.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+            $restoreSshd = $true
+          }
+          try {
+            $listeners = @(Get-NetTCPConnection -LocalPort 22 -State Listen -ErrorAction SilentlyContinue)
+            if ($listeners.Count -gt 0) {
+              $listeners | Format-Table LocalAddress,LocalPort,OwningProcess | Out-String | Write-Host
+              throw 'TCP/22 is occupied; no unrelated process will be terminated'
+            }
+            python -m tools.device_settings_validation "$app" "device-settings-result.json" --wait-for-refresh
+            $fixtureExit = $LASTEXITCODE
+            if ($fixtureExit -ne 0) { throw "Packaged SSH fixture failed: $fixtureExit" }
+          } finally {
+            if ($restoreSshd) { Start-Service -Name sshd -ErrorAction Stop }
+          }
           $registration = @(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName -like 'Aruba Wireless Quality Monitor*' -and $_.DisplayVersion -eq $version })
           if ($registration.Count -ne 1) { throw 'Current-user uninstall registration missing' }
           python -c "import os, sys; sys.exit(0 if os.path.samefile(sys.argv[1],sys.argv[2]) else 1)" "$($registration[0].InstallLocation)" (Split-Path $app)

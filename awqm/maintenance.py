@@ -141,6 +141,39 @@ class BackgroundMaintenance:
             self.last = job.result()
         return self.last
 
+    def web_status(self, retention_enabled, archive_days):
+        """Read-only, bounded summary of the last completed coordinator pass.
+
+        Never serve filesystem paths, archive identifiers, raw incident data,
+        exception text or credentials. No disk I/O on the HTTP thread.
+        """
+        state = self.last or {}
+        def timestamp(key):
+            value = state.get(key)
+            return value if type(value) is int and 0 <= value <= 253402300799 else None
+        def level(key):
+            value = state.get(key)
+            return value if value in ("normal", "limited", "critical", "warning", "unknown") else "unknown"
+        allowed = ("ok", "failed", "pending_writes", "disk_protection", "backup_deferred_disk",
+                   "revision_changed", "cancelled")
+        current = state.get("status")
+        return {
+            "available": True,
+            "status": "running" if self.pending is not None else current if current in allowed else "unknown",
+            "last_attempt": timestamp("last_attempt"),
+            "last_core_backup": timestamp("last_core_backup"),
+            "last_aggregate_backup": timestamp("last_aggregate_backup"),
+            "disk_level": level("disk_level"), "backup_disk_level": level("backup_disk_level"),
+            "core_backup_interval_days": 1, "aggregate_backup_interval_days": 7,
+            "retention_enabled": bool(retention_enabled),
+            "retention_days": {"raw": 7, "five_minute": 30, "hourly": 365,
+                               "closed_incident": 365, "audit": 365},
+            "archive_expiration_days": archive_days,
+            "last_retention_attempt": timestamp("last_retention_attempt"),
+            "last_archive_retention_attempt": timestamp("last_archive_retention_attempt"),
+            "policy_editable": False,
+        }
+
     def close(self):
         self.maintenance.stop_requested.set()
         self.pool.shutdown(wait=True)

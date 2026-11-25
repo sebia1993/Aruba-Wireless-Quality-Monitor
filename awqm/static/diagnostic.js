@@ -497,6 +497,24 @@ function searchGroup(parent,kind,title,query,end){
   }
   load(1);
 }
+function maintenancePanel(value){
+  const root=el("div");
+  root.append(el("h3","DB 백업 및 데이터 보존"));
+  if(!value?.available){root.append(el("p","유지보수 상태를 확인할 수 없습니다."));return root;}
+  const statuses={ok:"정상",running:"처리 중",failed:"실패",pending_writes:"저장 대기 중",
+    disk_protection:"디스크 보호",backup_deferred_disk:"디스크 부족으로 백업 보류",
+    revision_changed:"다음 주기에 재시도",cancelled:"중단",unknown:"미확인"};
+  const levels={normal:"정상",warning:"주의",limited:"제한",critical:"위험",unknown:"미확인"};
+  const days=value.retention_days||{};
+  root.append(el("p","유지보수 상태: "+(statuses[value.status]||"미확인")+" · 최근 시도 "+kst(value.last_attempt)),
+    el("p","핵심 DB 백업: "+kst(value.last_core_backup)+" · 매일 / 집계 DB 백업: "+kst(value.last_aggregate_backup)+" · 매주"),
+    el("p","데이터 디스크: "+(levels[value.disk_level]||"미확인")+" · 백업 디스크: "+(levels[value.backup_disk_level]||"미확인")),
+    el("p","데이터 보존: "+(value.retention_enabled?"보호된 정책 승인됨":"자동 삭제 비활성")+" · 최근 시도 "+kst(value.last_retention_attempt)),
+    el("p","정책 기준: 원본 "+(days.raw??"—")+"일 · 5분 "+(days.five_minute??"—")+"일 · 1시간 "+(days.hourly??"—")+"일 · 종료된 장애 및 감사 "+(days.audit??"—")+"일"),
+    el("p","백업 보관 만료: "+(value.archive_expiration_days==null?"자동 삭제 비활성":value.archive_expiration_days+"일")+" · 최근 시도 "+kst(value.last_archive_retention_attempt)),
+    el("p","위 값은 서비스에서 승인된 적용 상태입니다. 삭제 기준을 충족하지 못한 데이터는 더 오래 남을 수 있습니다. 경로 및 자격 증명은 표시하지 않습니다. 보존 정책 변경은 보호된 로컬 관리자 절차로만 수행합니다."));
+  return root;
+}
 function render(){
   if(expired)return;
   const c=$("content");c.replaceChildren();$("heading").textContent=names[view];
@@ -510,7 +528,7 @@ function render(){
   }
   if(view==="clients"){loadClients();return;}
   if(view==="history"){loadIncidents();return;}
-  if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out,operationsPanel(),jobsPanel(),associationPanel());return;}
+  if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)),maintenancePanel(a.maintenance));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out,operationsPanel(),jobsPanel(),associationPanel());return;}
   if(!snapshot){c.append(el("p","자료 확인 중"));return;}
   if(view==="overview"){const k=el("div",null,"kpis");k.append(metric("관측 WLC",snapshot.coherent_controllers==null?null:snapshot.coherent_controllers+" / "+snapshot.expected_controllers),metric("저장된 Radio",snapshot.inventory_radios),metric("현재 매핑 Radio",snapshot.mapped_radios),metric("활성 단말 관측",snapshot.active_clients));c.append(k,el("p","최근 게시: "+kst(snapshot.published_at)+" · "+(snapshot.available?"관측 자료 제공":"현재 관측 확인 불가")),clusterPanel(snapshot.cluster));}
   c.append(table(["AP","WLC","대역","채널","사용률 %","간섭률 %","NF dBm","품질 점수","위험 관측","관측 시각 KST","수집 상태"],snapshot.rows.map(r=>{const b=el("button",r.ap_name);b.addEventListener("click",()=>openHistory(r));const cell=el("div");cell.append(b);if(r.incident_id){const i=el("button","위험 이력");i.addEventListener("click",()=>openIncident(r.incident_id));cell.append(i);}return [cell,r.controller,r.band,r.channel,r.utilization,r.interference,r.noise,r.quality_score==null?"미검증":r.quality_score,r.risk_status==="UNKNOWN"?"미확인":r.risk_status,kst(r.observed_at),r.freshness==="observed"?(r.quality==="local_operator_attested"?"최근 관측 · 현장 승인 지표":"최근 관측 · 미검증"):"오래됨 / 확인 불가"];})));
