@@ -40,15 +40,23 @@ class PreviewTests(unittest.TestCase):
                 finally:c.close()
             try:
                 self.assertEqual(req("GET","/api/snapshot")[0],401)
-                self.assertEqual(req("GET","/")[0],200)
+                status,headers,_=req("GET","/")
+                self.assertEqual(status,200)
+                self.assertEqual(headers["Referrer-Policy"],"same-origin")
                 body=urlencode({"username":"op","password":"fixture-only"})
                 headers={"Content-Type":"application/x-www-form-urlencoded","Origin":origin}
                 self.assertEqual(req("POST","/auth/login",body,{"Content-Type":headers["Content-Type"]})[0],403)
+                for foreign in ("null","https://untrusted.example"):
+                    self.assertEqual(req("POST","/auth/login",body,{**headers,"Origin":foreign})[0],403)
+                self.assertEqual(len(auth.sessions),0)
                 status,h,_=req("POST","/auth/login",body,headers)
                 self.assertEqual(status,303)
                 cookie=h["Set-Cookie"]
                 self.assertIn("Secure",cookie);self.assertIn("HttpOnly",cookie);self.assertIn("SameSite=Strict",cookie)
                 token=cookie.split(";",1)[0]
+                status,page_headers,_=req("GET","/",headers={"Cookie":token})
+                self.assertEqual(status,200)
+                self.assertEqual(page_headers["Referrer-Policy"],"same-origin")
                 self.assertEqual(req("GET","/api/snapshot",headers={"Cookie":token})[0],200)
                 self.assertEqual(req("GET","/api/admin/status",headers={"Cookie":token})[0],403)
                 status,h,_=req("POST","/auth/login",urlencode({"username":"admin","password":"fixture-only"}),headers)

@@ -51,12 +51,27 @@ def fixture(root):
     return view
 
 
+def submit_form(page,url,action,button):
+    # Observe, never inject, the native browser's Origin. Log only status
+    # and the origin classification, not request headers/bodies/cookies.
+    with page.expect_response(lambda r:r.url==url+action and r.request.method=="POST") as pending:
+        button.click()
+    response=pending.value
+    origin=response.request.header_value("origin")
+    classification="same-origin" if origin==url else "null" if origin=="null" else "missing" if origin is None else "unexpected"
+    print(f"Native form {action}: status={response.status}, origin={classification}",flush=True)
+    require(classification=="same-origin" and response.status==303,
+            f"native form rejected: {action}, status={response.status}, origin={classification}")
+
+
 def login(page,url,role):
-    page.goto(url,wait_until="domcontentloaded")
+    response=page.goto(url,wait_until="domcontentloaded")
+    require(response is not None and response.header_value("referrer-policy")=="same-origin",
+            "login document referrer policy mismatch")
     expect(page.locator('input[name="username"]')).to_be_visible()
     page.locator('input[name="username"]').fill("fixture-"+role)
     page.locator('input[name="password"]').fill(PASSWORD)
-    page.get_by_role("button",name="로그인",exact=True).click()
+    submit_form(page,url,"/auth/login",page.get_by_role("button",name="로그인",exact=True))
     expect(page.locator("#role")).to_have_text("권한: "+role)
     expect(page.locator("#nav")).to_be_visible()
 
@@ -168,7 +183,7 @@ def browser_test(output):
                                 expect(page.get_by_text("인증 만료. 새로고침 후 다시 로그인하세요.",exact=True)).to_be_visible()
                                 expect(page.locator("#detail")).to_be_hidden()
                             else:
-                                page.get_by_role("button",name="로그아웃",exact=True).click()
+                                submit_form(page,url,"/auth/logout",page.get_by_role("button",name="로그아웃",exact=True))
                                 expect(page.locator('input[name="username"]')).to_be_visible()
                                 require(context.request.get(url+"/api/radios?q=&page=1").status==401,
                                         "logout did not revoke API access")
@@ -185,7 +200,7 @@ def browser_test(output):
                         expect(page.get_by_text("감사 기록",exact=False)).to_be_visible()
                         require(context.request.get(url+"/api/admin/status").status==200,
                                 "admin endpoint unavailable")
-                        page.get_by_role("button",name="로그아웃",exact=True).click()
+                        submit_form(page,url,"/auth/logout",page.get_by_role("button",name="로그아웃",exact=True))
                         expect(page.locator('input[name="username"]')).to_be_visible()
                         result["scenarios"]["admin_login_status_logout"]="pass"
                     finally:

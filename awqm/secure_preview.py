@@ -48,13 +48,17 @@ def secure_handler(store,auth):
                 return jar[COOKIE].value if COOKIE in jar else None
             except CookieError:return None
         def _origin(self):
-            return self._local() and self.headers.get("Origin","")=="https://"+self.headers["Host"]
+            return self._local() and self.headers.get_all("Origin")==["https://"+self.headers["Host"]]
         def _send(self,code,body=b"",kind="text/html; charset=utf-8",headers=()):
             self.send_response(code);self.send_header("Content-Type",kind)
             self.send_header("Content-Length",str(len(body)))
             self.send_header("Cache-Control","no-store")
             self.send_header("X-Content-Type-Options","nosniff")
-            self.send_header("Referrer-Policy","no-referrer")
+            # Browser navigation POSTs use the document's referrer policy
+            # when serializing Origin. Retain the exact same-origin POST gate
+            # and prevent document referrers from leaving this origin.
+            policy="same-origin" if kind.split(";",1)[0]=="text/html" else "no-referrer"
+            self.send_header("Referrer-Policy",policy)
             self.send_header("Content-Security-Policy","default-src 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'")
             for k,v in headers:self.send_header(k,v)
             self.end_headers()

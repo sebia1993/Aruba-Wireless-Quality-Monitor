@@ -1,4 +1,4 @@
-# AWQM development progress (v0.39.1-dev portable integration)
+# AWQM development progress (v0.40.1-dev portable integration)
 
 Planning is approved and complete. This is a provisional engineering estimate,
 not a measured test-pass percentage or field readiness claim. Each of the ten
@@ -44,3 +44,6 @@ v0.39 fixes stale detail/search after menu navigation, isolates in-flight callba
 
 
 v0.37.1 portable build and exact dependency audit passed (45530631175). v0.39.1 portable integration incorporates v0.39, including lifecycle and browser UI gates. Progress remains provisional 78.9%; no new production release or field qualification.
+
+
+v0.40.1-dev: include the complete v0.40.0-dev native browser form fix and strict Origin regression, preserving single EXE restrictions. Both v0.39 browser jobs failed at login. Repeat CI pending; 78.9% unchanged.

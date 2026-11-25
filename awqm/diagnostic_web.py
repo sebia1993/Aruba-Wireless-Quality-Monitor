@@ -127,7 +127,11 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
             self.send_header("Content-Length",str(len(body)))
             self.send_header("Cache-Control","no-store")
             self.send_header("X-Content-Type-Options","nosniff")
-            self.send_header("Referrer-Policy","no-referrer")
+            # Browser navigation POSTs use the document's referrer policy
+            # when serializing Origin. Retain the exact same-origin POST gate
+            # and prevent document referrers from leaving this origin.
+            policy="same-origin" if kind.split(";",1)[0]=="text/html" else "no-referrer"
+            self.send_header("Referrer-Policy",policy)
             self.send_header("X-Frame-Options","DENY")
             self.send_header("Content-Security-Policy","default-src 'self'; connect-src 'self' wss://"+cfg.authority+"; form-action 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'")
             self.send_header("Connection","close")

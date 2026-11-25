@@ -58,3 +58,13 @@ Run `AWQM.exe --validate-scale lifecycle --output C:\\AWQM-Validation\\lifecycle
 ## Actual browser UI trial (v0.39)
 
 Separate CI job installs `requirements-browser.txt` and the Playwright Chromium binary; neither is included in the packaged application. Run `python -m tools.browser_validation --output browser-validation` after installing the browser in an isolated test environment. Uses an invented 102-Radio Store, actual diagnostic TLS endpoint and synthetic identity verifier. Exercises 1440x900 light and 390x844 dark viewports, actual login and cookie session, pagination, search, Radio detail/history CSV download, detail clearing and fresh search on navigation, disabled search on unrelated menus, WebSocket publication, operator/admin boundaries, server-side revocation and logout. The fixture-only certificate exception does not change product TLS settings. Result JSON only; no private keys, tokens, downloads or DB artifacts. This is a representative Chromium interaction check on the CI runner, not physical Windows 11, production AAA, full browser load, cross-browser or real-device qualification.
+
+## Native form regression (v0.40)
+
+Initial v0.39 Chromium jobs failed before the dashboard at native login.
+The no-referrer document policy conflicts with the strict Origin check for
+navigation POSTs (WHATWG Fetch Origin serialization). Both HTTPS interfaces
+now use same-origin for HTML only. The browser trial observes native login and
+logout POST status/Origin (no header or cookie dump), and HTTP regression tests
+reject null/foreign/missing Origin. Repeat browser CI is required; no production
+authentication claim.
