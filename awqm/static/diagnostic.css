@@ -13,3 +13,10 @@
 .history-chart{margin:12px 0;min-width:0}.history-chart svg{display:block;width:100%;height:auto;max-height:300px}.chart-grid{stroke:var(--line);stroke-width:1}.chart-text{fill:var(--muted);font-size:11px}.chart-util{stroke:var(--accent);fill:var(--accent)}.chart-interf{stroke:var(--warn);fill:var(--warn)}.history-chart path{fill:none}.history-legend{display:flex;gap:16px;font-weight:600}.legend-util{color:var(--accent)}.legend-interf{color:var(--warn)}.pager select{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:9px}
 .detail-page #nav,.detail-page header label,.detail-page #content,.detail-page #detail>h3,.detail-page #close{display:none}
 .detail-page #detailBody>a{color:var(--accent)}
+#global-search{margin-bottom:12px;max-width:100%}
+#global-search label{display:block;font-weight:600;margin-bottom:4px}
+#global-search>div{display:flex;gap:6px}
+#global-query{width:clamp(11rem,27vw,20rem);min-width:0}
+#list-filter{margin:0 0 12px;display:block}
+#list-filter[hidden],.detail-page #list-filter,.detail-page #global-search{display:none}
+.search-group{margin:12px 0;min-width:0}

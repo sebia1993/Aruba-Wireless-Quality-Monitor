@@ -38,6 +38,14 @@ baseline. Inadequate samples, expiry, reconnect/reset/failure, missing
 observations and changed Radio context withhold the candidate. These are
 observed continuity checks, not proof against unobserved reconnects.
 
+The live client view and Station Stats intake check the current merged Radio inventory.
+The controller and AP name must identify one physical AP, and the BSS band and channel
+must identify one Radio on it. If that mapping becomes ambiguous or the current
+association no longer matches, the client needs a fresh Client Table observation.
+Moving to another physical Radio starts a new Station Stats interval even when it
+advertises the same BSSID and SSID. The fixture and offline peer analysis also
+require the target's Radio, SSID and collection epoch and interval ends within 30 seconds.
+
 Current candidate and comparison counts only are published through the
 existing authenticated client view; no peer identities or internal context
 tokens are exposed. Candidate validity is bounded by its constituent

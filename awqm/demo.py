@@ -38,8 +38,10 @@ def synthetic_clients(radios):
         # Three comparable windows; all data are deliberately invented.
         def sample(i,at,packets,health,retries,rate,snr):
             client=f"02:00:00:{int(radio.ap_name.rsplit('-',1)[1]):02x}:{int(radio.radio_id.rsplit(':',1)[1]):02x}:{i:02x}"
-            bssid=f"02:ff:00:{int(radio.ap_name.rsplit('-',1)[1]):02x}:{int(radio.radio_id.rsplit(':',1)[1]):02x}:01"
-            return Sample(client,radio.radio_id,bssid,"DEMO-GUEST" if i==1 else "DEMO-STAFF",
+            # The active comparison cohort shares a network. The fourth client demonstrates the other SSID.
+            network=1 if i<4 else 2
+            bssid=f"02:ff:00:{int(radio.ap_name.rsplit('-',1)[1]):02x}:{int(radio.radio_id.rsplit(':',1)[1]):02x}:{network:02x}"
+            return Sample(client,radio.radio_id,bssid,"DEMO-GUEST" if network==1 else "DEMO-STAFF",
                           radio.epoch,at,packets,packets,health,snr,rate,sent=packets,retried=retries)
         history=[]
         for i in range(1,5):
