@@ -39,7 +39,7 @@ jobs:
       - name: Representative actual SQLite lifecycle validation
         run: python launcher.py --validate-scale lifecycle --output lifecycle-validation
       - name: Build Windows folder EXE
-        run: python -m PyInstaller --noconfirm --clean --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
+        run: python -m PyInstaller --noconfirm --clean --hidden-import win32timezone --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
       - name: Create Windows service and manager entry points
         shell: pwsh
         run: |
@@ -166,7 +166,7 @@ jobs:
         run: |
           python -m pip install -r requirements-build.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m PyInstaller --noconfirm --clean --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
+          python -m PyInstaller --noconfirm --clean --hidden-import win32timezone --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item dist/AWQM/AWQM.exe dist/AWQM/AWQM_Service.exe
           Copy-Item dist/AWQM/AWQM.exe dist/AWQM/AWQM_Manager.exe
