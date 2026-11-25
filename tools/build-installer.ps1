@@ -32,7 +32,33 @@ if (!$Compiler) {
 $Compiler = (Resolve-Path -LiteralPath $Compiler).Path
 $out = [IO.Directory]::CreateDirectory($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)).FullName
 $manifestPath = (Resolve-Path -LiteralPath 'SHA256SUMS.txt').Path
-& $Compiler "/DProductVersion=$version" "/DPayload=$payloadDir" "/DServiceArchive=$archive" "/DServiceManifest=$manifestPath" "/O$out" (Join-Path $PSScriptRoot 'windows-installer.iss')
-if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath (Join-Path $out 'AWQM-Setup.exe') -PathType Leaf)) {
-    throw 'Windows installer build failed.'
+# Embed the Inno Setup package in the single public launch-or-install executable.
+$temp = [IO.Directory]::CreateDirectory((Join-Path ([IO.Path]::GetTempPath()) ("awqm-build-" + [guid]::NewGuid().ToString("N")))).FullName
+try {
+    & $Compiler "/DProductVersion=$version" "/DPayload=$payloadDir" "/DServiceArchive=$archive" "/DServiceManifest=$manifestPath" "/O$temp" (Join-Path $PSScriptRoot 'windows-installer.iss')
+    $inner = Join-Path $temp 'AWQM-Setup.exe'
+    if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $inner -PathType Leaf)) { throw 'Windows installer build failed.' }
+    $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    if (!(Test-Path -LiteralPath $csc)) { throw 'Windows .NET Framework compiler missing.' }
+    $metadata = Join-Path $temp 'BuildInfo.cs'
+    @"
+using System.Reflection;
+[assembly: AssemblyTitle("Aruba Wireless Quality Monitor")]
+[assembly: AssemblyProduct("Aruba Wireless Quality Monitor")]
+[assembly: AssemblyVersion("$version.0")]
+[assembly: AssemblyFileVersion("$version.0")]
+internal static class BuildInfo { internal const string Version = "$version"; }
+"@ | Set-Content -LiteralPath $metadata -Encoding utf8
+    $source = Join-Path $PSScriptRoot 'download-launcher.cs'
+    $manifestFile = Join-Path $PSScriptRoot 'download-launcher.manifest'
+    $policyTests = Join-Path $temp 'LauncherPolicyTests.exe'
+    & $csc /nologo /target:exe /platform:x64 /optimize+ /r:System.Windows.Forms.dll /main:LauncherPolicyTests "/out:$policyTests" $source $metadata (Join-Path $PSScriptRoot 'download-launcher-tests.cs')
+    if ($LASTEXITCODE -ne 0) { throw 'Launcher policy test compilation failed.' }
+    & $policyTests
+    if ($LASTEXITCODE -ne 0) { throw 'Launcher policy tests failed.' }
+    $entry = Join-Path $out 'AWQM.exe'
+    & $csc /nologo /target:winexe /platform:x64 /optimize+ /r:System.Windows.Forms.dll "/win32manifest:$manifestFile" "/resource:$inner,AWQM.Setup" "/out:$entry" $source $metadata
+    if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $entry -PathType Leaf)) { throw 'Unified AWQM executable build failed.' }
+} finally {
+    Remove-Item -LiteralPath $temp -Recurse -Force
 }

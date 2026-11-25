@@ -51,8 +51,8 @@ def verify(installer, expected_digest, output, device_settings=False):
     system = sys.getwindowsversion()
     if system.product_type != 1 or system.build < 22000 or ctypes.windll.shell32.IsUserAnAdmin():
         raise RuntimeError("Run on Windows 11 under a non-elevated account")
-    if installer.name != "AWQM-Setup.exe" or not installer.is_file():
-        raise ValueError("Expected AWQM-Setup.exe")
+    if installer.name != "AWQM.exe" or not installer.is_file():
+        raise ValueError("Expected AWQM.exe")
     with installer.open("rb") as file:
         if hashlib.file_digest(file, "sha256").hexdigest() != expected_digest.lower():
             raise ValueError("Installer digest mismatch")
@@ -82,6 +82,8 @@ def verify(installer, expected_digest, output, device_settings=False):
             if json.loads(receipt.read_text(encoding="utf-8")).get("passed") is not True:
                 raise RuntimeError("Default dashboard launch was not observed")
             run_on_desktop(name, [sys.executable, helper, shortcut, app], output, 85)
+            run_on_desktop(name, [sys.executable, helper, "--repeat-download", installer, app],
+                           output, 120)
             if device_settings:
                 trial = Path(__file__).with_name("device_settings_validation.py").resolve(strict=True)
                 run_on_desktop(name, [sys.executable, trial, app, output / "device-settings.json",
@@ -104,6 +106,7 @@ def verify(installer, expected_digest, output, device_settings=False):
         user32.CloseDesktop(desktop)
     result = {"status": "pass", "windows_build": system.build, "installer_sha256": expected_digest,
               "no_argument_install": True, "dashboard_data": True, "start_menu_relaunch": True,
+              "download_relaunch_without_reinstall": True, "duplicate_window_restored": True,
               "uninstall_verified": True}
     if device_settings:
         result["device_settings"] = json.loads((output / "device-settings.json").read_text(encoding="utf-8"))

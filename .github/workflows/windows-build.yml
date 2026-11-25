@@ -159,11 +159,11 @@ jobs:
         run: |
           ./tools/build-installer.ps1 -Payload dist/AWQM -OutputDirectory installer-output
           $files = @(Get-ChildItem installer-output -Force)
-          if ($files.Count -ne 1 -or $files[0].Name -cne 'AWQM-Setup.exe' -or $files[0].PSIsContainer) { throw 'Unexpected delivery layout' }
+          if ($files.Count -ne 1 -or $files[0].Name -cne 'AWQM.exe' -or $files[0].PSIsContainer) { throw 'Unexpected delivery layout' }
       - uses: actions/upload-artifact@v4
         with:
           name: AWQM-unified-installer
-          path: installer-output/AWQM-Setup.exe
+          path: installer-output/AWQM.exe
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@v4
@@ -202,7 +202,7 @@ jobs:
         shell: pwsh
         run: |
           $files = @(Get-ChildItem installer -Force)
-          if ($files.Count -ne 1 -or $files[0].Name -cne 'AWQM-Setup.exe') { throw 'Unexpected installer contents' }
+          if ($files.Count -ne 1 -or $files[0].Name -cne 'AWQM.exe') { throw 'Unexpected installer contents' }
           $app = Join-Path $env:LOCALAPPDATA 'Programs\AWQM\AWQM.exe'
           $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Aruba Wireless Quality Monitor.lnk'
           if ((Test-Path -LiteralPath $app) -or (Test-Path -LiteralPath $shortcut)) { throw 'Existing installation on fresh runner' }
@@ -218,6 +218,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m tools.installed_app_validation "$shortcut" "$app"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+          if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            python -m tools.installed_app_validation --repeat-download "$($files[0].FullName)" "$app"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            Write-Warning 'Elevated runner: download relaunch requires the separate non-elevated Windows 11 validation.'
+          }
           $registration = @(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName -like 'Aruba Wireless Quality Monitor*' -and $_.DisplayVersion -eq $version })
           if ($registration.Count -ne 1) { throw 'Current-user uninstall registration missing' }
           python -c "import os, sys; sys.exit(0 if os.path.samefile(sys.argv[1],sys.argv[2]) else 1)" "$($registration[0].InstallLocation)" (Split-Path $app)

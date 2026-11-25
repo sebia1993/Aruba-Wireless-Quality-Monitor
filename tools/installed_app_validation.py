@@ -2,6 +2,7 @@
 
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,7 +25,7 @@ def wait_for(description, probe, timeout=45):
     raise TimeoutError(description)
 
 
-def validate(entry, application, *, installer=False, progress=lambda phase: None):
+def validate(entry, application, *, installer=False, repeat=False, progress=lambda phase: None):
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
@@ -41,6 +42,10 @@ def validate(entry, application, *, installer=False, progress=lambda phase: None
     def window():
         return user32.FindWindowW("AWQM.Desktop", "Aruba Wireless Quality Monitor")
 
+    def snapshot():
+        return tuple((p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest())
+                     for p in (application, application.with_name("VERSION.txt")))
+    before = snapshot() if repeat else None
     if window():
         raise RuntimeError("An existing dashboard window is open")
     with tempfile.TemporaryDirectory(prefix="awqm-first-launch-") as directory:
@@ -95,6 +100,24 @@ def validate(entry, application, *, installer=False, progress=lambda phase: None
                 if not snapshot.get("radios") or not snapshot.get("clients"):
                     raise RuntimeError("Fresh dashboard is missing its initial sample data")
                 progress("dashboard response contained sample radio and client data")
+                if repeat:
+                    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+                    user32.IsIconic.argtypes = [wintypes.HWND]
+                    user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+                    duplicate = subprocess.Popen([entry])
+                    try:
+                        if duplicate.wait(timeout=20) != 0:
+                            raise RuntimeError("Repeat download did not exit successfully")
+                        wait_for("Existing dashboard was not restored",
+                                 lambda: window() == hwnd and not user32.IsIconic(hwnd), timeout=15)
+                        current_pid = wintypes.DWORD()
+                        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(current_pid))
+                        if current_pid.value != pid.value or snapshot() != before:
+                            raise RuntimeError("Repeat download replaced the app or opened another instance")
+                    finally:
+                        if duplicate.poll() is None:
+                            duplicate.terminate()
+                    progress("Existing window restored without reinstalling")
                 print(f"Installed application opened its dashboard: "
                       f"{len(snapshot['radios'])} sample radios, {len(snapshot['clients'])} clients")
             finally:
@@ -104,6 +127,8 @@ def validate(entry, application, *, installer=False, progress=lambda phase: None
                     raise RuntimeError("Installed application did not exit when its window closed")
         finally:
             kernel.CloseHandle(process)
+    if repeat and snapshot() != before:
+        raise RuntimeError("Reopening the download modified the installed program")
 
 
 def standard_user_trial(installer, receipt, username):
@@ -155,6 +180,9 @@ if __name__ == "__main__":
         pending.replace(path)
     elif len(sys.argv) == 5 and sys.argv[1] == "--install-defaults":
         standard_user_trial(Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4])
+    elif len(sys.argv) == 4 and sys.argv[1] == "--repeat-download":
+        validate(Path(sys.argv[2]).resolve(strict=True), Path(sys.argv[3]).resolve(strict=True),
+                 installer=True, repeat=True)
     else:
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument("shortcut", type=Path)

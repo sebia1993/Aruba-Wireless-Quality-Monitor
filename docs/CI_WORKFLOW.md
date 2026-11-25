@@ -1,6 +1,6 @@
 # CI/CD lanes — development and qualification
 
-For the unified Windows distribution introduced in v0.45, the full Windows workflow builds and validates one public `AWQM-Setup.exe`. It also produces the internal service archive for the protected update and rollback procedure. The [installation guide](../README.md) covers operator setup. The foundation and portable development branches retain the following validation lanes.
+For the unified Windows distribution updated in v0.48, the full Windows workflow builds and validates one public `AWQM.exe`. It also produces the internal service archive for the protected update and rollback procedure. The [installation guide](../README.md) covers operator setup. The foundation and portable development branches retain the following validation lanes.
 
 Ordinary development pushes use quick, change-aware Windows source checks:
 runtime dependencies, compile check, explicit leaf test groups, baseline
@@ -47,10 +47,10 @@ The full folder-package workflow installs the frozen service under a temporary, 
 
 ### Windows 11 first-launch release check
 
-Run the following from a verification environment with Python 3.12+ and pywin32 on a clean, non-elevated Windows 11 profile. The check opens the installer without arguments on an isolated desktop, observes the dashboard window and browser request, reads the dashboard and sample data, relaunches from Start, closes the app and removes its test installation. Retain the JSON result with the tested installer's digest. GitHub's Windows Server job separately checks current-user installation, the Start menu entry and removal.
+Run the following from a verification environment with Python 3.12+ and pywin32 on a clean, non-elevated Windows 11 profile. The check opens the installer without arguments on an isolated desktop, observes the dashboard window and browser request, reads the dashboard and sample data, relaunches from Start and the same downloaded EXE, verifies unchanged program files and duplicate-window restoration, closes the app and removes its test installation. Retain the JSON result with the tested installer's digest. GitHub's Windows Server job separately checks current-user installation, the Start menu entry and removal. Non-elevated Windows 11 relaunch evidence is required; a hosted elevated runner skips the no-argument relaunch. Every build runs version-selection policy tests.
 
 ```powershell
-python tools/windows11_installer_validation.py .\AWQM-Setup.exe --sha256 $expectedHash --output .\first-launch-result
+python tools/windows11_installer_validation.py .\AWQM.exe --sha256 $expectedHash --output .\first-launch-result
 ```
 
 For a desktop device-settings release, add `--device-settings` to that command. Use a test host with TCP port 22 free on loopback and the runtime test requirements installed. Two loopback controllers exercise first-use key registration, username reuse, per-device passwords, AP/Radio/BSS results, refresh, stop and profile relaunch. A replacement SSH key must be rejected before the server receives a login. The fixture redirects the application's per-user storage to a temporary directory and uses synthetic credentials.
