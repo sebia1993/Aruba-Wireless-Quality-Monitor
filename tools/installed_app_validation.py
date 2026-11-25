@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import re
 import sqlite3
 import secrets
 import uuid
@@ -202,15 +203,30 @@ def known_folder(identifier, known_id):
             ole.CoTaskMemFree(result)
 
 
+def verified_uninstaller(registered, uninstaller, app, local):
+    """Allow Inno Setup's numbered uninstaller only in the expected user directory."""
+    expected_dir = local / "Programs" / "AWQM Setup" / "Uninstall"
+    if (not registered.is_dir() or not registered.samefile(app.parent)
+            or not uninstaller.is_absolute()
+            or not re.fullmatch(r"unins[0-9]{3}\.exe", uninstaller.name, re.IGNORECASE)
+            or not uninstaller.is_file()
+            or not expected_dir.is_dir()
+            or not uninstaller.parent.samefile(expected_dir)
+            or uninstaller.resolve(strict=True).parent != expected_dir.resolve(strict=True)):
+        raise RuntimeError("Unexpected or missing registered uninstaller; installation preserved")
+    return uninstaller
+
+
 def uninstall_current_user(app, local, shortcut):
     import winreg
     registration = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{39E547C5-189F-47E5-AC56-0881E132A87D}_is1"
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registration) as key:
         registered = Path(winreg.QueryValueEx(key, "InstallLocation")[0])
         uninstaller = Path(winreg.QueryValueEx(key, "UninstallString")[0].strip('"'))
-    expected = local / "Programs" / "AWQM Setup" / "Uninstall" / "unins000.exe"
-    if not registered.samefile(app.parent) or not uninstaller.samefile(expected):
-        raise RuntimeError("Unexpected uninstall registration; installation preserved")
+    # Inno Setup can allocate unins001.exe or later when the earlier
+    # numbered files still exist. Follow the validated registry entry,
+    # never a guessed basename or an arbitrary executable.
+    uninstaller = verified_uninstaller(registered, uninstaller, app, local)
     completed = subprocess.run([str(uninstaller), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], timeout=90)
     if completed.returncode:
         raise RuntimeError("Uninstall returned a failure")
@@ -221,6 +237,10 @@ def uninstall_current_user(app, local, shortcut):
             raise RuntimeError("Uninstall registration remains")
     except FileNotFoundError:
         pass
+    # Inno's final self-delete can outlive the launching process.
+    # Finish cleanup before reinstalling into the same directory.
+    wait_for("Registered uninstaller did not finish removing itself",
+             lambda: not uninstaller.exists() and not uninstaller.with_suffix(".dat").exists(), timeout=30)
 
 
 def seed_legacy_profile(local):
@@ -308,6 +328,7 @@ def standard_user_trial(installer, receipt, username, *, full=False, previous=No
             validate(shortcut, app, progress=progress)
             record["start_menu_relaunch"] = True
             candidate_version = app.with_name("VERSION.txt").read_text(encoding="utf-8").strip()
+            progress("removing fresh candidate installation")
             uninstall_current_user(app, local, shortcut)
             record["uninstall_verified"] = True
             if previous is not None:
@@ -325,6 +346,7 @@ def standard_user_trial(installer, receipt, username, *, full=False, previous=No
                 if legacy_rows(db_path) != rows:
                     raise RuntimeError("Upgrade modified the original profile, credential or SSH pin")
                 record["v047_upgrade_preserves_settings"] = True
+                progress("removing upgraded installation and checking settings")
                 uninstall_current_user(app, local, shortcut)
                 if legacy_rows(db_path) != rows:
                     raise RuntimeError("Uninstall removed or changed the user's saved settings")
