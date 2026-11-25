@@ -276,7 +276,9 @@ def verify(entry, report, wait_for_refresh=False):
             with entry.open("rb") as application:
                 result["application_sha256"] = hashlib.file_digest(application, "sha256").hexdigest()
         report.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(json.dumps(result, ensure_ascii=False))
+        # The UTF-8 evidence file retains localized text. Escaped ASCII stdout also
+        # works on hosted Windows consoles redirected through legacy code pages.
+        print(json.dumps(result, ensure_ascii=True))
 
 
 if __name__ == "__main__":
