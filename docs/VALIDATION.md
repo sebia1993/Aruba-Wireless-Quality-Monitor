@@ -8,6 +8,14 @@ AWQM.exe --validate-scale capacity --output C:\AWQM-Validation\capacity-01
 ```
 The CI development build runs the equivalent source command and stores only its result JSON (not synthetic database partitions) in the ZIP artifact. Fixture shape and small real-engine execution are also unit-tested.
 
+## User-owned 72-hour continuous-operation validation
+
+Scope update (2026-11-25): the owner will perform this test separately. The
+developer need not execute or wait for the 72-hour trial to finish development.
+Keep the validation utility and acceptance criteria available; never record the
+trial as passed without actual results. This does not transfer other developer
+integration, security, performance or Windows service lifecycle tests.
+
 For the actual elapsed-time soak, use a dedicated Windows 11 x64 client PC with at least 100 GB free and a NEW directory. The process must run uninterrupted for 72 real hours. Do not use a production data directory, share credentials, or connect to actual WLCs.
 ```powershell
 AWQM.exe --validate-scale soak --output D:\AWQM-Validation\soak-01
