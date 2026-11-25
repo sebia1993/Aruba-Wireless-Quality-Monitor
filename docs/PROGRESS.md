@@ -47,3 +47,5 @@ v0.37.1 portable build and exact dependency audit passed (45530631175). v0.39.1 
 
 
 v0.40.1-dev: include the complete v0.40.0-dev native browser form fix and strict Origin regression, preserving single EXE restrictions. Both v0.39 browser jobs failed at login. Repeat CI pending; 78.9% unchanged.
+
+CI lane separation: change-aware source checks and independent browser checks for ordinary development; full frozen qualification only on explicit candidate requests. No gate removed, no progress credit before verification. CSV download browser regression remains open.
