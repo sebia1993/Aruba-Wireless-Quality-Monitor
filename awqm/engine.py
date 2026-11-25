@@ -8,7 +8,7 @@ from dataclasses import asdict,replace
 from threading import Lock
 import time
 import sqlite3
-from .aos8 import merge_radios,merge_associations
+from .aos8 import merge_radios,merge_association_tables
 from .durable_jobs import DurableJobs
 from .selection import Selector
 from .client_history import ClientHistory,map_samples
@@ -34,6 +34,7 @@ class Engine:
         self.active_detail_clients=[]
         self.pool=ThreadPoolExecutor(max_workers=len(workers),thread_name_prefix="awqm-wlc")
         self.inflight={};self.snapshots={};self.outcomes={};self.next_tick={}
+        self.inventory_associations={}
         self.accepted={};self.last_result={};self.error=None
         self.paused=False;self.closed=False;self.lock=Lock()
         self.operation_requested={};self.operation_applied={};self.operation_error=None;self.operation_revision=None
@@ -93,7 +94,7 @@ class Engine:
             if changed:
                 # In-flight results from a previous PM context cannot
                 # reappear as current observations.
-                for cache in (self.snapshots,self.cluster_frames,self.neighbor_frames,self.association_frames,
+                for cache in (self.snapshots,self.inventory_associations,self.cluster_frames,self.neighbor_frames,self.association_frames,
                               self.detail_pending,self.live_details,self.neighbor_pending):
                     cache.pop(name,None)
                 if self.live_clients:self.live_clients.clear()
@@ -144,6 +145,10 @@ class Engine:
                         if reading and reading.command==NEIGHBOR and reading.target:
                             self.neighbor_pending[name]=(reading,snapshot)
                     self.snapshots[name]=snapshot
+                    if snapshot is not None and assoc is not None:
+                        self.inventory_associations[name]=assoc
+                    else:
+                        self.inventory_associations.pop(name,None)
                     if self.client_history and reading and reading.status=="success" and reading.target:
                         self.detail_pending[name]=(reading,snapshot,bss,assoc)
                     if self.live_clients and reading and reading.target and reading.command!=NEIGHBOR and (reading.status=="success" or reading.command in ("show ap debug client-stats","show ap debug client-table")):
@@ -151,6 +156,7 @@ class Engine:
                     if reading:self.outcomes[name]={"command":reading.command,"status":reading.status,"observed_at":reading.observed_at}
                 except Exception as exc:
                     self.snapshots[name]=None
+                    self.inventory_associations.pop(name,None)
                     self.cluster_frames.pop(name,None)
                     self.neighbor_frames.pop(name,None)
                     self.association_frames.pop(name,None)
@@ -161,6 +167,8 @@ class Engine:
                         self.error=type(exc).__name__
             maintenance_blocked=self._maintenance_step()
             active=[]
+            inventory_tables=[]
+            aligned_tables=[]
             for name,s in self.snapshots.items():
                 if name in maintenance_blocked:continue
                 if s is None:continue
@@ -173,10 +181,23 @@ class Engine:
                 if s.associations is not None and (s.association_at is None or not 0<=wall-s.association_at<=150):
                     s=replace(s,associations=None,association_at=None)
                 active.append(s)
+                # A standalone count uses the association poll's own freshness.
+                # Only the worker's time-aligned observations can identify RF clients.
+                assoc=self.inventory_associations.get(name)
+                if (assoc is not None and assoc.generation==w.generation and not self.paused
+                    and 0<=wall-assoc.observed_at<=150):
+                    inventory_tables.append(assoc.data)
+                    if s.associations is not None and s.association_at==assoc.observed_at:
+                        aligned_tables.append(s.associations)
             # Staggered WLC polls are independently freshness-checked above.
             # Conflicting ownership remains unresolved.
             radios,unresolved=merge_radios(active,self.site,max_skew=None)
-            clients,conflicts=merge_associations(active,max_skew=None)
+            inventory_clients,conflicts=merge_association_tables(inventory_tables)
+            clients=inventory_clients
+            if len(aligned_tables)!=len(inventory_tables):
+                clients,_=merge_association_tables(aligned_tables)
+                for client in conflicts:
+                    clients.pop(client,None)
             if self.simulation:radios=[replace(r,source="synthetic") for r in radios]
             fresh=[r for r in radios if r.observed_at>self.accepted.get(r.radio_id,-1)]
             if not self.error:
@@ -299,7 +320,7 @@ class Engine:
             self.published_radios=tuple((r.radio_id,r.observed_at) for r in radios if not self.error and self.accepted.get(r.radio_id)==r.observed_at)
             self.last_result={"mode":"demo" if self.simulation else "diagnostic","field_validated":False,
                 "coherent_controllers":len(active),"expected_controllers":len(self.workers),
-                "mapped_radios":len(radios),"active_clients":len(clients),
+                "mapped_radios":len(radios),"active_clients":len(inventory_clients),
                 "unresolved_radios":len(unresolved),"client_conflicts":len(conflicts),
                 "storage_error":self.error,"paused":self.paused or len(maintenance_blocked)==len(self.workers),"cluster":self.cluster_view,
                 "operations":self.operation_status() if self.operation_requested else None,

@@ -259,11 +259,13 @@ def merge_associations(snapshots,max_skew=45):
     if not snapshots:
         return {},{}
     newest=max(s.observed_at for s in snapshots)
+    return merge_association_tables(s.associations for s in snapshots if s.associations is not None
+                                    and (max_skew is None or newest-s.observed_at<=max_skew))
+
+def merge_association_tables(tables):
     candidates={}
-    for s in snapshots:
-        if (max_skew is not None and newest-s.observed_at>max_skew) or s.associations is None:
-            continue
-        for a in s.associations:
+    for table in tables:
+        for a in table:
             if a["active"]:
                 candidates.setdefault(a["client_mac"],[]).append(a)
     active={}; conflicts={}

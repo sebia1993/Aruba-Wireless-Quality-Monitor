@@ -1,8 +1,7 @@
 """Durable bounded SQLite store with staged multi-file writes.
 
-One Store/Writer instance per data directory. Maintenance is explicit and
-serialized in this increment; production background maintenance and client
-history are still separate work packages.
+One Store/Writer instance per data directory. Aggregate rebuilds use a stable
+raw snapshot and publish through the revision manifest.
 """
 import json
 import sqlite3
@@ -11,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock
 from uuid import uuid4
 import re
 from .model import Radio
@@ -52,6 +51,19 @@ def disk_level(free,total):
     if free<=20*10**9 or free/total<=.20:return "warning"
     return "normal"
 
+class AggregateRevisionChanged(RuntimeError):
+    """A late observation invalidated the snapshot being aggregated."""
+
+
+class AggregateCancelled(RuntimeError):
+    """The caller stopped a rebuild before its result was published."""
+
+
+def _check_cancelled(cancel):
+    if cancel is not None and cancel.is_set():
+        raise AggregateCancelled("daily aggregation cancelled")
+
+
 class Store:
     def __init__(self,root,mode="demo",pending_limit=20000,recover=True):
         if mode not in ("demo","diagnostic"):
@@ -59,6 +71,9 @@ class Store:
         self.root=Path(root)
         self.root.mkdir(parents=True,exist_ok=True)
         self.lock=RLock()
+        # A backup and another rebuild cannot straddle changes to monthly files.
+        # Acquire this lock before the foreground lock and never in the opposite order.
+        self._aggregate_lock = Lock()
         self.mode=mode
         self.pending_limit=pending_limit
         with self._db(self.root/"core.db") as c:
@@ -232,26 +247,46 @@ class Store:
         return {"mode":self.mode,"radios":rows,"events":[dict(zip(("radio_id","observed_at","status"),v)) for v in events],
                 "pending_writes":pending}
 
-    def aggregate_day(self,day,now):
-        """Rebuild both bucket sizes from a sealed KST day, not averages of averages.
+    @contextmanager
+    def _aggregate_slot(self, cancel):
+        if cancel is None:
+            self._aggregate_lock.acquire()
+        else:
+            while not self._aggregate_lock.acquire(timeout=0.25):
+                _check_cancelled(cancel)
+        try:
+            _check_cancelled(cancel)
+            yield
+        except sqlite3.OperationalError as exc:
+            if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT and cancel is not None and cancel.is_set():
+                raise AggregateCancelled("daily aggregation cancelled") from exc
+            raise
+        finally:
+            self._aggregate_lock.release()
 
-        Serialized with writes for consistency. Call outside the live collection
-        loop until a production maintenance scheduler is added.
-        """
+    def aggregate_day(self, day, now, *, cancel=None):
+        """Rebuild a closed KST day from one snapshot while collection continues."""
         start=day_start(day)
         if day_for(start)!=day or start+86400>now:
             raise ValueError("only closed days can be aggregated")
-        with self.lock:
-            if self.pending_count():raise RuntimeError("pending writes must be recovered first")
-            path=self._raw_path(day)
-            if not path.is_file():raise FileNotFoundError("raw partition absent")
-            with self._db(self.root/"core.db") as core:
-                core.execute("INSERT OR IGNORE INTO aggregate_manifest(day,revision) VALUES(?,0)",(day,))
-                rev=core.execute("SELECT revision FROM aggregate_manifest WHERE day=?",(day,)).fetchone()[0]
-                # A failure after one monthly file commits must never authorize pruning.
-                core.execute("UPDATE aggregate_manifest SET completed_revision=NULL WHERE day=?",(day,))
+        with self._aggregate_slot(cancel):
+            path = self._raw_path(day)
+            with self.lock:
+                if self.pending_count():raise RuntimeError("pending writes must be recovered first")
+                if not path.is_file():raise FileNotFoundError("raw partition absent")
+                with self._db(self.root/"core.db") as core:
+                    core.execute("INSERT OR IGNORE INTO aggregate_manifest(day,revision) VALUES(?,0)",(day,))
+                    rev, retired = core.execute(
+                        "SELECT revision,retired FROM aggregate_manifest WHERE day=?", (day,)
+                    ).fetchone()
+                    if retired:
+                        raise ValueError("retired partition cannot be rebuilt")
+                    # Readers and pruning must exclude this day until both commits succeed.
+                    core.execute("UPDATE aggregate_manifest SET completed_revision=NULL WHERE day=?",(day,))
             counts = {}
             with self._db(path) as raw:
+                if cancel is not None:
+                    raw.set_progress_handler(cancel.is_set, 10000)
                 raw.execute("BEGIN")
                 expected, outside_day = raw.execute(
                     """SELECT COUNT(*), COUNT(CASE WHEN observed_at < ? OR observed_at >= ? THEN 1 END)
@@ -260,15 +295,24 @@ class Store:
                 if outside_day:
                     raise ValueError("raw partition contains out-of-day records")
                 for step, label in ((300, "5m"), (3600, "1h")):
+                    _check_cancelled(cancel)
                     destination = self.root / f"radio_{label}_{day[:6]}.db"
-                    counts[label] = self._aggregate_resolution(raw, destination, start, step, expected)
+                    counts[label] = self._aggregate_resolution(raw, destination, start, step, expected, cancel)
             if counts["5m"]!=counts["1h"]:raise RuntimeError("aggregate counts differ")
-            with self._db(self.root/"core.db") as c:
-                c.execute("UPDATE aggregate_manifest SET completed_revision=?,raw_count=? WHERE day=?",(rev,counts["5m"],day))
+            with self.lock, self._db(self.root/"core.db") as c:
+                _check_cancelled(cancel)
+                published = c.execute(
+                    """UPDATE aggregate_manifest SET completed_revision=revision,raw_count=?
+                       WHERE day=? AND revision=? AND retired=0""", (counts["5m"], day, rev)
+                )
+                if published.rowcount != 1:
+                    raise AggregateRevisionChanged("closed day changed during aggregation")
             return counts
 
-    def _aggregate_resolution(self, raw, destination, start, step, expected):
+    def _aggregate_resolution(self, raw, destination, start, step, expected, cancel=None):
         with self._db(destination) as out:
+            if cancel is not None:
+                out.set_progress_handler(cancel.is_set, 10000)
             out.execute(AGG_SCHEMA)
             out.execute("CREATE INDEX IF NOT EXISTS idx_aggregate_radio_time ON radio_aggregate(radio_id,bucket)")
             out.execute("DELETE FROM radio_aggregate WHERE bucket>=? AND bucket<?",(start,start+86400))
@@ -300,6 +344,7 @@ class Store:
             # The raw primary key streams distinct radios in index order.
             # Limit SQLite's temporary grouping and JSON extraction to one radio.
             for (radio_id,) in raw.execute("SELECT DISTINCT radio_id FROM radio_raw"):
+                _check_cancelled(cancel)
                 cursor = raw.execute(query, (step, step, radio_id))
                 while chunk := cursor.fetchmany(1000):
                     out.executemany(insert, chunk)
@@ -407,7 +452,7 @@ class Store:
             raise ValueError("choose a new backup directory outside data root")
         dest.parent.mkdir(parents=True,exist_ok=True)
         temp=dest.parent/(dest.name+".partial-"+uuid4().hex)
-        with self.lock:
+        with self._aggregate_lock, self.lock:
             if self.pending_count():raise RuntimeError("pending writes must be recovered")
             temp.mkdir()
             try:
