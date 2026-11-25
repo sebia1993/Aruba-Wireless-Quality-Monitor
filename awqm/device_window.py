@@ -5,6 +5,7 @@ import webbrowser
 
 from .device_profiles import DeviceProfile
 from .desktop_endpoint import dashboard_url
+from .service_config import USER
 
 if sys.platform == "win32":
     import commctrl as lv
@@ -21,6 +22,7 @@ class DeviceWindow:
     (HOST, USERNAME, PASSWORD, REMEMBER, FINGERPRINT, KNOWN_HOSTS, BROWSE,
      TEST, SAVE, STOP, STATUS, OBSERVED, TABLE, GRID, OPEN_HTTPS) = range(210, 225)
     PREVIOUS, NEXT, PAGE, DETAILS, ADV_TEXT, ADV_URL = range(225, 231)
+    TRUST_OPTIONS, DEFAULT_ACCOUNT = 231, 232
     HOST_LABEL, USER_LABEL, PASS_LABEL, KEY_HELP, FP_LABEL, FILE_LABEL, TABLE_LABEL = range(240, 247)
     SLOTS = tuple(f"WLC-{i}" for i in range(1, 5))
     PAGE_SIZE = 100
@@ -38,6 +40,9 @@ class DeviceWindow:
         self.controls = {}
         self.drafts = {}
         self.saved = {}
+        self.default_username = ""
+        self.draft_username = ""
+        self.trust_expanded = False
         self.slot = self.SLOTS[0]
         self.view = self.SETTINGS
         self.notice = ""
@@ -85,10 +90,12 @@ class DeviceWindow:
         edit(self.HOST)
         label(self.USER_LABEL, "조회 계정")
         edit(self.USERNAME)
+        button(self.DEFAULT_ACCOUNT, "새 장비 기본 계정으로")
         label(self.PASS_LABEL, "비밀번호")
         edit(self.PASSWORD, c.ES_PASSWORD)
-        self._child(self.REMEMBER, "BUTTON", "이 Windows 계정에 비밀번호 저장", tab | c.BS_AUTOCHECKBOX)
-        label(self.KEY_HELP, "기본값은 Windows의 .ssh\\known_hosts입니다. 새 장비는 관리자가 확인한 지문을 입력하거나 신뢰한 known_hosts 파일을 선택하세요.")
+        self._child(self.REMEMBER, "BUTTON", "Windows 계정에 비밀번호 저장", tab | c.BS_AUTOCHECKBOX)
+        label(self.KEY_HELP, "")
+        button(self.TRUST_OPTIONS, "SSH 키 고급 설정 펼치기")
         label(self.FP_LABEL, "SHA256 지문")
         edit(self.FINGERPRINT)
         label(self.FILE_LABEL, "known_hosts 파일")
@@ -115,6 +122,7 @@ class DeviceWindow:
         label(self.STATUS, "")
         label(self.OBSERVED, "")
         self.saved = {p.id: p for p in self.profiles.list()}
+        self.default_username = self.profiles.default_username()
         self._select(next((id for id in self.SLOTS if id in self.saved), self.SLOTS[0]))
 
     def _child(self, id, kind, title, style, extended=0):
@@ -164,7 +172,16 @@ class DeviceWindow:
         return tuple(self._text(id).strip() for id in (self.HOST, self.USERNAME, self.FINGERPRINT, self.KNOWN_HOSTS))
 
     def _store_draft(self):
-        self.drafts[self.slot] = (self._fields(), self._text(self.PASSWORD), self._checked(), self.reuse_password)
+        fields = self._fields()
+        host, username, fingerprint, path = fields
+        password, remember = self._text(self.PASSWORD), self._checked()
+        suggested = self.default_username or self.draft_username
+        if self.slot in self.saved or any((host, fingerprint, path, password, remember, username and username != suggested)):
+            self.drafts[self.slot] = (fields, password, remember, self.reuse_password)
+        else:
+            self.drafts.pop(self.slot, None)
+        if not suggested and USER.fullmatch(username):
+            self.draft_username = username
 
     def _slots(self):
         combo = self.controls[self.SLOT]
@@ -191,7 +208,9 @@ class DeviceWindow:
             fields = (profile.host, profile.username, profile.fingerprint, profile.known_hosts)
             password, remember, reuse = "", self.profiles.remembered(profile), bool(self.profiles.password(profile))
         else:
-            fields, password, remember, reuse = ("", "", "", ""), "", False, False
+            fields = ("", self.default_username or self.draft_username, "", "")
+            password, remember, reuse = "", False, False
+        self.trust_expanded = bool(fields[2] or fields[3])
         self.loading = True
         try:
             for control, value in zip((self.HOST, self.USERNAME, self.FINGERPRINT, self.KNOWN_HOSTS), fields):
@@ -210,8 +229,7 @@ class DeviceWindow:
 
     def _new(self):
         self._store_draft()
-        available = [id for id in self.SLOTS if id not in self.saved and
-                     (id not in self.drafts or not any(self.drafts[id][0]))]
+        available = [id for id in self.SLOTS if id not in self.saved and id not in self.drafts]
         if not available:
             self.notice = "등록할 장비를 위 목록에서 선택하세요. 장비는 최대 네 대까지 등록할 수 있습니다."
             return
@@ -242,6 +260,7 @@ class DeviceWindow:
             raise ValueError("이 장비의 조회 계정 비밀번호를 입력하세요.")
         if not once:
             self.profiles.save(profile, password, self._checked())
+            self.default_username = self.profiles.default_username()
             if self.saved.get(self.slot) != profile:
                 self.monitor.forget(self.slot)
             self.saved[self.slot] = profile
@@ -251,6 +270,8 @@ class DeviceWindow:
             self._slots()
             self.on_profiles_changed()
         self.monitor.start(profile, password, once=once)
+        if once and not self.default_username:
+            self.default_username = self.profiles.set_default_username(profile.username)
         self.notice = ""
         self._switch(self.RESULTS)
         g.SetFocus(self.controls[self.TABLE])
@@ -292,15 +313,26 @@ class DeviceWindow:
         for i, nav in enumerate((self.SETTINGS, self.RESULTS, self.ADVANCED)):
             boxes[nav] = (pad + 128*i, 48, 123, 30)
         if self.view == self.SETTINGS:
+            username = self._text(self.USERNAME).strip()
+            can_set_default = self.default_username and username != self.default_username and USER.fullmatch(username)
+            self._set(self.USER_LABEL, "조회 계정" if can_set_default else "조회 계정  ·  새 장비에 자동 입력")
+            self._set(self.KEY_HELP, "키 교체 시 관리자가 확인한 새 지문을 입력하고 저장하세요."
+                      if self.trust_expanded else "첫 연결 시 SSH 키를 자동 등록하고, 키가 바뀌면 연결을 차단합니다.")
+            self._set(self.TRUST_OPTIONS, "SSH 키 고급 설정 접기" if self.trust_expanded else "SSH 키 고급 설정 펼치기")
+            if can_set_default:
+                boxes[self.DEFAULT_ACCOUNT] = (w-pad-150, 81, 150, 24)
+            if self.trust_expanded:
+                boxes.update({self.FP_LABEL:(pad,264,122,23), self.FINGERPRINT:(pad+125,260,inner-125,27),
+                              self.FILE_LABEL:(pad,298,122,23), self.KNOWN_HOSTS:(pad+125,294,inner-222,27),
+                              self.BROWSE:(w-pad-90,293,90,29)})
+            actions_y = 333 if self.trust_expanded else 264
             boxes.update({
-                self.HOST_LABEL:(pad,91,half,22), self.USER_LABEL:(second,91,half,22),
-                self.HOST:(pad,115,half,27), self.USERNAME:(second,115,half,27),
-                self.PASS_LABEL:(pad,151,inner,22), self.PASSWORD:(pad,175,half,27),
-                self.REMEMBER:(second,174,half,28), self.KEY_HELP:(pad,213,inner,40),
-                self.FP_LABEL:(pad,258,122,23), self.FINGERPRINT:(pad+125,254,inner-125,27),
-                self.FILE_LABEL:(pad,293,122,23), self.KNOWN_HOSTS:(pad+125,289,inner-222,27),
-                self.BROWSE:(w-pad-90,288,90,29), self.TEST:(pad,330,122,32),
-                self.SAVE:(pad+131,330,164,32), self.STOP:(w-pad-99,330,99,32)})
+                self.HOST_LABEL:(pad,85,half,20), self.USER_LABEL:(second,85,half-155 if can_set_default else half,20),
+                self.HOST:(pad,106,half,27), self.USERNAME:(second,106,half,27),
+                self.PASS_LABEL:(pad,138,inner,20), self.PASSWORD:(pad,159,half,27),
+                self.REMEMBER:(second,158,half,28), self.KEY_HELP:(pad,187,inner,40),
+                self.TRUST_OPTIONS:(pad,228,185,28), self.TEST:(pad,actions_y,122,32),
+                self.SAVE:(pad+131,actions_y,164,32), self.STOP:(w-pad-99,actions_y,99,32)})
         elif self.view == self.RESULTS:
             bottom = h-93
             boxes.update({
@@ -407,6 +439,8 @@ class DeviceWindow:
                     self._set(self.PASSWORD, "")
                     g.SendMessage(self.controls[self.REMEMBER], c.BM_SETCHECK, 0, 0)
                 self._password_label()
+                if id == self.USERNAME:
+                    self._layout()
                 self.notice = ""
             return
         if id == self.SLOT and notification == c.CBN_SELCHANGE:
@@ -430,6 +464,15 @@ class DeviceWindow:
             self._remove()
         elif id == self.BROWSE:
             self._browse()
+        elif id == self.TRUST_OPTIONS:
+            self.trust_expanded = not self.trust_expanded
+            self._layout()
+        elif id == self.DEFAULT_ACCOUNT:
+            username = self._text(self.USERNAME).strip()
+            self.default_username = self.profiles.set_default_username(username, replace=True)
+            self.notice = "새 장비에 사용할 기본 조회 계정을 변경했습니다."
+            g.SetFocus(self.controls[self.USERNAME])
+            self._layout()
         elif id in (self.TEST, self.SAVE):
             self._start(once=id == self.TEST)
         elif id == self.STOP:

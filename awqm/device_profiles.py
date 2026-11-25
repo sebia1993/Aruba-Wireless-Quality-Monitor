@@ -23,6 +23,11 @@ from .service_config import ID, USER
 from .ssh_shell import ShellSession
 
 
+def _validate_username(username):
+    if not isinstance(username, str) or not USER.fullmatch(username):
+        raise ValueError("조회 계정 이름을 확인하세요.")
+
+
 @dataclass(frozen=True)
 class DeviceProfile:
     id: str
@@ -34,8 +39,7 @@ class DeviceProfile:
     def __post_init__(self):
         if not isinstance(self.id, str) or not ID.fullmatch(self.id):
             raise ValueError("장비 이름을 확인하세요.")
-        if not isinstance(self.username, str) or not USER.fullmatch(self.username):
-            raise ValueError("조회 계정 이름을 확인하세요.")
+        _validate_username(self.username)
         try:
             if not isinstance(self.host, str) or "%" in self.host:
                 raise ValueError
@@ -62,6 +66,11 @@ def _validate_password(password, *, required):
 _COLUMNS = "id, host, username, fingerprint, known_hosts"
 
 
+def _store_default_account(db, username, *, replace=False):
+    db.execute("""INSERT INTO default_account (id, username) VALUES (1, ?)
+        ON CONFLICT(id) DO UPDATE SET username=excluded.username WHERE ?""", (username, replace))
+
+
 class Profiles:
     """One instance owns the passwords retained during the desktop session."""
 
@@ -85,6 +94,15 @@ class Profiles:
                     id TEXT PRIMARY KEY, host TEXT NOT NULL UNIQUE, username TEXT NOT NULL,
                     fingerprint TEXT NOT NULL, known_hosts TEXT NOT NULL, revision BLOB NOT NULL,
                     credential BLOB)""")
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='default_account'").fetchone():
+                    db.execute("BEGIN IMMEDIATE")
+                    db.execute("""CREATE TABLE IF NOT EXISTS default_account (
+                        id INTEGER PRIMARY KEY CHECK (id=1), username TEXT NOT NULL)""")
+                    # Older installations have only per-device accounts. Keep those rows and credentials intact.
+                    db.execute("""INSERT OR IGNORE INTO default_account (id, username)
+                        SELECT 1, username FROM profiles ORDER BY id LIMIT 1""")
+                    db.commit()
+                _initialize_host_pins(db)
                 yield db
         except sqlite3.IntegrityError:
             raise ValueError("같은 관리 IP의 장비가 이미 등록되어 있습니다.") from None
@@ -98,6 +116,19 @@ class Profiles:
             return []
         with self._database() as db:
             return [DeviceProfile(*row) for row in db.execute(f"SELECT {_COLUMNS} FROM profiles ORDER BY id")]
+
+    def default_username(self):
+        if not (self.root / "devices.sqlite3").exists():
+            return ""
+        with self._database() as db:
+            row = db.execute("SELECT username FROM default_account WHERE id=1").fetchone()
+            return row[0] if row else ""
+
+    def set_default_username(self, username, *, replace=False):
+        _validate_username(username)
+        with self._database() as db:
+            _store_default_account(db, username, replace=replace)
+            return db.execute("SELECT username FROM default_account WHERE id=1").fetchone()[0]
 
     def save(self, profile, password, remember):
         if not isinstance(profile, DeviceProfile) or not isinstance(remember, bool):
@@ -121,6 +152,7 @@ class Profiles:
                         revision=excluded.revision, credential=excluded.credential""",
                     (profile.id, profile.host, profile.username, profile.fingerprint, profile.known_hosts,
                      revision, encrypted))
+                _store_default_account(db, profile.username)
             self._transient.pop(profile.id, None)
             if password and not remember:
                 self._transient[profile.id] = (revision, password)
@@ -165,17 +197,70 @@ class HostKeyMismatch(HostKeyUnapproved):
     """The supplied trust source disagrees with the selected target or key."""
 
 
+def _initialize_host_pins(db):
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ssh_host_keys'").fetchone():
+        return
+    db.execute("BEGIN IMMEDIATE")
+    db.execute("""CREATE TABLE IF NOT EXISTS ssh_host_keys (
+        host TEXT NOT NULL, port INTEGER NOT NULL, fingerprint TEXT NOT NULL,
+        PRIMARY KEY(host, port))""")
+    # v0.46 profiles always used port 22. Keep verified fingerprints even if
+    # the user's first action after upgrading is editing or removing a profile.
+    db.execute("""INSERT OR IGNORE INTO ssh_host_keys(host, port, fingerprint)
+        SELECT host, 22, fingerprint FROM profiles WHERE fingerprint <> ''""")
+    db.commit()
+
+
+def _remember_host_key(profile, port, fingerprint, stopped):
+    # Keep endpoint pins independent of profile edits, deletion and password storage.
+    endpoint = (profile.host, port)
+    try:
+        with Profiles()._database() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if stopped is not None and stopped.is_set():
+                raise ConnectionAbortedError("장비 연결을 중지했습니다.")
+            saved = db.execute("SELECT id, username, fingerprint, known_hosts FROM profiles WHERE host=?",
+                               (profile.host,)).fetchone()
+            if port == 22 and saved and any(saved[2:]) and saved[2:] != (profile.fingerprint, profile.known_hosts):
+                # An unsaved draft for the same endpoint must honor the stored
+                # profile's trust settings, including a legacy selected file.
+                keys, revoked = _configured_keys(profile.host, port, saved[2], saved[3])
+                if (fingerprint in revoked or (saved[2] and saved[2] != fingerprint)
+                        or (keys and all(key.fingerprint != fingerprint for key in keys))):
+                    raise HostKeyMismatch("저장된 장비 설정의 SSH 키와 일치하지 않습니다.")
+            existing = db.execute("SELECT fingerprint FROM ssh_host_keys WHERE host=? AND port=?",
+                                  endpoint).fetchone()
+            if existing is None:
+                db.execute("INSERT INTO ssh_host_keys(host, port, fingerprint) VALUES(?, ?, ?)",
+                           (*endpoint, fingerprint))
+            elif existing[0] != fingerprint:
+                # A file edit alone cannot rotate a pin. The currently saved profile
+                # must explicitly authorize this exact, independently verified key.
+                if profile.fingerprint != fingerprint or saved != (
+                        profile.id, profile.username, fingerprint, profile.known_hosts):
+                    raise HostKeyMismatch("이전에 저장한 SSH 키와 달라 인증을 중단했습니다.")
+                db.execute("UPDATE ssh_host_keys SET fingerprint=? WHERE host=? AND port=?",
+                           (fingerprint, *endpoint))
+    except (HostKeyUnapproved, ConnectionAbortedError):
+        raise
+    except (OSError, RuntimeError, ValueError):
+        raise HostKeyUnapproved("현재 사용자의 SSH 키 기록을 읽거나 저장할 수 없습니다.") from None
+
+
 class DeviceShellUnavailable(RuntimeError):
     """The login succeeded, but the Aruba CLI channel could not be opened."""
 
 
 class _FingerprintPolicy:
-    def __init__(self, expected):
+    def __init__(self, expected, revoked):
         self.expected = expected
+        self.revoked = revoked
 
     def missing_host_key(self, client, hostname, key):
         # SSHClient invokes this after key exchange and before authentication.
-        if not hmac.compare_digest(key.fingerprint, self.expected):
+        if key.fingerprint in self.revoked:
+            raise HostKeyMismatch("해당 SSH 지문은 known_hosts에서 폐기한 키입니다.")
+        if self.expected and not hmac.compare_digest(key.fingerprint, self.expected):
             raise HostKeyMismatch("장비의 SSH 키와 확인한 지문이 일치하지 않습니다.")
 
 
@@ -185,7 +270,11 @@ def _host_matches(patterns, name):
     for pattern in patterns.split(","):
         negated = pattern.startswith("!")
         pattern = pattern.removeprefix("!")
-        if pattern.startswith("|1|"):
+        if pattern.startswith("|"):
+            # Both OpenSSH v1 fields are canonical Base64 encodings of 20 bytes.
+            sha1_b64 = r"[A-Za-z0-9+/]{26}[AEIMQUYcgkosw048]="
+            if not re.fullmatch(rf"\|1\|{sha1_b64}\|{sha1_b64}", pattern):
+                raise ValueError("invalid hashed known_hosts entry")
             matches = hmac.compare_digest(HostKeys.hash_host(name, pattern), pattern)
         else:
             # OpenSSH host patterns use * and ?. IPv6 and port brackets are literal.
@@ -201,16 +290,23 @@ def _known_keys(path, name):
     from paramiko.hostkeys import HostKeyEntry
     trusted = []
     revoked = set()
+    requires_ca = False
     with path.open(encoding="utf-8-sig") as stream:
         for line in stream:
             fields = line.split()
             if not fields or fields[0].startswith("#"):
                 continue
             marker = fields.pop(0) if fields[0].startswith("@") else ""
-            if not fields or not _host_matches(fields[0], name) or marker == "@cert-authority":
+            if not fields or fields[0].startswith("@") or (len(fields) == 1
+                    and not any(c in fields[0] for c in ".:|")):
+                raise ValueError("missing known_hosts target")
+            if not _host_matches(fields[0], name):
                 continue
-            if marker not in ("", "@revoked") or len(fields) < 3:
+            if len(fields) < 3 or marker not in ("", "@revoked", "@cert-authority"):
                 raise ValueError("invalid known_hosts entry")
+            if marker == "@cert-authority":
+                requires_ca = True
+                continue
             entry = HostKeyEntry.from_line(" ".join(fields[:3]))
             if entry is None or entry.key is None:
                 raise ValueError("unsupported known_hosts entry")
@@ -218,7 +314,33 @@ def _known_keys(path, name):
                 revoked.add(entry.key.fingerprint)
             else:
                 trusted.append(entry.key)
+    if requires_ca and not trusted:
+        raise HostKeyUnapproved("이 장비의 known_hosts 항목에 인증 기관의 호스트 인증서 검증이 필요합니다.")
     return trusted, revoked
+
+
+def _configured_keys(host, port, fingerprint, known_hosts):
+    import paramiko
+    name = host if port == 22 else f"[{host}]:{port}"
+    path = Path(known_hosts) if known_hosts else Path.home() / ".ssh" / "known_hosts"
+    try:
+        keys, revoked = _known_keys(path, name)
+    except FileNotFoundError:
+        if known_hosts or path.is_symlink():
+            raise HostKeyUnapproved("known_hosts 파일을 찾을 수 없습니다.") from None
+        keys, revoked = [], set()
+    except (OSError, ValueError, IndexError, AssertionError, paramiko.SSHException, paramiko.hostkeys.InvalidHostKey):
+        raise HostKeyUnapproved("known_hosts 파일을 읽거나 확인할 수 없습니다.") from None
+    if fingerprint in revoked:
+        raise HostKeyMismatch("해당 SSH 지문은 known_hosts에서 폐기한 키입니다.")
+    if keys:
+        keys = [key for key in keys if key.fingerprint not in revoked
+                and (not fingerprint or key.fingerprint == fingerprint)]
+        if not keys:
+            raise HostKeyMismatch("known_hosts의 유효한 키와 장비 지문을 확인하세요.")
+    elif known_hosts:
+        raise HostKeyUnapproved("선택한 known_hosts 파일에 이 장비의 신뢰 항목이 없습니다.")
+    return keys, revoked
 
 
 class _DeviceSocket(socket.socket):
@@ -270,45 +392,43 @@ class _DeviceSocket(socket.socket):
 class _DeviceSSH(PinnedSSH):
     def __init__(self, profile, port, stopped):
         super().__init__(profile.host, profile.known_hosts, port=port)
-        self.fingerprint = profile.fingerprint
+        self.profile = profile
         self.stopped = stopped
 
     def _connect_client(self, client, username, password):
-        if self.stopped is None:
-            return super()._connect_client(client, username, password)
-        sock = _DeviceSocket(self.host, self.stopped)
+        from paramiko.auth_strategy import Password
+
+        def verified_password():
+            # Called after key exchange and known_hosts verification on this transport.
+            key = client.get_transport().get_remote_server_key()
+            _remember_host_key(self.profile, self.port, key.fingerprint, self.stopped)
+            if self.stopped is not None and self.stopped.is_set():
+                raise ConnectionAbortedError("장비 연결을 중지했습니다.")
+            return password
+
+        sock = _DeviceSocket(self.host, self.stopped) if self.stopped is not None else None
         try:
-            sock.connect_device(self.host, self.port)
-            super()._connect_client(client, username, password, sock=sock)
+            if sock is not None:
+                sock.connect_device(self.host, self.port)
+            client.connect(self.host, port=self.port, username=username, sock=sock,
+                           timeout=10, banner_timeout=15, auth_timeout=15, channel_timeout=15,
+                           auth_strategy=Password(username, verified_password))
         except BaseException:
-            sock.close()
+            if sock is not None:
+                sock.close()
             raise
 
     def _configure_trust(self, client):
         import paramiko
-        name = self.host if self.port == 22 else f"[{self.host}]:{self.port}"
-        path = Path(self.known_hosts) if self.known_hosts else Path.home() / ".ssh" / "known_hosts"
-        try:
-            keys, revoked = _known_keys(path, name)
-        except FileNotFoundError:
-            if self.known_hosts:
-                raise HostKeyUnapproved("선택한 known_hosts 파일을 찾을 수 없습니다.") from None
-            keys, revoked = [], set()
-        except (OSError, ValueError, IndexError, AssertionError, paramiko.SSHException, paramiko.hostkeys.InvalidHostKey):
-            raise HostKeyUnapproved("known_hosts 파일을 읽거나 확인할 수 없습니다.") from None
-        if self.fingerprint in revoked:
-            raise HostKeyMismatch("해당 SSH 지문은 known_hosts에서 폐기한 키입니다.")
+        fingerprint = self.profile.fingerprint
+        keys, revoked = _configured_keys(self.host, self.port, fingerprint, self.known_hosts)
         if keys:
+            name = self.host if self.port == 22 else f"[{self.host}]:{self.port}"
             for key in keys:
-                if key.fingerprint not in revoked and (not self.fingerprint or key.fingerprint == self.fingerprint):
-                    client.get_host_keys().add(name, key.get_name(), key)
-            if not client.get_host_keys().lookup(name):
-                raise HostKeyMismatch("known_hosts의 유효한 키와 장비 지문을 확인하세요.")
+                client.get_host_keys().add(name, key.get_name(), key)
             client.set_missing_host_key_policy(paramiko.RejectPolicy())
-        elif self.fingerprint and not self.known_hosts:
-            client.set_missing_host_key_policy(_FingerprintPolicy(self.fingerprint))
         else:
-            raise HostKeyUnapproved("이 장비의 확인된 SSH 지문 또는 known_hosts 항목이 필요합니다.")
+            client.set_missing_host_key_policy(_FingerprintPolicy(fingerprint, revoked))
 
 
 def open_session(profile, password, *, port=22, stopped=None):

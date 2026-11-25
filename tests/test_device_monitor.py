@@ -185,7 +185,7 @@ class DeviceMonitorTests(unittest.TestCase):
 
     def test_key_offline_and_post_authentication_shell_errors_have_distinct_results(self):
         for issue, connection, cli in (
-                (HostKeyUnapproved(), "신뢰", "미실행"), (HostKeyMismatch(), "불일치", "미실행"),
+                (HostKeyUnapproved(), "신뢰", "미실행"), (HostKeyMismatch(), "비밀번호 전송 전", "미실행"),
                 (OSError(), "연결 실패", "미실행"), (DeviceShellUnavailable(), "인증 성공", "CLI 열기 실패")):
             with self.subTest(issue=type(issue).__name__):
                 attempts = []

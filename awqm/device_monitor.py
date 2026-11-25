@@ -131,7 +131,7 @@ def _initial(profile=None):
 
 def _login_failure(exc):
     if isinstance(exc, (HostKeyMismatch, paramiko.BadHostKeyException)):
-        return "SSH 키 불일치", "키 불일치 · 인증 중단", "미실행"
+        return "SSH 키 불일치", "키 불일치 · 비밀번호 전송 전 중단. 장비 교체 여부를 확인하세요.", "미실행"
     if isinstance(exc, HostKeyUnapproved):
         return "SSH 키 미확인", "신뢰한 장비 키 확인 필요", "미실행"
     if isinstance(exc, paramiko.AuthenticationException):

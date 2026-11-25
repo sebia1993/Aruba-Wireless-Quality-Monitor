@@ -1,10 +1,14 @@
+import os
+import socket
+import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-from threading import Event
+from threading import Barrier, Event, local
 from unittest.mock import patch
 
 import paramiko
@@ -105,6 +109,9 @@ class DeviceSSHTests(unittest.TestCase):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.home = Path(folder.name)
+        environment = patch.dict(os.environ, {"LOCALAPPDATA": str(self.home)})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.ssh_dir = self.home / ".ssh"
         self.ssh_dir.mkdir()
         home = patch.object(Path, "home", return_value=self.home)
@@ -146,11 +153,168 @@ class DeviceSSHTests(unittest.TestCase):
                     devices.open_session(profile, PASSWORD, port=port)
                 self.assertEqual(peer.attempts, [])
 
-    def test_no_trust_or_missing_selected_file_blocks_connection(self):
-        for profile in (self.profile, replace(self.profile, fingerprint=self.trusted.fingerprint,
-                         known_hosts=str(self.home / "missing"))):
+    def test_missing_selected_file_blocks_connection(self):
+        profile = replace(self.profile, fingerprint=self.trusted.fingerprint,
+                          known_hosts=str(self.home / "missing"))
+        with self.assertRaises(HostKeyUnapproved):
+            devices.open_session(profile, PASSWORD, port=1)
+
+    @contextmanager
+    def peer_at_endpoint(self, key):
+        # Keep the application's logical IP/port stable across fresh loopback servers.
+        with server(key) as (port, peer, _):
+            with patch.object(paramiko.SSHClient, "_families_and_addresses",
+                              return_value=[(socket.AF_INET, ("127.0.0.1", port))]):
+                yield peer
+
+    def read_cpu(self, profile, port=22):
+        session = devices.open_session(profile, PASSWORD, port=port)
+        try:
+            self.assertEqual(session.run("show cpuload"), CPU)
+        finally:
+            session.close()
+
+    def test_first_key_survives_failed_login_restart_and_profile_recreation(self):
+        store = devices.Profiles()
+        store.save(self.profile, "", False)
+        with self.peer_at_endpoint(self.trusted) as peer:
+            with self.assertRaises(paramiko.AuthenticationException):
+                devices.open_session(self.profile, "wrong-password")
+            self.assertEqual(peer.attempts, [USER])
+        store.remove(self.profile.id)
+        renamed = replace(self.profile, id="replacement")
+        devices.Profiles().save(renamed, "", False)
+        with self.peer_at_endpoint(self.changed) as peer:
+            with self.assertRaises(devices.HostKeyMismatch):
+                devices.open_session(renamed, PASSWORD)
+            self.assertEqual(peer.attempts, [])
+        with self.peer_at_endpoint(self.trusted) as peer:
+            self.read_cpu(renamed)
+            self.assertEqual(peer.attempts, [USER])
+
+    def test_concurrent_first_contacts_with_different_keys_only_one_sends_password(self):
+        start = Barrier(2)
+        endpoints = local()
+
+        def resolve(client, host, port):
+            return [(socket.AF_INET, ("127.0.0.1", endpoints.port))]
+
+        def connect(port):
+            endpoints.port = port
+            start.wait(5)
+            try:
+                self.read_cpu(self.profile)
+            except devices.HostKeyMismatch:
+                return False
+            return True
+
+        with server(self.trusted) as first, server(self.changed) as second:
+            with patch.object(paramiko.SSHClient, "_families_and_addresses", resolve):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    results = list(pool.map(connect, (first[0], second[0])))
+            self.assertEqual(sorted(results), [False, True])
+            self.assertEqual([first[1].attempts, second[1].attempts],
+                             [[USER] if accepted else [] for accepted in results])
+
+    def test_separate_ports_have_independent_first_use_pins(self):
+        for port, key in ((22, self.trusted), (2222, self.changed)):
+            with self.peer_at_endpoint(key):
+                self.read_cpu(self.profile, port)
+        with self.peer_at_endpoint(self.changed) as peer:
+            with self.assertRaises(devices.HostKeyMismatch):
+                devices.open_session(self.profile, PASSWORD)
+            self.assertEqual(peer.attempts, [])
+
+    def test_known_hosts_cannot_replace_remembered_key_without_saved_exact_fingerprint(self):
+        path = self.ssh_dir / "known_hosts"
+        path.write_text(f"127.0.0.1 {self.trusted.get_name()} {self.trusted.get_base64()}\n", encoding="ascii")
+        with self.peer_at_endpoint(self.trusted):
+            self.read_cpu(self.profile)
+        path.write_text(f"127.0.0.1 {self.changed.get_name()} {self.changed.get_base64()}\n", encoding="ascii")
+        rotated = replace(self.profile, fingerprint=self.changed.fingerprint)
+        for profile in (self.profile, rotated):
+            with self.peer_at_endpoint(self.changed) as peer:
+                with self.assertRaises(devices.HostKeyMismatch):
+                    devices.open_session(profile, PASSWORD)
+                self.assertEqual(peer.attempts, [])
+        devices.Profiles().save(rotated, "", False)
+        with self.peer_at_endpoint(self.changed):
+            self.read_cpu(rotated)
+        path.unlink()
+        with self.peer_at_endpoint(self.trusted) as peer:
+            with self.assertRaises(devices.HostKeyMismatch):
+                devices.open_session(self.profile, PASSWORD)
+            self.assertEqual(peer.attempts, [])
+
+    def test_unsaved_draft_cannot_bypass_saved_trust_before_first_pin(self):
+        known_hosts = self.home / "approved-keys"
+        known_hosts.write_text(f"127.0.0.1 {self.trusted.get_name()} {self.trusted.get_base64()}\n",
+                               encoding="ascii")
+        draft = replace(self.profile, id="temporary-slot")
+        for saved in (replace(self.profile, fingerprint=self.trusted.fingerprint),
+                      replace(self.profile, known_hosts=str(known_hosts))):
+            devices.Profiles().save(saved, "", False)
+            with self.subTest(source=saved), self.peer_at_endpoint(self.changed) as peer:
+                with self.assertRaises(devices.HostKeyMismatch):
+                    self.read_cpu(draft)
+                self.assertEqual(peer.attempts, [])
+        with self.peer_at_endpoint(self.trusted):
+            self.read_cpu(draft)
+
+    def test_upgrade_preserves_explicit_legacy_fingerprint_before_first_profile_edit(self):
+        store = devices.Profiles()
+        store.save(replace(self.profile, fingerprint=self.trusted.fingerprint), "", False)
+        # The prior version stored the explicit fingerprint only on the profile.
+        with sqlite3.connect(store.root / "devices.sqlite3") as db:
+            db.execute("DROP TABLE IF EXISTS ssh_host_keys")
+        db.close()
+        devices.Profiles().save(self.profile, "", False)
+        with self.peer_at_endpoint(self.changed) as peer:
+            with self.assertRaises(devices.HostKeyMismatch):
+                self.read_cpu(self.profile)
+            self.assertEqual(peer.attempts, [])
+        with self.peer_at_endpoint(self.trusted):
+            self.read_cpu(self.profile)
+
+    def test_failing_to_store_first_key_blocks_password(self):
+        (self.home / "AWQM").write_text("not a directory", encoding="ascii")
+        with self.peer_at_endpoint(self.trusted) as peer:
             with self.assertRaises(HostKeyUnapproved):
-                devices.open_session(profile, PASSWORD, port=1)
+                devices.open_session(self.profile, PASSWORD)
+            self.assertEqual(peer.attempts, [])
+
+    def test_matching_revocation_or_ca_never_defaults_to_first_use(self):
+        path = self.ssh_dir / "known_hosts"
+        for marker in ("@cert-authority", "@revoked"):
+            path.write_text(f"{marker} 127.0.0.1 {self.trusted.get_name()} {self.trusted.get_base64()}\n",
+                            encoding="ascii")
+            with self.subTest(marker=marker), self.peer_at_endpoint(self.trusted) as peer:
+                with self.assertRaises(HostKeyUnapproved):
+                    devices.open_session(self.profile, PASSWORD)
+                self.assertEqual(peer.attempts, [])
+
+    def test_unreadable_or_malformed_default_trust_file_never_enrolls_a_new_key(self):
+        path = self.ssh_dir / "known_hosts"
+        hashed = paramiko.HostKeys.hash_host("127.0.0.1")
+        for target in (hashed.rsplit("|", 1)[0] + "|AA==", hashed.replace("|1|", "|2|")):
+            with self.subTest(target=target), self.peer_at_endpoint(self.trusted) as peer:
+                path.write_text(f"{target} {self.trusted.get_name()} {self.trusted.get_base64()}\n",
+                                encoding="ascii")
+                with self.assertRaises(HostKeyUnapproved):
+                    self.read_cpu(self.profile)
+                self.assertEqual(peer.attempts, [])
+        path.unlink()
+        path.mkdir()
+        with self.assertRaises(HostKeyUnapproved):
+            devices.open_session(self.profile, PASSWORD, port=1)
+
+    def test_broken_record_for_identifiably_unrelated_host_does_not_block_trusted_endpoint(self):
+        path = self.ssh_dir / "known_hosts"
+        path.write_text("192.0.2.10 incomplete\n@unsupported other.invalid garbage\n"
+                        + f"127.0.0.1 {self.trusted.get_name()} {self.trusted.get_base64()}\n",
+                        encoding="ascii")
+        with self.peer_at_endpoint(self.trusted):
+            self.read_cpu(self.profile)
 
     def test_existing_openssh_file_can_include_unrelated_ca_and_revoked_entries(self):
         with server(self.trusted) as (port, peer, state):
