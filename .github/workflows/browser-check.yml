@@ -1,0 +1,59 @@
+name: AWQM independent browser checks
+on:
+  push:
+    branches: [develop/awqm-foundation]
+    paths:
+      - 'awqm/static/**'
+      - 'awqm/diagnostic*.py'
+      - 'awqm/auth.py'
+      - 'awqm/audit.py'
+      - 'awqm/web*.py'
+      - 'awqm/secure_preview.py'
+      - 'awqm/http_bounds.py'
+      - 'awqm/notifications.py'
+      - 'awqm/reporting.py'
+      - 'awqm/incident*.py'
+      - 'awqm/manual_jobs.py'
+      - 'awqm/operations.py'
+      - 'awqm/association_history.py'
+      - 'awqm/storage.py'
+      - 'awqm/model.py'
+      - 'awqm/maintenance.py'
+      - 'awqm/https_validation.py'
+      - 'tools/browser_validation.py'
+      - 'requirements*.txt'
+      - '.github/workflows/browser-check.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: awqm-browser-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  browser-ui:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[awqm-full]') }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install isolated browser validation dependencies
+        run: python -m pip install -r requirements-browser.txt
+      - name: Install Chromium for CI only
+        run: python -m playwright install chromium
+      - name: Actual synthetic diagnostic browser validation
+        run: python -m tools.browser_validation --output browser-validation
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AWQM-standalone-browser-evidence
+          path: browser-validation/browser-result.json
+          if-no-files-found: warn
+          retention-days: 3

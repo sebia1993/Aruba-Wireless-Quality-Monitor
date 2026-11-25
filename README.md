@@ -171,3 +171,8 @@ GitHub Actions의 Windows ZIP artifact는 개발용입니다. 정식 릴리스�
 - [DB 저장 및 복구 설계](docs/STORAGE.md)
 
 실제 계정, AP 이름, IP, SSID, CLI 원본, DB 및 인증서를 공개 저장소에 올리지 않습니다.
+
+
+## 개발/배포 CI 구분
+
+일반 커밋은 변경 기반 빠른 검증, 웹 관련 수정은 독립 브라우저 검증을 수행합니다. 전체 빌드와 보안 검증은 명시적인 `[awqm-full]` 요청으로 실행합니다. [CI/CD 운영 기준](docs/CI_WORKFLOW.md).

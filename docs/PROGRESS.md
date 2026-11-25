@@ -44,3 +44,5 @@ v0.39 fixes stale detail/search after menu navigation, isolates in-flight callba
 
 
 v0.40.0-dev: both v0.39 browser jobs failed at native login; fix HTML referrer policy while preserving strict Origin and CSRF; add observed POST status/Origin and negative HTTP regression. Repeat CI pending; estimate 78.9% unchanged.
+
+CI lane separation: change-aware source checks and independent browser checks for ordinary development; full frozen qualification only on explicit candidate requests. No gate removed, no progress credit before verification. CSV download browser regression remains open.

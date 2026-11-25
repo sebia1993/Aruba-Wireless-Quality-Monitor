@@ -1,0 +1,41 @@
+name: AWQM development quick checks
+on:
+  push:
+    branches: [develop/awqm-foundation, develop/awqm-portable]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: awqm-quick-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  quick:
+    # Full/candidate runs already perform all these tests. No duplicate work.
+    if: ${{ github.event_name == 'workflow_dispatch' || (!contains(github.event.head_commit.message, '[awqm-full]') && !(github.ref == 'refs/heads/develop/awqm-portable' && contains(github.event.head_commit.message, '[publish-awqm-portable]'))) }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install runtime dependencies only
+        run: python -m pip install -r requirements.txt
+      - name: Check dependency consistency
+        run: python -m pip check
+      - name: Compile application and test sources
+        run: python -m compileall -q awqm tests tools launcher.py
+      - name: Change-aware regression suite
+        env:
+          AWQM_BEFORE: ${{ github.event.before }}
+          AWQM_HEAD: ${{ github.sha }}
+          AWQM_REF: ${{ github.ref }}
+        run: python -m tools.quick_validation
+      - name: Source demo smoke
+        run: python launcher.py --demo --smoke-test
