@@ -110,7 +110,7 @@ def handler_for(store,engine=None):
             pass
     return Handler
 
-def serve(port=8765, once=False):
+def serve(port=8765,once=False,open_browser=False):
     # An ephemeral directory makes it impossible to accidentally expose existing operational data.
     with tempfile.TemporaryDirectory(prefix="awqm-demo-") as root:
         store=Store(root)
@@ -128,6 +128,10 @@ def serve(port=8765, once=False):
         worker=threading.Thread(target=refresh,daemon=True)
         worker.start()
         print(f"AWQM synthetic demo: http://127.0.0.1:{port}",flush=True)
+        if open_browser:
+            import webbrowser
+            try:webbrowser.open(f"http://127.0.0.1:{port}")
+            except Exception:print("Open the localhost URL above in your browser.",flush=True)
         try:
             server.serve_forever()
         finally:

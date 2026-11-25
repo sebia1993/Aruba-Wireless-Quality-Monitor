@@ -2,8 +2,14 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**v0.43.0-dev 개발 검증판** · 연결 이력은 유선 MAC으로 식별한 AP와 Radio가 일치할 때 기록합니다. 이전 방식으로 수집한 이력에는 물리 AP 미검증 표시가 붙습니다. 실행 파일에서 `--runtime-info`로 Python, SQLite와 두 OpenSSL 버전을 확인할 수 있습니다.
+**v0.43.1-dev 휴대형 개발 검증판** · 연결 이력은 유선 MAC으로 식별한 AP와 Radio가 일치할 때 기록합니다. 이전 방식으로 수집한 이력에는 물리 AP 미검증 표시가 붙습니다. 실행 파일에서 `--runtime-info`로 Python, SQLite와 두 OpenSSL 버전을 확인할 수 있습니다.
 개발 검증은 합성 관측과 루프백 HTTPS를 사용합니다. 운영 적합성 확인에는 전용 Windows 11 서비스 계정·재부팅 시험, 현장 WLC·AAA·Airtime 검증 및 72시간 시험 결과가 필요합니다.
+
+## Windows 11 x64 단일 EXE 개발 검증판
+
+휴대형 ZIP은 한 번 압축 해제하면 `AWQM.exe` 하나만 나오는 구조를 목표로 합니다. 더블클릭 후 모의 화면(1), 합성 수집 엔진(2) 또는 종료(0)를 선택합니다. `AWQM.exe --version`으로 내장 버전을 확인합니다. 통합 v0.43.1-dev는 검증 대상으로, 기존 공개 v0.25.1-dev와 구분합니다.
+
+**관리자 권한으로 실행하거나 Windows 서비스로 등록하지 마십시오.** 실제 서비스에는 기존 보호된 onedir 개발 패키지와 현장 승인, 별도 자격 검증이 필요합니다. 휴대형 ZIP을 서비스 업데이트 후보로 사용하지 않습니다.
 
 ## 실행 (개발 환경)
 ```sh
@@ -35,7 +41,7 @@ Windows EXE에서도 동일하게 `AWQM.exe --validate-cli radio local-output.tx
 
 ## Windows 진단 서비스 (현장 검증 후보 기능)
 
-서비스용 폴더 ZIP에는 `AWQM_Service.exe`와 `AWQM_Manager.exe`가 들어 있습니다. 사내 승인, 비관리자 전용 서비스 계정, 보호된 NTFS 폴더, 검증된 WLC Host Key 및 DPAPI 자격 증명을 준비한 뒤 설치합니다. 관리자는 등록 전에 설치 폴더와 런타임 파일의 쓰기 권한을 확인합니다. [서비스 구성 및 검증 절차](docs/WINDOWS_SERVICE.md).
+보호된 onedir 서비스용 폴더 ZIP에만 `AWQM_Service.exe`와 `AWQM_Manager.exe`가 들어 있습니다. 사내 승인, 비관리자 전용 서비스 계정, 보호된 NTFS 폴더, 검증된 WLC Host Key 및 DPAPI 자격 증명을 준비한 뒤 설치합니다. 관리자는 등록 전에 설치 폴더와 런타임 파일의 쓰기 권한을 확인합니다. [서비스 구성 및 검증 절차](docs/WINDOWS_SERVICE.md).
 
 ## 진단 서비스의 HTTPS 웹 조회 (선택)
 
@@ -157,7 +163,7 @@ Windows ZIP의 실제 설치 패키지 버전을 별도 CI에서 취약점 조�
 
 별도 Chromium CI에서 실제 로그인, AP 검색/페이지 이동, 상세 및 이력 내보내기, 메뉴 전환, 권한과 세션 만료, WSS 및 두 화면 크기를 합성 데이터로 검사합니다. 브라우저 테스트 도구는 EXE에 포함하지 않습니다. [검증 안내](docs/VALIDATION.md).
 
-## Windows 폴더형 빌드
+## Windows 휴대형 빌드
 
 Windows x64 CPython 3.14.10에서 시작합니다. 준비 명령은 지정한 새 경로에 빌드용 Python을 복사하고 공식 SQLite ZIP의 해시를 검증합니다. 아래 명령은 저장소 루트에서 실행합니다.
 
@@ -169,11 +175,11 @@ $env:PYTHONNOUSERSITE = '1'
 $builder = Join-Path $runtime 'python.exe'
 & $builder -m pip install -r requirements-build.txt
 if ($LASTEXITCODE -ne 0) { throw '빌드 의존성 설치 실패' }
-& $builder -m PyInstaller --noconfirm --clean --hidden-import win32timezone --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
+& $builder -m PyInstaller --noconfirm --clean --hidden-import win32timezone --onefile --name AWQM --add-data "awqm/static;awqm/static" launcher.py
 if ($LASTEXITCODE -ne 0) { throw 'EXE 빌드 실패' }
-& $builder tools/windows_runtime.py verify dist/AWQM/AWQM.exe dist/native-runtime.json
+& $builder tools/windows_runtime.py verify dist/AWQM.exe native-runtime.json --onefile
 ```
-서비스·관리자 실행 파일과 운영 문서를 포함하는 개발 ZIP의 제작 절차는 [Windows 빌드 워크플로](.github/workflows/windows-build.yml)에 있습니다.
+검증 결과에는 실행 파일에 포함된 SQLite DLL의 SHA-256이 기록됩니다. [휴대형 Windows 빌드 워크플로](.github/workflows/windows-portable.yml)
 
 - [확정 설계 기준 및 개발 범위](docs/DESIGN.md)
 - [CLI 출력 검증 안내](docs/CLI_VALIDATION.md)
@@ -185,4 +191,4 @@ if ($LASTEXITCODE -ne 0) { throw 'EXE 빌드 실패' }
 
 ## 개발/배포 CI 구분
 
-일반 커밋은 변경 기반 빠른 검증, 웹 관련 수정은 독립 브라우저 검증을 수행합니다. 전체 빌드와 보안 검증은 명시적인 `[awqm-full]` 요청으로 실행합니다. [CI/CD 운영 기준](docs/CI_WORKFLOW.md).
+일반 커밋은 변경 기반 빠른 검증, 핵심 브랜치의 웹 관련 수정은 독립 브라우저 검증을 수행합니다. 전체 빌드와 보안 검증은 명시적인 `[awqm-full]` 요청으로 실행합니다. [CI/CD 운영 기준](docs/CI_WORKFLOW.md).

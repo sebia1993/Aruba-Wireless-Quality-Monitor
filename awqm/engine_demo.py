@@ -8,7 +8,7 @@ from .storage import Store
 from .maintenance import Maintenance
 from .web import handler_for
 
-def serve_engine(port=8765,once=False):
+def serve_engine(port=8765,once=False,open_browser=False):
     with tempfile.TemporaryDirectory(prefix="awqm-engine-demo-") as root:
         store=Store(Path(root)/"demo")
         if once:
@@ -45,6 +45,10 @@ def serve_engine(port=8765,once=False):
         server=ThreadingHTTPServer(("127.0.0.1",port),handler_for(store,engine))
         thread.start()
         print(f"AWQM synthetic engine demo: http://127.0.0.1:{port}",flush=True)
+        if open_browser:
+            import webbrowser
+            try:webbrowser.open(f"http://127.0.0.1:{port}")
+            except Exception:print("Open the localhost URL above in your browser.",flush=True)
         try:server.serve_forever()
         finally:
             stop.set();thread.join();server.server_close()

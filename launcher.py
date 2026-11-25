@@ -9,16 +9,35 @@ COMMAND_HELP = """Commands with their own --help
   --validate-cli    Parse saved controller output offline
   --validate-scale  Run a synthetic capacity, storage, HTTPS or soak trial
   --stage-package   Verify and stage an offline folder-package ZIP
-  --manager         Manage the Windows diagnostic service
+  --manager         Portable manager help and smoke-test
   --collect-once    Perform one authorized controller collection
   --auth-preview    Run the local HTTPS authentication preview
 
 Standalone commands
+  --service --smoke-test  Check Windows service imports
   --validate-ssh      Exercise SSH against a local fixture
   --dpapi-smoke-test  Test DPAPI under the current Windows user
   --version           Print the AWQM version
   --runtime-info      Print the loaded Python, SQLite and OpenSSL versions as JSON"""
 
+
+def portable_runtime():
+    """Distinguish PyInstaller onefile from the legacy installed onedir layout."""
+    if not getattr(sys,"frozen",False):return False
+    exe_dir=Path(sys.executable).resolve().parent
+    unpacked=Path(sys._MEIPASS).resolve()
+    return unpacked not in (exe_dir,(exe_dir/"_internal").resolve())
+
+def interactive_mode():
+    print("AWQM "+__version__+" - portable development preview")
+    print("1. Synthetic dashboard (no SSH)")
+    print("2. Fixture collection engine (no SSH)")
+    print("0. Exit")
+    print("Do not run this portable executable as administrator.")
+    while True:
+        try:choice=input("Select 1, 2 or 0: ").strip()
+        except (EOFError,KeyboardInterrupt):return None
+        if choice in ("0","1","2"):return {"0":None,"1":"--demo","2":"--engine-demo"}[choice]
 
 def main():
     if sys.argv[1:] == ["--version"]:
@@ -37,14 +56,28 @@ def main():
             "cryptography_openssl": backend.openssl_version_text(),
         }))
         return
-    name=Path(sys.executable).name.lower() if getattr(sys,"frozen",False) else ""
-    if name=="awqm_service.exe":
+    portable = portable_runtime()
+    name = Path(sys.executable).name.lower() if getattr(sys,"frozen",False) else ""
+    service_entry=name=="awqm_service.exe" or sys.argv[1:2]==["--service"]
+    manager_entry=name=="awqm_manager.exe" or sys.argv[1:2]==["--manager"]
+    if service_entry:
+        if sys.argv[1:2]==["--service"]:sys.argv.pop(1)
+        if portable and sys.argv[1:]!=["--smoke-test"]:
+            raise SystemExit("Portable EXE is not a Windows SCM host. Use the protected legacy onedir build.")
         from awqm.winservice import main as service_main
         service_main();return
-    if name=="awqm_manager.exe" or sys.argv[1:2]==["--manager"]:
-        if name!="awqm_manager.exe":sys.argv.pop(1)
+    if manager_entry:
+        if sys.argv[1:2]==["--manager"]:sys.argv.pop(1)
+        if portable and sys.argv[1:] not in (["smoke-test"],["--help"],["-h"]):
+            raise SystemExit("Privileged service management is disabled in the portable EXE. Use the protected legacy onedir build.")
         from awqm.manager import main as manager_main
         manager_main();return
+    interactive=False
+    if portable and len(sys.argv)==1 and sys.stdin is not None and sys.stdin.isatty():
+        selection=interactive_mode()
+        if selection is None:return
+        sys.argv.append(selection)
+        interactive=True
     if len(sys.argv)>1 and sys.argv[1]=="--stage-package":
         sys.argv.pop(1)
         from awqm.package_stage import main as stage_main
@@ -93,7 +126,7 @@ def main():
         from awqm.engine_demo import serve_engine as run_demo
     else:
         from awqm.web import serve as run_demo
-    run_demo(args.port, args.smoke_test)
+    run_demo(args.port, args.smoke_test, open_browser=interactive)
 
 if __name__=="__main__":
     main()

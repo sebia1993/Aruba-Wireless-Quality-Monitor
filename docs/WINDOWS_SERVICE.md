@@ -6,6 +6,20 @@ enables the optional HTTPS listener. Additional local attestations enable
 the corresponding quality metrics and detail collection. See
 [service HTTPS setup](DIAGNOSTIC_WEB.md) and [Radio validation](FIELD_VALIDATION.md).
 
+## Portable distribution restriction
+
+The single-executable portable preview is **not** a qualified Windows service host. Do not elevate it or register it with SCM. Its manager/service switches support import smoke tests only. Onefile extraction and the bootloader process model require separate security and lifecycle qualification. The existing protected onedir development path remains available from source:
+
+```powershell
+python -m pip install -r requirements-build.txt
+python -m PyInstaller --noconfirm --clean --onedir --name AWQM --hidden-import win32timezone --add-data "awqm/static;awqm/static" launcher.py
+Copy-Item dist\AWQM\AWQM.exe dist\AWQM\AWQM_Service.exe
+Copy-Item dist\AWQM\AWQM.exe dist\AWQM\AWQM_Manager.exe
+Copy-Item VERSION.txt,README.md -Destination dist\AWQM
+```
+
+Only a locally approved, administrator-protected onedir installation may be considered for the following **unqualified** service procedures. Preserve the existing dedicated account and ACL controls.
+
 ## Prerequisites
 
 Install the complete ZIP folder as C:/Program Files/AWQM with normal

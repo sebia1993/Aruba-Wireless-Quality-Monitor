@@ -15,6 +15,7 @@ from zipfile import ZipFile
 
 SQLITE_URL = "https://www.sqlite.org/2026/sqlite-dll-win-x64-3540100.zip"
 SQLITE_ARCHIVE_DIGEST = "c2d09c8babb9399277055c057c97a53f1ffd7c5f11d0c1f2118ffdfa39f2daa4"
+SQLITE_DLL_SHA256 = "4b59d3cded9dc1608544160f3b4b10ac974c6ac0d6ffc23064e5f4c8dbd05aea"
 EXPECTED = {
     "python": "3.14.10",
     "sqlite": "3.54.1",
@@ -57,6 +58,18 @@ def verify_report(report):
         if report.get(name) != expected:
             raise ValueError(f"Unexpected {name}: {report.get(name)!r}, expected {expected!r}")
 
+def embedded_sqlite_digest(executable):
+    from PyInstaller.archive.readers import CArchiveReader
+
+    archive = CArchiveReader(str(executable))
+    matches = [name for name in archive.toc if name.replace("\\", "/").rsplit("/", 1)[-1].lower() == "sqlite3.dll"]
+    if len(matches) != 1:
+        raise ValueError("Expected one embedded SQLite DLL")
+    digest = hashlib.sha256(archive.extract(matches[0])).hexdigest()
+    if digest != SQLITE_DLL_SHA256:
+        raise ValueError("Embedded SQLite DLL differs from the verified vendor build")
+    return digest
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -65,6 +78,7 @@ def main():
     verify = actions.add_parser("verify")
     verify.add_argument("executable", type=Path)
     verify.add_argument("report", type=Path)
+    verify.add_argument("--onefile", action="store_true", help="Verify the SQLite DLL embedded in the portable EXE")
     args = parser.parse_args()
     if args.action == "prepare":
         prepare(args.destination)
@@ -72,6 +86,8 @@ def main():
     payload = subprocess.check_output([args.executable.resolve(), "--runtime-info"], text=True, timeout=90)
     report = json.loads(payload)
     verify_report(report)
+    if args.onefile:
+        report["embedded_sqlite3_sha256"] = embedded_sqlite_digest(args.executable)
     args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
