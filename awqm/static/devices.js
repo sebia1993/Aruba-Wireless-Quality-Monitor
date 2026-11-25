@@ -51,6 +51,7 @@ function render() {
     "전환 준비 중 · 새 로컬 조회 차단 · SSH 종료 확인 필요"):"로컬 조회 요청 가능 · 실제 접속 전 수집 권한 확인";
   $("prepare-handoff").disabled=busy;
   $("enable-local").disabled=busy||!snapshot.handoff_pending||snapshot.local_ownership!=="idle";
+  $("open-service-dashboard").disabled=busy||!snapshot.handoff_pending||snapshot.local_ownership!=="idle";
   $("test").disabled=busy||!!snapshot.handoff_pending;
   $("save").disabled=busy||!!snapshot.handoff_pending;
   const cards=$("cards");cards.replaceChildren();
@@ -98,10 +99,26 @@ function form(action) {
     password:$("password").value,remember:$("remember").checked,fingerprint:$("fingerprint").value.trim(),
     known_hosts:$("known_hosts").value.trim()};
 }
+async function openServiceDashboard() {
+  if(busy||!snapshot?.handoff_pending||snapshot.local_ownership!=="idle")return;
+  busy=true;render();
+  try {
+    const result=await api({action:"service_dashboard"});
+    if(!result.url){status("승인된 HTTPS 운영 주소를 확인할 수 없습니다. 서비스 상태 또는 사내 승인 주소 설정을 확인하세요.");return;}
+    const url=new URL(result.url);
+    if(url.protocol!=="https:"||url.username||url.password||url.pathname!=="/"||url.search||url.hash)
+      throw Error("승인된 HTTPS 운영 주소가 아닙니다.");
+    // A normal top-level navigation, not a fetch/proxy. No local settings
+    // token, credentials or observation data is appended to the destination.
+    // The local page's Referrer-Policy is no-referrer.
+    location.assign(url.href);
+  }catch(error){status(error.message);}
+  finally{busy=false;render();}
+}
 async function act(data, message, after) {
   if(busy)return;
   busy=true;
-  const controls=["test","save","stop","remove","default-account","save-interval","save-alerts","slot","observed-slot","prepare-handoff","enable-local"];
+  const controls=["test","save","stop","remove","default-account","save-interval","save-alerts","slot","observed-slot","prepare-handoff","enable-local","open-service-dashboard"];
   for(const id of controls)$(id).disabled=true;
   try {
     await api(data);status(message);
@@ -129,6 +146,7 @@ $("next").addEventListener("click",()=>{page++;refresh();});
 $("refresh").addEventListener("click",refresh);
 $("prepare-handoff").addEventListener("click",()=>act({action:"prepare_handoff"},"서비스 전환 준비를 요청했습니다. SSH 종료 상태를 확인하세요."));
 $("enable-local").addEventListener("click",()=>act({action:"enable_local"},"로컬 조회 요청을 허용했습니다. 자동 접속은 하지 않습니다."));
+$("open-service-dashboard").addEventListener("click",openServiceDashboard);
 $("test").addEventListener("click",()=>act(form("test"),"연결 테스트를 요청했습니다.",()=>{resetSearch();show("observations");}));
 $("save").addEventListener("click",()=>act(form("save"),"장비를 저장하고 수집을 요청했습니다.",()=>{resetSearch();show("observations");}));
 $("stop").addEventListener("click",()=>act({action:"stop",id:selected},"조회 중지를 요청했습니다."));

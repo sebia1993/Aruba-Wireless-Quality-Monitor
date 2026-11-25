@@ -7,6 +7,7 @@ import time
 
 from .collection_owner import CollectionBusy
 from .device_monitor import DeviceMonitor
+from .desktop_endpoint import dashboard_url
 from .device_profiles import DeviceProfile, Profiles
 
 SLOTS = tuple(f"WLC-{i}" for i in range(1, 5))
@@ -54,12 +55,13 @@ FAILURES = frozenset(("SSH 키 불일치", "SSH 키 미확인", "인증 실패",
 
 class DeviceWeb:
     """Share one profile store and monitor across all tabs of the desktop process."""
-    def __init__(self, profiles=None, monitor=None):
+    def __init__(self, profiles=None, monitor=None, *, service_endpoint=None):
         self.profiles = profiles if profiles is not None else Profiles()
         self.monitor = monitor if monitor is not None else DeviceMonitor()
         self.lock = RLock()
         self.closed = False
         self.handoff_pending = False
+        self.service_endpoint = service_endpoint
         self.interval = self.profiles.poll_interval()
         self.alerts_enabled = self.profiles.alerts_enabled()
         self.monitored = set()
@@ -161,6 +163,19 @@ class DeviceWeb:
                         or any(ord(ch) < 32 or ord(ch) == 127 for ch in query)):
                     raise ValueError("검색 범위를 확인하세요.")
                 return self._snapshot(None, table, page, query=query.strip())
+            if action == "service_dashboard":
+                if set(data) != {"action"}:
+                    raise ValueError("운영 화면 요청을 확인하세요.")
+                # Resolve only after an explicit handoff and confirmed local drain.
+                # Never accept a URL, proxy credentials, probe WLCs, or start SCM.
+                if not self.handoff_pending or self._ownership() != "idle":
+                    raise CollectionBusy("local handoff not ready", reason="handoff_pending")
+                try:
+                    value = self.service_endpoint() if self.service_endpoint else None
+                    endpoint = dashboard_url(value) if value is not None else None
+                except (OSError, ValueError, RuntimeError):
+                    endpoint = None
+                return {"url": endpoint}
             if action in ("prepare_handoff", "enable_local"):
                 if set(data) != {"action"}:
                     raise ValueError("수집 전환 요청을 확인하세요.")

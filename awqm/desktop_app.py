@@ -33,7 +33,7 @@ class Dashboard:
             return approved_url
         if self.demo_port is None:
             from .device_web import DeviceWeb
-            self.devices = DeviceWeb()
+            self.devices = DeviceWeb(service_endpoint=resolve_service_dashboard)
             self.resources.callback(self.devices.close)
             server = self.resources.enter_context(demo_server(
                 0, settings_token=self.settings_token, devices=self.devices))
@@ -62,6 +62,13 @@ def service_state():
     except pywintypes.error as exc:
         return "missing" if exc.winerror == 1060 else "unknown"
     return {1: "stopped", 2: "starting", 3: "stopping", 4: "running"}.get(state, "other")
+
+
+def resolve_service_dashboard():
+    """Return an approved origin on demand, without making any network requests."""
+    if sys.platform != "win32":
+        return None
+    return approved_endpoint(service_state())
 
 
 def installed_program(portable):

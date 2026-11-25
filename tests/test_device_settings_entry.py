@@ -15,7 +15,7 @@ class DeviceSettingsEntryTests(unittest.TestCase):
     def test_browser_capability_never_exposes_password_or_token(self):
         opener = build_opener(ProxyHandler({}))
         with TemporaryDirectory() as root:
-            with patch("awqm.device_web.Profiles", return_value=Profiles(root)):
+            with patch("awqm.device_web.Profiles", return_value=Profiles(root)), patch("awqm.desktop_app.resolve_service_dashboard", return_value="https://ops.example:8443/") as resolve:
                 with Dashboard() as desktop:
                     base = desktop.select(None)
                     url = urlsplit(desktop.browser_url(desktop.local_devices()))
@@ -53,8 +53,23 @@ class DeviceSettingsEntryTests(unittest.TestCase):
                         self.assertTrue(json.load(response)["handoff_pending"])
                     with request(base[:-1], token, read) as response:
                         self.assertTrue(json.load(response)["handoff_pending"])
+                    route = {"action":"service_dashboard"}
+                    for origin, key in ((base[:-1], "wrong"), ("http://outside.invalid", token)):
+                        with self.assertRaises(HTTPError) as result:
+                            request(origin, key, route)
+                        self.assertEqual(result.exception.code, 403)
+                        result.exception.close()
+                    resolve.assert_not_called()
+                    with request(base[:-1], token, route) as response:
+                        self.assertEqual(json.load(response), {"url":"https://ops.example:8443/"})
+                    resolve.assert_called_once_with()
                     with request(base[:-1], token, {"action":"enable_local"}) as response:
                         self.assertFalse(json.load(response)["handoff_pending"])
+                    with self.assertRaises(HTTPError) as result:
+                        request(base[:-1], token, route)
+                    self.assertEqual(result.exception.code, 409)
+                    result.exception.close()
+                    resolve.assert_called_once_with()
                     search = {"action":"search","table":"AP","query":"test","page":0}
                     for origin, key in ((base[:-1], "wrong"), ("http://outside.invalid", token)):
                         with self.assertRaises(HTTPError) as result:

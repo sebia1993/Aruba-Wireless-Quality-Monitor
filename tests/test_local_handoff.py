@@ -53,8 +53,14 @@ class LocalHandoffTests(unittest.TestCase):
                 return SlowClose(int(profile.id[-1]))
 
             monitor = DeviceMonitor(factory, owner_factory=lease, interval=600)
-            web = DeviceWeb(Profiles(root), monitor)
+            resolutions = []
+            def endpoint():
+                resolutions.append(True)
+                return "https://ops.example:8443/"
+            web = DeviceWeb(Profiles(root), monitor, service_endpoint=endpoint)
             try:
+                with self.assertRaises(CollectionBusy):
+                    web.dispatch({"action":"service_dashboard"})
                 web.dispatch(request(1))
                 web.dispatch(request(2))
                 until(lambda: len(calls) == 2)
@@ -63,6 +69,9 @@ class LocalHandoffTests(unittest.TestCase):
                 self.assertTrue(closing.wait(2))
                 self.assertEqual(monitor.ownership_state(), "draining")
                 self.assertTrue(lock.locked())
+                with self.assertRaises(CollectionBusy):
+                    web.dispatch({"action":"service_dashboard"})
+                self.assertEqual(resolutions, [])
                 for action in ("save", "test"):
                     with self.assertRaises(CollectionBusy) as caught:
                         web.dispatch(request(3, action))
@@ -85,7 +94,12 @@ class LocalHandoffTests(unittest.TestCase):
                 # Handoff remains latched even after the last close.
                 with self.assertRaises(CollectionBusy):
                     web.dispatch(request(3))
+                self.assertEqual(web.dispatch({"action":"service_dashboard"}),
+                                 {"url":"https://ops.example:8443/"})
+                self.assertEqual(resolutions, [True])
                 web.dispatch({"action":"enable_local"})
+                with self.assertRaises(CollectionBusy):
+                    web.dispatch({"action":"service_dashboard"})
                 self.assertEqual(len(calls), 2)
                 # Explicit enable is not a service lease, nor a grant of access.
                 with lease():
@@ -112,8 +126,34 @@ class LocalHandoffTests(unittest.TestCase):
                 self.assertEqual(result["local_ownership"], "close_unconfirmed")
                 with self.assertRaises(CollectionBusy):
                     web.dispatch({"action":"enable_local"})
-                for action in ("prepare_handoff","enable_local"):
+                with self.assertRaises(CollectionBusy):
+                    web.dispatch({"action":"service_dashboard"})
+                for action in ("prepare_handoff","enable_local","service_dashboard"):
                     with self.assertRaises(ValueError):
                         web.dispatch({"action":action,"force":True})
+            finally:
+                web.close()
+
+    def test_endpoint_is_fail_closed_and_not_caller_supplied(self):
+        with TemporaryDirectory() as root:
+            monitor = DeviceMonitor()
+            web = DeviceWeb(Profiles(root), monitor)
+            try:
+                web.dispatch({"action":"prepare_handoff"})
+                self.assertEqual(web.dispatch({"action":"service_dashboard"}), {"url":None})
+                for bad in ("http://ops.example/", "https://user@ops.example/",
+                            "https://ops.example/#settings=secret", "https://ops.example/path"):
+                    web.service_endpoint = lambda: bad
+                    self.assertEqual(web.dispatch({"action":"service_dashboard"}), {"url":None})
+                def denied():
+                    raise PermissionError("protected configuration")
+                web.service_endpoint = denied
+                self.assertEqual(web.dispatch({"action":"service_dashboard"}), {"url":None})
+                with self.assertRaises(ValueError):
+                    web.dispatch({"action":"service_dashboard","url":"https://ops.example/"})
+                web.service_endpoint = lambda: "https://Ops.Example:8443"
+                self.assertEqual(web.dispatch({"action":"service_dashboard"}),
+                                 {"url":"https://ops.example:8443/"})
+                self.assertEqual(web.profiles.list(), [])
             finally:
                 web.close()

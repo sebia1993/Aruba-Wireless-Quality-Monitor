@@ -128,6 +128,9 @@ def verify(output):
             page.locator("#device-nav [data-view=overview]").click()
             page.locator("#prepare-handoff").click()
             expect(page.locator("#handoff-status")).to_contain_text("전환 준비 완료")
+            expect(page.locator("#open-service-dashboard")).to_be_enabled()
+            page.locator("#open-service-dashboard").click()
+            expect(page.locator("#notice")).to_contain_text("승인된 HTTPS 운영 주소를 확인할 수 없습니다")
             page.locator("#device-nav [data-view=settings]").click()
             expect(page.locator("#save")).to_be_disabled()
             expect(page.locator("#test")).to_be_disabled()
@@ -149,11 +152,32 @@ def verify(output):
                 raise RuntimeError("Profile removal or browser execution failed")
             if page.evaluate("document.documentElement.scrollWidth > innerWidth"):
                 raise RuntimeError("Mobile layout overflows")
+            page.locator("#device-nav [data-view=overview]").click()
+            expect(page.locator("#open-service-dashboard")).to_be_disabled()
+            page.locator("#prepare-handoff").click()
+            expect(page.locator("#open-service-dashboard")).to_be_enabled()
+            devices.service_endpoint = lambda: "https://ops.example:8443/"
+            navigations = []
+            def intercept(route):
+                navigations.append((route.request.url, route.request.all_headers()))
+                route.fulfill(status=200, content_type="text/html", body="<h1>Fixture service login</h1>")
+            page.route("https://ops.example:8443/", intercept)
+            page.locator("#open-service-dashboard").click()
+            expect(page).to_have_url("https://ops.example:8443/")
+            expect(page.locator("h1")).to_have_text("Fixture service login")
+            if len(navigations) != 1:
+                raise RuntimeError("Expected exactly one explicit service navigation")
+            url, headers = navigations[0]
+            if token in url or token in str(headers) or "x-awqm-settings" in headers or "referer" in headers:
+                raise RuntimeError("Local capability or referrer leaked across service boundary")
+            if len(devices.monitor.requests) != 2:
+                raise RuntimeError("Service navigation initiated local collection")
             result = {"status":"pass","desktop_and_mobile":True,"direct_web_registration":True,
                       "browser_close_keeps_collection":True,"account_reuse":True,
                       "password_not_returned_to_form":True,"persisted_interval":True,"stop_and_remove":True,
                       "persisted_alert_preference":True,"deduplicated_alert_log":True,
-                      "cached_all_wlc_search":True,"explicit_local_handoff":True}
+                      "cached_all_wlc_search":True,"explicit_local_handoff":True,
+                      "approved_service_navigation":True}
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")
             print(json.dumps(result))
         finally:
