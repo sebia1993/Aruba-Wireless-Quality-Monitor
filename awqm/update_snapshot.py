@@ -9,13 +9,12 @@ from pathlib import Path
 from uuid import uuid4
 from contextlib import contextmanager
 import hashlib,json,os,re,shutil,sqlite3,stat,time
-from .package_stage import stage,digest,RESERVED,REQUIRED
+from .package_stage import stage,digest,RESERVED,validated_program_version as _validate_program
 from .maintenance import write_json
 
 STATE_DIRS=("config","secrets","data","logs")
 MAX_FILES=20000
 MAX_BYTES=500*1024**3
-VERSION=re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-dev)?$")
 HASH=re.compile(r"^[0-9a-f]{64}$")
 FORMAT="awqm-offline-update-v1"
 
@@ -134,14 +133,6 @@ def _inventory_matches(root,files,dirs,state=False,include_association=False,che
 def _file_manifest(root,protect=None):
     _,files,dirs=_walk(root,protect)
     return {"directories":dirs,"files":{rel:{"size":v[0],"sha256":digest(root/rel)} for rel,v in sorted(files.items())}}
-
-def _validate_program(root):
-    names={p.name.casefold() for p in root.iterdir() if p.is_file()}
-    if not {"awqm.exe","awqm_service.exe","awqm_manager.exe","version.txt"}<=names or not (root/"_internal").is_dir():
-        raise ValueError("installed program incomplete")
-    version=(root/"VERSION.txt").read_text(encoding="utf-8").strip()
-    if not VERSION.fullmatch(version):raise ValueError("invalid installed version")
-    return version
 
 def _check_manifest_records(root,manifest,protect=None,check_db=False):
     if not isinstance(manifest,dict) or set(manifest)!={"directories","files"}:

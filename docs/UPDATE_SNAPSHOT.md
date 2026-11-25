@@ -1,4 +1,4 @@
-# Stopped-service offline update preparation (v0.24)
+# Prepare the stopped service for an offline update
 
 This is a development feature for a local authorized Windows administrator.
 No actual installation, replacement, activation or live rollback is performed
@@ -11,15 +11,18 @@ preparing. Do not start AWQM, rotate credentials, change the local config,
 run another updater or modify the service data during preparation.
 The manager verifies the registered SCM binary path/service account and holds
 the same exclusive service-instance guard used before WLC/DB access.
-Obtain the candidate ZIP and expected SHA-256 from a trusted independent
-channel. SHA-256 is integrity evidence, not publisher authentication.
+Run `AWQM-Setup.exe /ALLUSERS` on the existing system installation to prepare the new release. Use the new external manager to prepare the snapshot, including when upgrading a v0.44 or earlier three-executable installation. Verify the setup and the service package against the approved release and internal-package digests.
 
 ```powershell
-AWQM_Manager.exe status
-AWQM_Manager.exe prepare-update --id update-001 --archive D:\Approved\AWQM_0.24.0-dev_Win11_x64.zip --sha256 <trusted-digest>
-AWQM_Manager.exe verify-update --id update-001
-AWQM_Manager.exe restore-update-copy --id update-001 --output-id recovery-001
+$manager = Join-Path $env:ProgramFiles 'AWQM Setup\Candidates\0.45.0\AWQM.exe'
+$package = Join-Path $env:ProgramFiles 'AWQM Setup\Packages\0.45.0\AWQM_0.45.0_Win11_x64.zip'
+$trustedZipSha256 = Read-Host 'Approved SHA-256 of the service ZIP'
+& $manager --manager status
+& $manager --manager prepare-update --id update-001 --archive $package --sha256 $trustedZipSha256
+& $manager --manager verify-update --id update-001
+& $manager --manager restore-update-copy --id update-001 --output-id recovery-001
 ```
+
 An existing association.db requires the explicit --include-association-history
 option after local privacy approval. It is not copied into normal daily/weekly
 archives. The pre-update bundle stores a temporary protected rollback copy,

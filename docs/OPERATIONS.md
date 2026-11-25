@@ -26,14 +26,19 @@ connection status and queue counts are separate. Disk protection or service
 failure can make applied status unavailable; never interpret it as drained.
 
 Pausing the configured auth WLC also blocks new personal SSH verification.
-Use an existing authorized admin session, or the elevated Windows manager:
+Use an existing authorized admin session, or an elevated PowerShell session in `%ProgramFiles%\AWQM`.
 ```powershell
-AWQM_Manager.exe collection-status
-AWQM_Manager.exe collection-pause all --revision <current-revision>
-AWQM_Manager.exe collection-status
-AWQM_Manager.exe collection-resume all --revision <current-revision>
+$status = .\AWQM.exe --manager collection-status | ConvertFrom-Json
+.\AWQM.exe --manager collection-pause all --revision $status.desired.revision
 ```
-Use the latest returned revision each time. The manager writes desired
+After maintenance, obtain the current revision again before resuming collection:
+
+```powershell
+$status = .\AWQM.exe --manager collection-status | ConvertFrom-Json
+.\AWQM.exe --manager collection-resume all --revision $status.desired.revision
+```
+
+The manager writes desired
 state only and never initiates WLC SSH. Verify the protected service-status.json
 or web applied status before a maintenance operation. Local ACLs must grant
 the service identity write permission in the protected config directory.

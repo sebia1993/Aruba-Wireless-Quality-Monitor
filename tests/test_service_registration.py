@@ -17,13 +17,16 @@ class ServiceRegistrationTests(unittest.TestCase):
         directory = self.enterContext(tempfile.TemporaryDirectory())
         program = Path(directory) / "AWQM"
         program.mkdir()
-        (program / "AWQM_Service.exe").touch()
+        (program / "AWQM.exe").touch()
+        (program / "_internal").mkdir()
+        (program / "VERSION.txt").write_text("0.45.0", encoding="utf-8")
         self.enterContext(patch.dict(os.environ, {"ProgramFiles": directory}))
         self.enterContext(patch.object(sys, "frozen", True, create=True))
-        self.enterContext(patch.object(sys, "executable", str(program / "AWQM_Manager.exe")))
+        self.enterContext(patch.object(sys, "executable", str(program / "AWQM.exe")))
         for target in ("awqm.windows_update.require_admin", "awqm.windows_security.check_program_acl",
                        "awqm.manager.account_sid", "awqm.manager.check_layout"):
             self.enterContext(patch(target))
+        self.publish_endpoint = self.enterContext(patch("awqm.desktop_endpoint.publish_service_endpoint"))
         self.enterContext(patch.object(manager, "prompt", return_value="fixture"))
         self.cfg = SimpleNamespace(account="fixture")
         self.scm, self.service = object(), object()
@@ -31,7 +34,7 @@ class ServiceRegistrationTests(unittest.TestCase):
         self.transitions = []
         self.api = {}
         for name in ("OpenSCManager", "OpenService", "CreateService", "ChangeServiceConfig",
-                     "ChangeServiceConfig2", "QueryServiceConfig2", "QueryServiceStatus",
+                     "ChangeServiceConfig2", "QueryServiceConfig", "QueryServiceConfig2", "QueryServiceStatus",
                      "CloseServiceHandle", "DeleteService", "StartService"):
             self.api[name] = self.enterContext(patch.object(self.w, name))
         self.api["OpenSCManager"].return_value = self.scm
@@ -44,7 +47,31 @@ class ServiceRegistrationTests(unittest.TestCase):
 
     def create(self, *args):
         self.transitions.append(args[5])
+        self.api["QueryServiceConfig"].return_value = (args[4], args[5], args[6], args[7], None, 0, [], self.cfg.account, "AWQM")
         return self.service
+
+    def test_install_registers_only_quoted_unified_binary_with_service_argument(self):
+        manager.install(self.cfg)
+        self.assertEqual(self.api["CreateService"].call_args.args[7], f'"{sys.executable}" --service')
+        self.publish_endpoint.assert_called_once_with(self.cfg)
+
+    def test_endpoint_configuration_failure_removes_disabled_registration(self):
+        self.publish_endpoint.side_effect = OSError("test")
+        with self.assertRaises(OSError):
+            manager.install(self.cfg, auto=True)
+        self.assertEqual(self.transitions, [self.w.SERVICE_DISABLED])
+        self.api["DeleteService"].assert_called_once_with(self.service)
+
+    def test_activation_refuses_unreconciled_or_modified_service_command(self):
+        manager.install(self.cfg)
+        for command in (f'"{sys.executable}"', f'"{sys.executable}" --service unexpected',
+                        f'"{Path(sys.executable).parent / "AWQM_Service.exe"}"'):
+            self.api["QueryServiceConfig"].return_value = (self.w.SERVICE_WIN32_OWN_PROCESS, self.w.SERVICE_DISABLED, 1,
+                                                          command, None, 0, [], self.cfg.account, "AWQM")
+            for action in ("start", "enable-auto", "enable-manual"):
+                with self.subTest(command=command, action=action), self.assertRaises(ValueError):
+                    manager.control(action)
+        self.api["StartService"].assert_not_called()
 
     def test_registration_stays_disabled_until_recovery_is_read_back(self):
         for auto, final in ((False, self.w.SERVICE_DEMAND_START), (True, self.w.SERVICE_AUTO_START)):

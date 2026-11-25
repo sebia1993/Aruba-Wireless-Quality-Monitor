@@ -4,10 +4,28 @@ from pathlib import Path
 from uuid import uuid4
 from .maintenance import write_json
 
-REQUIRED={"awqm.exe","awqm_service.exe","awqm_manager.exe","version.txt","readme.md","build-dependencies.txt"}
+REQUIRED={"awqm.exe","version.txt","readme.md","build-dependencies.txt"}
+LEGACY_LAUNCHERS = {"awqm_service.exe", "awqm_manager.exe"}
+VERSION_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-dev)?")
 RESERVED=re.compile(r"^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])$",re.I)
 MAX_FILES=12000
 MAX_BYTES=2*1024**3
+
+def uses_unified_launcher(version):
+    if not VERSION_PATTERN.fullmatch(version):
+        raise ValueError("invalid program version")
+    components = tuple(int(part) for part in version.removesuffix("-dev").split("."))
+    return components >= (0, 45, 0)
+
+def validated_program_version(root):
+    names = {entry.name.casefold() for entry in root.iterdir() if entry.is_file()}
+    if not {"awqm.exe", "version.txt"} <= names or not (root / "_internal").is_dir():
+        raise ValueError("installed program incomplete")
+    version = (root / "VERSION.txt").read_text(encoding="utf-8").strip()
+    expected_aliases = set() if uses_unified_launcher(version) else LEGACY_LAUNCHERS
+    if (names & LEGACY_LAUNCHERS) != expected_aliases:
+        raise ValueError("program launcher layout does not match its version")
+    return version
 
 def digest(p):
     h=hashlib.sha256()
@@ -145,8 +163,10 @@ def stage(archive,expected_sha256,destination):
                     shutil.copyfileobj(src,dst,1024*1024)
                 if target.stat().st_size!=i.file_size:raise ValueError("archive length mismatch")
         root=extracted/"AWQM"
-        version=(root/"VERSION.txt").read_text(encoding="utf-8").strip()
-        if not re.fullmatch(r"\d+\.\d+\.\d+(?:-dev)?",version):raise ValueError("invalid package version")
+        version=validated_program_version(root)
+        if uses_unified_launcher(version) and any(
+                p.is_file() and p.suffix.lower() == ".exe" and p.name.lower() != "awqm.exe" for p in root.iterdir()):
+            raise ValueError("unified package must contain one application executable")
         result={"version":version,"sha256":actual,"status":"verified_staged_not_installed",
                 "files":sum(not i.is_dir() for i,_ in members),"production_approved":False}
         write_json(root/"STAGE-RECEIPT.json",result)

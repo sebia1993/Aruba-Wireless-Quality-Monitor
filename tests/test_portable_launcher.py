@@ -44,13 +44,17 @@ class PortableLauncherTests(unittest.TestCase):
                 self.run_args("--manager","status")
                 manager.assert_called_once()
 
-    def test_interactive_explicit_demo_and_exit(self):
-        with patch.object(sys.stdin,"isatty",return_value=True), patch("builtins.input",side_effect=["invalid","2"]), patch("awqm.engine_demo.serve_engine") as engine:
+    def test_no_arguments_open_desktop_without_console_input(self):
+        with patch.object(sys, "platform", "win32"), patch.object(sys, "stdin", None), patch("awqm.desktop_app.run_desktop") as desktop:
             self.run_args()
-            engine.assert_called_once_with(8765,False,open_browser=True)
-        with patch.object(sys.stdin,"isatty",return_value=True), patch("builtins.input",return_value="0"), patch("awqm.web.serve") as demo:
+            desktop.assert_called_once_with(portable=True)
+        with patch.object(sys, "platform", "win32"), patch.object(sys, "_MEIPASS", str(self.exe.parent / "_internal")), patch("awqm.desktop_app.run_desktop") as desktop:
             self.run_args()
-            demo.assert_not_called()
+            desktop.assert_called_once_with(portable=False)
+
+    def test_cli_demo_interrupt_exits_normally(self):
+        with patch("awqm.web.serve", side_effect=KeyboardInterrupt):
+            self.run_args("--demo")
 
     def test_explicit_demo_keeps_browser_opt_in(self):
         with patch("awqm.web.serve") as demo:

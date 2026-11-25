@@ -81,7 +81,7 @@ def inspect(installed,state_root,bundle,ident,program_protect=None,state_protect
     unchanged=False
     try:state_matches(state_root,m,state_protect);unchanged=True
     except (ValueError,OSError,RuntimeError):pass
-    return {"layout":layout,"operational_state_unchanged":unchanged,
+    return {"layout":layout,"operational_state_unchanged":unchanged,"archive_sha256":m["archive_sha256"],
             "pre_start_reverse_allowed":unchanged and layout in ("candidate_installed","switch_interrupted"),
             "old_version":m["old_version"],"new_version":m["new_version"],
             "service_start_performed":False,"live_restore_performed":False}

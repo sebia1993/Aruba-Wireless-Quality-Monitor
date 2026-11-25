@@ -5,7 +5,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 from awqm.storage import Store
 from awqm.model import Radio
-from awqm.update_snapshot import prepare,verify,restore_copy
+from awqm.update_snapshot import _validate_program,prepare,verify,restore_copy
 from awqm.package_stage import digest
 
 class SnapshotTests(unittest.TestCase):
@@ -38,6 +38,17 @@ class SnapshotTests(unittest.TestCase):
     def guard(self):self.guard_calls.append(True)
     def prepare(self,**kw):
         return prepare(self.installed,self.state,self.archive,digest(self.archive),self.dest,self.guard,**kw)
+    def test_installed_layout_accepts_unified_and_rejects_missing_legacy_roles(self):
+        aliases = (self.installed / "AWQM_Service.exe", self.installed / "AWQM_Manager.exe")
+        for alias in aliases:
+            alias.unlink()
+        with self.assertRaises(ValueError):
+            _validate_program(self.installed)
+        (self.installed / "VERSION.txt").write_text("0.45.0\n")
+        self.assertEqual(_validate_program(self.installed), "0.45.0")
+        aliases[0].touch()
+        with self.assertRaises(ValueError):
+            _validate_program(self.installed)
     def test_prepare_and_non_overwriting_recovery(self):
         result=self.prepare()
         self.assertEqual(result["status"],"prepared_not_installed")

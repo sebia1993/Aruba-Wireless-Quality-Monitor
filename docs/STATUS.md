@@ -1,4 +1,8 @@
-# Development and qualification status (v0.44.0)
+# Development and qualification status
+
+The v0.45.0 candidate distributes one offline Windows installer, `AWQM-Setup.exe`. The installed desktop app opens the authorized HTTPS dashboard or a local synthetic dashboard and exposes service management from the same window. The all-users setup stages an update beside an existing service, and its external manager switches the program and SCM command while preserving the dedicated account. Candidate-specific installer, lifecycle, Windows 11 reboot, field and 72-hour evidence must be recorded against the tested package.
+
+## Earlier candidates
 
 The v0.43.0-dev frozen Windows 11 soak missed one coverage check at 240.134 seconds. The standard Radio poll runs every 60 seconds and the association poll every 120 seconds. v0.44 counts fresh association inventories independently while retaining the time-alignment requirement for RF attribution. A separate measured daily rebuild of 5,760,000 observations occupied the foreground store lock for over 130 seconds. The new coordinator runs maintenance in the background and validates the day revision before publishing aggregates. A new candidate requires its own uninterrupted 72-hour qualification.
 

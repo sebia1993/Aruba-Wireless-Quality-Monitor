@@ -437,7 +437,7 @@ function operationsPanel(){
     finally{loading=false;button.disabled=false;if(!expired)await load();}
   }
   refresh.addEventListener("click",load);
-  panel.append(el("h3","수집 보호 및 점검 제어"),el("p","관리자 전용 · 전체 정지 후 새 웹 로그인 불가 시 로컬 AWQM_Manager 사용 · 자동 재개 없음"),refresh,msg,out);
+  panel.append(el("h3","수집 보호 및 점검 제어"),el("p","관리자 전용 · 전체 정지 후 새 웹 로그인 불가 시 로컬 AWQM의 서비스 관리 사용 · 자동 재개 없음"),refresh,msg,out);
   return panel;
 }
 

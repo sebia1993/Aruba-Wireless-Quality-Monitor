@@ -4,6 +4,7 @@ on:
     branches:
       - 'develop/awqm-foundation'
       - 'release/awqm-0.44.0'
+      - 'feature/unified-launcher'
   workflow_dispatch:
 permissions:
   contents: read
@@ -51,26 +52,21 @@ jobs:
         run: python -m PyInstaller --noconfirm --clean --hidden-import win32timezone --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
       - name: Verify actual frozen native component versions
         run: python tools/windows_runtime.py verify dist/AWQM/AWQM.exe native-runtime.json
-      - name: Create Windows service and manager entry points
-        shell: pwsh
-        run: |
-          Copy-Item dist\AWQM\AWQM.exe dist\AWQM\AWQM_Service.exe
-          Copy-Item dist\AWQM\AWQM.exe dist\AWQM\AWQM_Manager.exe
       - name: Frozen service and manager import smoke tests (no SCM or SSH)
         shell: pwsh
         run: |
-          & .\dist\AWQM\AWQM_Service.exe --smoke-test
+          & .\dist\AWQM\AWQM.exe --service --smoke-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & .\dist\AWQM\AWQM_Manager.exe smoke-test
+          & .\dist\AWQM\AWQM.exe --manager smoke-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Frozen offline update option smoke (no SCM)
         shell: pwsh
         run: |
-          & .\dist\AWQM\AWQM_Manager.exe switch-program --help
+          & .\dist\AWQM\AWQM.exe --manager switch-program --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & .\dist\AWQM\AWQM_Manager.exe reverse-program --help
+          & .\dist\AWQM\AWQM.exe --manager reverse-program --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & .\dist\AWQM\AWQM_Manager.exe rollback-data --help
+          & .\dist\AWQM\AWQM.exe --manager rollback-data --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Frozen executable smoke test
         shell: pwsh
@@ -146,6 +142,30 @@ jobs:
           if ($dllDigest -ne '4b59d3cded9dc1608544160f3b4b10ac974c6ac0d6ffc23064e5f4c8dbd05aea') { throw 'Staged SQLite DLL differs from the verified vendor build' }
           python tools/windows_runtime.py verify "$staged/AWQM.exe" staged-runtime.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Prepare Inno Setup 6 compiler
+        shell: pwsh
+        run: |
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (!(Test-Path -LiteralPath $compiler)) {
+            $setup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.4.exe'
+            Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe' -OutFile $setup
+            if ((Get-FileHash -LiteralPath $setup).Hash -ne 'a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c') { throw 'Inno Setup installer digest mismatch' }
+            $proc = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /ALLUSERS' -WindowStyle Hidden -Wait -PassThru
+            if ($proc.ExitCode -ne 0) { throw "Inno Setup installation failed: $($proc.ExitCode)" }
+          }
+          if (!(Test-Path -LiteralPath $compiler)) { throw 'Inno Setup 6 compiler missing' }
+      - name: Build the single offline installer
+        shell: pwsh
+        run: |
+          ./tools/build-installer.ps1 -Payload dist/AWQM -OutputDirectory installer-output
+          $files = @(Get-ChildItem installer-output -Force)
+          if ($files.Count -ne 1 -or $files[0].Name -cne 'AWQM-Setup.exe' -or $files[0].PSIsContainer) { throw 'Unexpected delivery layout' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AWQM-unified-installer
+          path: installer-output/AWQM-Setup.exe
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: AWQM-Windows-dev-x64
@@ -161,6 +181,53 @@ jobs:
             ssh-validation-result.json
           if-no-files-found: error
           retention-days: 3
+
+  installed-app:
+    needs: windows
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+      - uses: actions/download-artifact@v4
+        with:
+          name: AWQM-unified-installer
+          path: installer
+      - name: Open default setup with a fresh standard user and zero UI input
+        shell: pwsh
+        run: ./tools/hosted_default_install.ps1 -Installer (Resolve-Path installer/AWQM-Setup.exe)
+      - name: Install the current-user package and open its Start menu entry
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem installer -Force)
+          if ($files.Count -ne 1 -or $files[0].Name -cne 'AWQM-Setup.exe') { throw 'Unexpected installer contents' }
+          $app = Join-Path $env:LOCALAPPDATA 'Programs\AWQM\AWQM.exe'
+          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Aruba Wireless Quality Monitor.lnk'
+          if ((Test-Path -LiteralPath $app) -or (Test-Path -LiteralPath $shortcut)) { throw 'Existing installation on fresh runner' }
+          $proc = Start-Process -FilePath $files[0].FullName -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER' -WindowStyle Hidden -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "Application installation failed: $($proc.ExitCode)" }
+          $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+          if (!(Test-Path -LiteralPath $shortcut) -or $link.Arguments) { throw 'Normal Start menu entry missing or incorrect' }
+          python -c "import os, sys; sys.exit(0 if os.path.samefile(sys.argv[1],sys.argv[2]) else 1)" "$($link.TargetPath)" "$app"
+          if ($LASTEXITCODE -ne 0) { throw 'Start menu shortcut points to a different program' }
+          $version = (& $app --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $version -ne (Get-Content VERSION.txt -Raw).Trim()) { throw 'Installed executable version mismatch' }
+          & $app --demo --smoke-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m tools.installed_app_validation "$shortcut" "$app"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $registration = @(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName -like 'Aruba Wireless Quality Monitor*' -and $_.DisplayVersion -eq $version })
+          if ($registration.Count -ne 1) { throw 'Current-user uninstall registration missing' }
+          python -c "import os, sys; sys.exit(0 if os.path.samefile(sys.argv[1],sys.argv[2]) else 1)" "$($registration[0].InstallLocation)" (Split-Path $app)
+          if ($LASTEXITCODE -ne 0) { throw 'Uninstall registration points to a different program' }
+          $uninstaller = $registration[0].UninstallString.Trim('"')
+          $proc = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -WindowStyle Hidden -Wait -PassThru
+          if ($proc.ExitCode -ne 0 -or (Test-Path -LiteralPath $app) -or (Test-Path -LiteralPath $shortcut)) { throw 'Uninstall did not remove installed app and shortcut' }
 
   service-lifecycle:
     needs: windows
@@ -191,8 +258,8 @@ jobs:
           $buildId = $Matches[1]
           $build = gh run view $buildId --json name,headSha,headBranch,jobs | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $build.name -ne 'AWQM Windows full qualification' -or $build.headBranch -ne $env:GITHUB_REF_NAME) { throw 'Different candidate workflow or branch' }
-          $passed = @($build.jobs | Where-Object { $_.name -in @('windows','browser-ui','dependency-audit') -and $_.conclusion -eq 'success' })
-          if ($passed.Count -ne 3 -or $build.headSha -cnotmatch '^[0-9a-f]{40}$') { throw 'Candidate qualifications incomplete' }
+          $passed = @($build.jobs | Where-Object { $_.name -in @('windows','installed-app','browser-ui','dependency-audit') -and $_.conclusion -eq 'success' })
+          if ($passed.Count -ne 4 -or $build.headSha -cnotmatch '^[0-9a-f]{40}$') { throw 'Candidate qualifications incomplete' }
           $sourceSha = $build.headSha
           git merge-base --is-ancestor $sourceSha HEAD
           if ($LASTEXITCODE -ne 0) { throw 'Candidate is not an ancestor' }

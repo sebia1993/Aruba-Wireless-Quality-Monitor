@@ -80,7 +80,7 @@ def check_layout(cfg,require_credentials=True):
     return sid
 
 
-def check_program_acl(path):
+def check_program_acl(path, *, trust_current_owner=True):
     """Conservative administrator-owned executable tree check.
 
     Read/execute grants are permitted to other principals; grants of write,
@@ -90,7 +90,9 @@ def check_program_acl(path):
     import win32security
     sd=win32security.GetNamedSecurityInfo(str(path),win32security.SE_FILE_OBJECT,
         win32security.OWNER_SECURITY_INFORMATION|win32security.DACL_SECURITY_INFORMATION)
-    trusted={"S-1-5-18","S-1-5-32-544",current_sid()}
+    trusted={"S-1-5-18","S-1-5-32-544"}
+    if trust_current_owner:
+        trusted.add(current_sid())
     try:
         sid,_,_=win32security.LookupAccountName(None,"NT SERVICE\\TrustedInstaller")
         trusted.add(win32security.ConvertSidToStringSid(sid))

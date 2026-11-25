@@ -1,4 +1,4 @@
-# Explicit offline post-start data rollback (v0.35)
+# Roll back service data and program after startup
 
 Development feature, not a qualified production recovery procedure. It is
 only for a candidate previously installed by switch-program with the
@@ -25,13 +25,18 @@ They are not merged with the restored database. Obtain explicit privacy
 authorization for any existing association.db before copying or preserving
 it. Keep the original bundle, switch journal, and all rollback folders.
 
+Use the external manager staged by `AWQM-Setup.exe /ALLUSERS`. If the candidate service is running, stop it and check STOPPED before disabling startup.
+
 ```powershell
-AWQM_Manager.exe status
-AWQM_Manager.exe disable-startup
-AWQM_Manager.exe verify-update --id update-001
-AWQM_Manager.exe rollback-data --id update-001 --acknowledge-data-displacement
+$manager = Join-Path $env:ProgramFiles 'AWQM Setup\Candidates\0.45.0\AWQM.exe'
+& $manager --manager status
+& $manager --manager disable-startup
+& $manager --manager verify-update --id update-001
+& $manager --manager rollback-data --id update-001 --acknowledge-data-displacement
 # Add --include-association-history only with separate local authorization.
 ```
+
+After restoration the manager verifies the SCM command for the restored program. A rollback to v0.44 or earlier selects its separate service executable; a unified release uses the installed AWQM.exe with the `--service` argument.
 
 The new recovery trees are verified by exact SHA-256 file manifests and
 SQLite integrity checks before moving anything. The rollback journal records

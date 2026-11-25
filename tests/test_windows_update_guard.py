@@ -2,7 +2,7 @@
 import sys,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from awqm.windows_security import account_sid
 from awqm.windows_update import scm_stopped
 
@@ -48,3 +48,51 @@ class SCMGuardTests(unittest.TestCase):
                     account[0]=cfg.account;binary[0]=str(installed/"other.exe")
                     with self.assertRaises(ValueError):guard()
                 self.assertEqual(closed,["service","scm"])
+
+    def test_unified_binding_is_exact_recoverable_and_restores_legacy_binary(self):
+        with tempfile.TemporaryDirectory() as root:
+            installed = Path(root) / "Program Files" / "AWQM"
+            installed.mkdir(parents=True)
+            (installed / "AWQM.exe").touch()
+            (installed / "_internal").mkdir()
+            (installed / "VERSION.txt").write_text("0.45.0", encoding="utf-8")
+            legacy = f'"{installed / "AWQM_Service.exe"}"'
+            unified = f'"{installed / "AWQM.exe"}" --service'
+            cfg = SimpleNamespace(account="fixture")
+            current = [legacy]
+            fake = SimpleNamespace(SC_MANAGER_CONNECT=1, SERVICE_QUERY_CONFIG=1, SERVICE_CHANGE_CONFIG=2,
+                SERVICE_QUERY_STATUS=4, SERVICE_STOPPED=1, SERVICE_WIN32_OWN_PROCESS=16,
+                SERVICE_AUTO_START=2, SERVICE_DEMAND_START=3, SERVICE_DISABLED=4, SERVICE_NO_CHANGE=0xffffffff,
+                OpenSCManager=Mock(), OpenService=Mock(), CloseServiceHandle=Mock(),
+                QueryServiceStatus=lambda *_: (16,1),
+                QueryServiceConfig=lambda *_:(16,4,1,current[0],None,0,[],cfg.account,"AWQM"),
+                ChangeServiceConfig=Mock())
+            with patch.dict(sys.modules, {"win32service": fake}), patch("awqm.windows_update.account_sid", side_effect=str):
+                with scm_stopped(cfg, installed, require_disabled=True, update_command=True) as guard:
+                    with self.assertRaisesRegex(RuntimeError, "readback"):
+                        guard(sync_command=True)
+                    def apply(service, kind, start, error, command, group, tag, deps, user, password, name):
+                        self.assertEqual((kind, start, error), (fake.SERVICE_NO_CHANGE,)*3)
+                        self.assertEqual((group, tag, deps, user, password, name), (None,0,None,None,None,None))
+                        current[0] = command
+                    fake.ChangeServiceConfig.side_effect = apply
+                    guard(sync_command=True)
+                    self.assertEqual(current[0], unified)
+                    guard(sync_command=True)
+                    self.assertEqual(fake.ChangeServiceConfig.call_count, 2)
+                    for malformed in (unified+" extra", unified.upper(), unified.replace('"','')):
+                        current[0] = malformed
+                        with self.assertRaises(ValueError):
+                            guard()
+                    current[0] = unified
+                    (installed / "VERSION.txt").write_text("0.44.0", encoding="utf-8")
+                    (installed / "AWQM_Service.exe").touch()
+                    with self.assertRaises(ValueError):
+                        guard(sync_command=True)
+                    (installed / "AWQM_Manager.exe").touch()
+                    guard(sync_command=True)
+                    self.assertEqual(current[0], legacy)
+                    current[0] = str(installed / "AWQM_Service.exe")
+                    guard(sync_command=True)
+                    self.assertEqual(current[0], legacy)
+                self.assertTrue(fake.OpenService.call_args.args[2] & fake.SERVICE_CHANGE_CONFIG)

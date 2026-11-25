@@ -1,13 +1,17 @@
-# Offline update preparation
+# Offline service package verification
 
-Use the complete folder ZIP for service staging and rollback. The portable ZIP contains only the standalone executable.
+The public Windows distribution is `AWQM-Setup.exe`. An all-users installation also supplies the program archive and its SHA-256 manifest in `%ProgramFiles%\AWQM Setup\Packages\0.45.0`. On an existing service host it stages the external manager in `%ProgramFiles%\AWQM Setup\Candidates\0.45.0`. Both locations are reserved for local administrator use.
 
-Obtain the folder ZIP and confirm its expected SHA-256 through an independently trusted channel. Service operation also requires the Windows 11 and site qualification recorded in the release notes.
+Verify the installer against the trusted release checksum and confirm the embedded service ZIP digest with your approved source. The service ZIP and installer have different hashes. With an existing system installation and a new staging destination under an existing protected local directory:
 
 ```powershell
-.\AWQM.exe --stage-package .\AWQM_0.44.0_Win11_x64.zip --sha256 $trustedZipSha256 --output C:\AWQM-Updates\v044-staged
+$manager = Join-Path $env:ProgramFiles 'AWQM Setup\Candidates\0.45.0\AWQM.exe'
+$package = Join-Path $env:ProgramFiles 'AWQM Setup\Packages\0.45.0\AWQM_0.45.0_Win11_x64.zip'
+$trustedZipSha256 = Read-Host 'Approved SHA-256 of the service ZIP'
+& $manager --stage-package $package --sha256 $trustedZipSha256 --output 'C:\AWQM-Updates\v045-staged'
 ```
-Set `$trustedZipSha256` to the independently verified 64-character digest of the folder-package ZIP. Use a new destination under an existing protected local parent. The command verifies the copied archive, checks member paths and sizes, and verifies the executable, runtime and documentation layout. Read `STAGE-RECEIPT.json` in the destination and compare its `version` and `sha256` to the expected package. Successful staging returns `status` equal to `verified_staged_not_installed`. The portable single-executable ZIP has a different layout.
+
+Staging verifies the copied archive, executable, runtime, documentation and member paths and sizes. Inspect `STAGE-RECEIPT.json` in the destination and compare its `version` and `sha256` with the expected package. Success returns `verified_staged_not_installed`. For the operator PC entry point see [the installation guide](../README.md).
 
 For a service upgrade, an authorized local administrator verifies the stopped service's rollback bundle, switches the program using the external manager, then tests startup under the dedicated identity. The manager also supports restoration of program and data after candidate startup. Follow [rollback preparation](UPDATE_SNAPSHOT.md), [program switch](PROGRAM_SWITCH.md) and [post-start rollback](DATA_ROLLBACK.md).
 

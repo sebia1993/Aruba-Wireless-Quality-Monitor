@@ -1,10 +1,37 @@
 """Windows SCM host for the explicitly authorized diagnostic service."""
 import sys,threading
+from .package_stage import uses_unified_launcher, validated_program_version
 from .service_config import default_root
 from .service_runtime import run_service
 
 SERVICE_NAME="AWQM"
 DISPLAY_NAME="Aruba Wireless Quality Monitor (diagnostic)"
+
+
+def unified_command(installed):
+    return f'"{installed / "AWQM.exe"}" --service'
+
+
+def installed_command(installed):
+    if uses_unified_launcher(validated_program_version(installed)):
+        return unified_command(installed)
+    return f'"{installed / "AWQM_Service.exe"}"'
+
+
+def registration_command(installed, command):
+    """Recognize only the two supported ImagePaths. Arguments are case-sensitive."""
+    if isinstance(command, str):
+        suffix = " --service"
+        if command.endswith(suffix) and command.removesuffix(suffix).casefold() == f'"{installed / "AWQM.exe"}"'.casefold():
+            return unified_command(installed)
+        legacy = str(installed / "AWQM_Service.exe")
+        if command.casefold() == f'"{legacy}"'.casefold():
+            return f'"{legacy}"'
+        if command.casefold() == legacy.casefold():
+            # Recognize old registrations during offline migration. A path with
+            # spaces has to be re-quoted before it may be activated.
+            return legacy if any(c.isspace() for c in legacy) else f'"{legacy}"'
+    raise ValueError("unexpected AWQM service executable or arguments")
 
 def service_class():
     import win32serviceutil,win32service,servicemanager
@@ -50,7 +77,7 @@ def main():
         cls=service_class()
         print("AWQM Windows service host import passed:",cls._svc_name_,"(no service registration)")
         return
-    if len(sys.argv)!=1:raise SystemExit("AWQM_Service.exe is started by the Windows SCM; use AWQM_Manager.exe")
+    if len(sys.argv)!=1:raise SystemExit("Windows SCM starts AWQM.exe --service. Use AWQM.exe --manager for service management.")
     import servicemanager
     servicemanager.Initialize()
     servicemanager.PrepareToHostSingle(service_class())

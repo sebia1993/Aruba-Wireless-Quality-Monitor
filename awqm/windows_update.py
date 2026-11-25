@@ -11,7 +11,8 @@ from .service_config import safe_path,fixed_local
 from .windows_security import account_sid,check_acl,check_layout,check_program_acl
 from .update_snapshot import prepare,verify,restore_copy,_safe_part,_walk,_path
 from .service_runtime import exclusive
-from .winservice import SERVICE_NAME
+from .winservice import SERVICE_NAME, installed_command, registration_command
+from .package_stage import digest
 from .program_switch import apply,inspect,reverse,locations
 from .data_rollback import rollback
 
@@ -34,31 +35,64 @@ def bundle_path(cfg,ident,create=False):
     return safe_path(root,ident)
 
 @contextmanager
-def scm_stopped(cfg,installed,require_disabled=False):
+def scm_stopped(cfg,installed,require_disabled=False,*,update_command=False):
     import win32service as w
+    if update_command and not require_disabled:
+        raise ValueError("updating the service command requires disabled startup")
     scm=w.OpenSCManager(None,None,w.SC_MANAGER_CONNECT)
     svc=None
     try:
-        svc=w.OpenService(scm,SERVICE_NAME,w.SERVICE_QUERY_CONFIG|w.SERVICE_QUERY_STATUS)
-        def guard():
+        access = w.SERVICE_QUERY_CONFIG | w.SERVICE_QUERY_STATUS
+        if update_command:
+            access |= w.SERVICE_CHANGE_CONFIG
+        svc=w.OpenService(scm,SERVICE_NAME,access)
+        def read_command():
             if w.QueryServiceStatus(svc)[1]!=w.SERVICE_STOPPED:
                 raise RuntimeError("AWQM service must be STOPPED")
             q=w.QueryServiceConfig(svc)
-            expected=str(installed/"AWQM_Service.exe")
-            binary=q[3]
-            if q[0]!=w.SERVICE_WIN32_OWN_PROCESS or os.path.normcase(binary) not in (os.path.normcase(expected),os.path.normcase('"'+expected+'"')):
-                raise ValueError("SCM executable path or service type mismatch")
+            if q[0]!=w.SERVICE_WIN32_OWN_PROCESS:
+                raise ValueError("SCM service type mismatch")
+            command = registration_command(installed, q[3])
             if account_sid(q[7])!=account_sid(cfg.account):
                 raise ValueError("SCM service identity mismatch")
             if q[1] not in (w.SERVICE_AUTO_START,w.SERVICE_DEMAND_START,w.SERVICE_DISABLED):
                 raise ValueError("unexpected SCM start type")
             if require_disabled and q[1]!=w.SERVICE_DISABLED:
                 raise RuntimeError("disable service startup before switching")
+            return command
+        def guard(*, sync_command=False):
+            current = read_command()
+            if not sync_command:
+                return
+            if not update_command:
+                raise ValueError("service command changes were not requested")
+            expected = installed_command(installed)
+            if current != expected:
+                unchanged = w.SERVICE_NO_CHANGE
+                w.ChangeServiceConfig(svc, unchanged, unchanged, unchanged, expected,
+                                      None, 0, None, None, None, None)
+                if read_command() != expected:
+                    raise RuntimeError("service command readback mismatch; retry the offline operation")
         guard()
         yield guard
     finally:
         if svc is not None:w.CloseServiceHandle(svc)
         w.CloseServiceHandle(scm)
+
+
+def switch_candidate(installed, state, bundle, args, guard, program_protect, state_protect):
+    if locations(installed, args.id)[3].exists():
+        # A stopped machine or failed SCM write can leave the new files fully installed.
+        # Reconcile only the exact completed transaction, without repeating its renames.
+        guard()
+        status = inspect(installed, state, bundle, args.id, program_protect, state_protect)
+        if status["layout"] != "candidate_installed" or not status["operational_state_unchanged"]:
+            raise RuntimeError("incomplete or changed program switch; inspect or reverse the transaction")
+        if args.sha256.lower() != status["archive_sha256"] or digest(args.archive) != status["archive_sha256"]:
+            raise ValueError("trusted candidate does not match the completed switch")
+        return {"status": "candidate_already_installed_service_not_started", **status}
+    return apply(installed, state, bundle, args.id, args.archive, args.sha256, guard,
+                 program_protect=program_protect, state_protect=state_protect)
 
 def manage_update(cfg,args):
     require_admin()
@@ -106,10 +140,10 @@ def manage_update(cfg,args):
         # Verify the external manager runtime tree as well as its EXE.
         # The operator must use a dedicated trusted package directory.
         _walk(executable.parent,check_program_acl)
-        with scm_stopped(cfg,installed,require_disabled=True) as guard,exclusive(cfg.root):
+        switching = args.action != "switch-status"
+        with scm_stopped(cfg,installed,require_disabled=True,update_command=switching) as guard,exclusive(cfg.root):
             if args.action=="switch-program":
-                result=apply(installed,cfg.root,bundle,args.id,args.archive,args.sha256,guard,
-                             program_protect=check_program_acl,state_protect=protect)
+                result=switch_candidate(installed,cfg.root,bundle,args,guard,check_program_acl,protect)
             elif args.action=="rollback-data":
                 result=rollback(installed,cfg.root,bundle,args.id,guard,
                     program_protect=check_program_acl,state_protect=protect,
@@ -121,6 +155,10 @@ def manage_update(cfg,args):
             else:
                 guard()
                 result=inspect(installed,cfg.root,bundle,args.id,program_protect=check_program_acl,state_protect=protect)
+            if switching:
+                guard(sync_command=True)
+                from .desktop_endpoint import publish_service_endpoint
+                publish_service_endpoint(cfg)
         print(json.dumps(result,ensure_ascii=False,indent=2))
         print("Service startup remains disabled; review recovery state before any manual activation.")
     else:raise ValueError("unsupported update operation")

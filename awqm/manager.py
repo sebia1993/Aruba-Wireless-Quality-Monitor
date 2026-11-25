@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 from .service_config import default_root,load_config,envelope,fixed_local
 from .windows_security import account_sid,check_identity,check_layout,check_acl
-from .winservice import SERVICE_NAME,DISPLAY_NAME
+from .winservice import SERVICE_NAME,DISPLAY_NAME,installed_command,registration_command,unified_command
 from .association_history import key_path,key_envelope
 from .operations import configured_ops
 from .windows_security import current_sid
@@ -31,6 +31,13 @@ def verify_recovery(w, service):
 def set_start_type(w, service, start_type):
     w.ChangeServiceConfig(service, w.SERVICE_NO_CHANGE, start_type, w.SERVICE_NO_CHANGE,
                           None, None, 0, None, None, None, None)
+
+
+def verify_start_command(w, service):
+    program = fixed_local(Path(os.environ["ProgramFiles"]) / "AWQM")
+    config = w.QueryServiceConfig(service)
+    if config[0] != w.SERVICE_WIN32_OWN_PROCESS or registration_command(program, config[3]) != installed_command(program):
+        raise ValueError("service command does not match the installed AWQM package")
 
 def prompt(label):
     if not sys.stdin.isatty():raise ValueError("interactive console required")
@@ -97,11 +104,14 @@ def install(cfg,auto=False):
     account_sid(cfg.account);check_layout(cfg)
     # The service binary and its bundled libraries must be installed under
     # Program Files, not a mutable downloads/user-writable directory.
-    if not getattr(sys,"frozen",False):raise ValueError("install using packaged AWQM_Manager.exe")
+    if not getattr(sys,"frozen",False):raise ValueError("install using packaged AWQM.exe --manager")
     expected=fixed_local(Path(os.environ["ProgramFiles"])/"AWQM")
-    binary=fixed_local(Path(sys.executable).parent/"AWQM_Service.exe")
-    if binary.parent!=expected or not binary.is_file():raise ValueError("install folder must be Program Files\\AWQM")
+    binary=fixed_local(Path(sys.executable))
+    if binary != expected / "AWQM.exe" or not binary.is_file():raise ValueError("install using Program Files\\AWQM\\AWQM.exe")
     _walk(expected, check_program_acl)
+    command = installed_command(expected)
+    if command != unified_command(expected):
+        raise ValueError("install using the unified AWQM package")
     with ExitStack() as handles:
         scm=w.OpenSCManager(None,None,w.SC_MANAGER_CREATE_SERVICE)
         handles.callback(w.CloseServiceHandle, scm)
@@ -109,7 +119,7 @@ def install(cfg,auto=False):
         try:
             svc=w.CreateService(scm,SERVICE_NAME,DISPLAY_NAME,w.SERVICE_ALL_ACCESS,
                 w.SERVICE_WIN32_OWN_PROCESS,w.SERVICE_DISABLED,
-                w.SERVICE_ERROR_NORMAL,'"'+str(binary)+'"',None,0,None,cfg.account,password)
+                w.SERVICE_ERROR_NORMAL,command,None,0,None,cfg.account,password)
         finally:
             del password
         handles.callback(w.CloseServiceHandle, svc)
@@ -120,6 +130,8 @@ def install(cfg,auto=False):
                 "Actions":recovery_actions(w)})
             w.ChangeServiceConfig2(svc,w.SERVICE_CONFIG_FAILURE_ACTIONS_FLAG,True)
             verify_recovery(w, svc)
+            from .desktop_endpoint import publish_service_endpoint
+            publish_service_endpoint(cfg)
             set_start_type(w, svc, w.SERVICE_AUTO_START if auto else w.SERVICE_DEMAND_START)
         except BaseException:
             try:
@@ -148,6 +160,7 @@ def control(action):
         elif action=="start":
             if state!=w.SERVICE_STOPPED:raise ValueError("service is not stopped")
             verify_recovery(w, svc)
+            verify_start_command(w, svc)
             w.StartService(svc,None);print("Start requested; check status")
         elif action=="stop":
             if state!=w.SERVICE_RUNNING:raise ValueError("service is not running")
@@ -156,6 +169,7 @@ def control(action):
             if action!="enable-auto" and state!=w.SERVICE_STOPPED:raise ValueError("stop service first")
             if action!="disable-startup":
                 verify_recovery(w, svc)
+                verify_start_command(w, svc)
             start_type={"enable-auto":w.SERVICE_AUTO_START,"disable-startup":w.SERVICE_DISABLED,
                         "enable-manual":w.SERVICE_DEMAND_START}[action]
             set_start_type(w, svc, start_type)

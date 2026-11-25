@@ -1,11 +1,6 @@
-# Offline program switch and pre-start reversal (v0.25)
+# Offline service upgrade and pre-start reversal
 
-This development path is deliberately narrower than full update/rollback.
-It is not an automatic installer, migration runner or production release.
-Never use it on an active service. Use a separately verified manager
-package, copied to an administrator-protected local directory outside both
-Program Files/AWQM and ProgramData/AWQM. The actual Windows ACL/SCM lifecycle
-has not been qualified by hosted CI.
+Run `AWQM-Setup.exe /ALLUSERS` on a host with an existing AWQM system installation. Setup stages the external manager and a versioned service archive outside the active program and data directories. This lets Windows release the active executable and libraries during the switch. Use the new external manager for v0.44 and older installations too.
 
 1. Obtain the candidate ZIP and expected digest through the approved
    trusted release channel. Stop the old service and confirm STOPPED.
@@ -34,15 +29,22 @@ has not been qualified by hosted CI.
    started in production. No automatic startup, migration, restart or
    rollback occurs.
 
+Use an elevated PowerShell session. Stop the running service and confirm STOPPED before disabling startup. If already stopped, begin with the status check.
+
 ```powershell
-AWQM_Manager.exe stop
-AWQM_Manager.exe status
-AWQM_Manager.exe disable-startup
-AWQM_Manager.exe prepare-update --id update-001 --archive D:\Approved\candidate.zip --sha256 <trusted-digest>
-AWQM_Manager.exe switch-program --id update-001 --archive D:\Approved\candidate.zip --sha256 <trusted-digest>
-AWQM_Manager.exe switch-status --id update-001
-AWQM_Manager.exe reverse-program --id update-001
+$manager = Join-Path $env:ProgramFiles 'AWQM Setup\Candidates\0.45.0\AWQM.exe'
+$package = Join-Path $env:ProgramFiles 'AWQM Setup\Packages\0.45.0\AWQM_0.45.0_Win11_x64.zip'
+$trustedZipSha256 = Read-Host 'Approved SHA-256 of the service ZIP'
+& $manager --manager stop
+& $manager --manager status
+& $manager --manager disable-startup
+& $manager --manager prepare-update --id update-001 --archive $package --sha256 $trustedZipSha256
+& $manager --manager verify-update --id update-001
+& $manager --manager switch-program --id update-001 --archive $package --sha256 $trustedZipSha256
+& $manager --manager switch-status --id update-001
 ```
+
+The switch updates SCM to the installed package's service command, preserving the registered identity. Once the candidate and service configuration have been checked, an authorized operator can use `& $manager --manager enable-manual` and `& $manager --manager start`. Check the protected service heartbeat. To reverse before starting the candidate or modifying its operational state, use `& $manager --manager reverse-program --id update-001` while disabled and stopped. After a candidate has written operational state, follow [post-start data rollback](DATA_ROLLBACK.md).
 
 Use the same original candidate digest and exact prepared bundle. A
 pseudonymous association history copy still requires explicit local

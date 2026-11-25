@@ -1,5 +1,6 @@
 """Explicit localhost demonstration. Production auth/HTTPS not implemented."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from contextlib import contextmanager
 from pathlib import Path
 import json, tempfile, threading, time, secrets, hmac, sqlite3
 from .storage import Store
@@ -110,16 +111,12 @@ def handler_for(store,engine=None):
             pass
     return Handler
 
-def serve(port=8765,once=False,open_browser=False):
-    # An ephemeral directory makes it impossible to accidentally expose existing operational data.
+@contextmanager
+def demo_server(port):
+    """Own an isolated synthetic store and its refresh worker for one listener."""
     with tempfile.TemporaryDirectory(prefix="awqm-demo-") as root:
         store=Store(root)
         seed(store)
-        if once:
-            snap=store.snapshot()
-            print(json.dumps({"mode":"demo","radios":len(snap["radios"]),
-                              "clients":len(synthetic_clients(snap["radios"]))}))
-            return
         server=ThreadingHTTPServer(("127.0.0.1",port),handler_for(store))
         stopped=threading.Event()
         def refresh():
@@ -127,14 +124,28 @@ def serve(port=8765,once=False,open_browser=False):
                 store.save_batch(synthetic_rows())
         worker=threading.Thread(target=refresh,daemon=True)
         worker.start()
-        print(f"AWQM synthetic demo: http://127.0.0.1:{port}",flush=True)
-        if open_browser:
-            import webbrowser
-            try:webbrowser.open(f"http://127.0.0.1:{port}")
-            except Exception:print("Open the localhost URL above in your browser.",flush=True)
         try:
-            server.serve_forever()
+            yield server
         finally:
             stopped.set()
             worker.join()
             server.server_close()
+
+
+def serve(port=8765,once=False,open_browser=False):
+    if once:
+        with tempfile.TemporaryDirectory(prefix="awqm-demo-") as root:
+            store=Store(root)
+            seed(store)
+            snap=store.snapshot()
+            print(json.dumps({"mode":"demo","radios":len(snap["radios"]),
+                              "clients":len(synthetic_clients(snap["radios"]))}))
+        return
+    with demo_server(port) as server:
+        url=f"http://127.0.0.1:{server.server_port}"
+        print(f"AWQM synthetic demo: {url}",flush=True)
+        if open_browser:
+            import webbrowser
+            try:webbrowser.open(url)
+            except Exception:print("Open the localhost URL above in your browser.",flush=True)
+        server.serve_forever()

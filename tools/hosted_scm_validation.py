@@ -153,13 +153,31 @@ def run(args, report):
     password = secrets.token_urlsafe(24) + "aA1!"
     principal = os.environ["COMPUTERNAME"] + "\\" + account
     sid = provision_account(account, password)
-    manager = installed / "AWQM_Manager.exe"
-    external = candidate / "AWQM_Manager.exe"
     status_file = root / "logs/service-status.json"
     phases = report["verified"]
 
+    def manager_command(root):
+        legacy = root / "AWQM_Manager.exe"
+        return [str(legacy)] if legacy.is_file() else [str(root / "AWQM.exe"), "--manager"]
+
     def manager_run(*argv, outside=False):
-        subprocess.run([str(external if outside else manager), *argv], check=True, timeout=150)
+        subprocess.run([*manager_command(candidate if outside else installed), *argv], check=True, timeout=150)
+
+    def verify_registered_image(binary, *, unified):
+        from awqm.windows_security import account_sid
+        handle = scm.OpenSCManager(None, None, scm.SC_MANAGER_CONNECT)
+        try:
+            service = scm.OpenService(handle, "AWQM", scm.SERVICE_QUERY_CONFIG)
+            try:
+                configuration = scm.QueryServiceConfig(service)
+            finally:
+                scm.CloseServiceHandle(service)
+        finally:
+            scm.CloseServiceHandle(handle)
+        command = f'"{installed / binary}"' + (" --service" if unified else "")
+        require(os.path.normcase(configuration[3]) == os.path.normcase(command),
+                "SCM command does not match the installed package")
+        require(account_sid(configuration[7]) == account_sid(principal), "SCM service account changed")
 
     def heartbeat(started_at):
         if not status_file.exists():
@@ -184,7 +202,8 @@ def run(args, report):
     try:
         provision_fixture(root, principal, sid, password)
         report["phase"] = "baseline registration"
-        interactive_install([str(manager), "install"], password)
+        interactive_install([*manager_command(installed), "install"], password)
+        verify_registered_image("AWQM_Service.exe", unified=False)
         require(scm_info()[1] == scm.SERVICE_STOPPED, "Registration started the service")
         start("baseline running with collection paused")
         stop()
@@ -217,12 +236,19 @@ def run(args, report):
         manager_run("switch-program", *bundle, *archive, outside=True)
         require((installed / "VERSION.txt").read_text(encoding="utf-8").strip() == receipt["version"],
                 "Unexpected installed version")
+        verify_registered_image("AWQM.exe", unified=True)
         phases.append("offline_upgrade")
+        # Exercise the migrated registration before testing a fresh registration.
+        manager_run("enable-manual")
+        start("upgraded service running with its existing registration")
+        stop()
+        phases.append("upgraded_existing_service_started_stopped")
         # Exercise the candidate's own interactive installer and persisted SCM settings.
         manager_run("remove")
         wait_for("service removal", lambda: scm_info() is None)
         report["phase"] = "candidate registration"
-        interactive_install([str(manager), "install"], password)
+        interactive_install([*manager_command(installed), "install"], password)
+        verify_registered_image("AWQM.exe", unified=True)
         manager_run("enable-auto")
         start("candidate running with collection paused")
         stop()
@@ -248,6 +274,7 @@ def run(args, report):
         manager_run("rollback-data", *bundle, "--acknowledge-data-displacement", outside=True)
         require((installed / "VERSION.txt").read_text(encoding="utf-8").strip() == prior,
                 "Rollback did not restore the original version")
+        verify_registered_image("AWQM_Service.exe", unified=False)
         manager_run("enable-manual")
         start("restored version running")
         stop()

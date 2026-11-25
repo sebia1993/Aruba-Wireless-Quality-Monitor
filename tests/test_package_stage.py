@@ -4,11 +4,11 @@ from unittest.mock import patch
 from awqm.package_stage import stage,digest
 
 class StageTests(unittest.TestCase):
-    def package(self,root,extra=(),omit=None):
+    def package(self,root,extra=(),omit=(),version="0.20.0-dev"):
         p=root/"package.zip"
         with zipfile.ZipFile(p,"w") as z:
             for name in ("AWQM.exe","AWQM_Service.exe","AWQM_Manager.exe","VERSION.txt","README.md","BUILD-DEPENDENCIES.txt","_internal/python.dll","docs/guide.md"):
-                if name!=omit:z.writestr("AWQM/"+name,"0.20.0-dev\n" if name=="VERSION.txt" else "fixture")
+                if name not in omit:z.writestr("AWQM/"+name,version+"\n" if name=="VERSION.txt" else "fixture")
             for name,data in extra:
                 if isinstance(name,str):
                     # Preserve raw spelling on Windows during fixture construction.
@@ -31,13 +31,33 @@ class StageTests(unittest.TestCase):
                     z=self.package(p,[(member,"bad")])
                     with self.assertRaises(ValueError):stage(z,digest(z),p/"new")
                     self.assertFalse((p/"new").exists())
-            z=self.package(p,omit="AWQM_Service.exe")
+            z=self.package(p,omit=("AWQM_Service.exe",))
             with self.assertRaises(ValueError):stage(z,digest(z),p/"new")
             z=self.package(p)
             with self.assertRaises(ValueError):stage(z,"0"*64,p/"new")
             i=zipfile.ZipInfo("AWQM/link");i.create_system=3;i.external_attr=(stat.S_IFLNK|0o777)<<16
             z=self.package(p,[(i,"outside")])
             with self.assertRaises(ValueError):stage(z,digest(z),p/"new")
+
+    def test_unified_and_legacy_executable_layouts_follow_version(self):
+        aliases = ("AWQM_Service.exe", "AWQM_Manager.exe")
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            for version in ("0.45.0", "0.45.0-dev", "1.0.0"):
+                with self.subTest(version=version):
+                    package = self.package(parent, omit=aliases, version=version)
+                    destination = parent / version
+                    self.assertEqual(stage(package,digest(package),destination)["version"],version)
+                    self.assertEqual([p.name for p in destination.glob("*.exe")],["AWQM.exe"])
+            for version, omitted in (("0.44.0", aliases), ("0.45.0", ()), ("0.45.0", aliases[:1])):
+                with self.subTest(version=version, omitted=omitted):
+                    package = self.package(parent, omit=omitted, version=version)
+                    with self.assertRaises(ValueError):
+                        stage(package, digest(package), parent / "invalid")
+                    self.assertFalse((parent / "invalid").exists())
+            package = self.package(parent, [("AWQM/Extra.exe", "fixture")], omit=aliases, version="0.45.0")
+            with self.assertRaisesRegex(ValueError, "one application executable"):
+                stage(package, digest(package), parent / "extra-exe")
 
     @unittest.skipUnless(os.name == "nt", "Windows DACL inheritance")
     def test_published_tree_inherits_destination_acl_at_each_depth(self):

@@ -32,7 +32,8 @@ class InstallLayoutTests(unittest.TestCase):
             runtime.mkdir(parents=True)
             library = runtime / "example.dll"
             library.touch()
-            (program / "AWQM_Service.exe").touch()
+            (program / "AWQM.exe").touch()
+            (program / "VERSION.txt").write_text("0.45.0", encoding="utf-8")
 
             def inspect(path):
                 if path.samefile(library):
@@ -40,7 +41,7 @@ class InstallLayoutTests(unittest.TestCase):
 
             with (patch.dict(os.environ, {"ProgramFiles": directory}),
                   patch.object(sys, "frozen", True, create=True),
-                  patch.object(sys, "executable", str(program / "AWQM_Manager.exe")),
+                  patch.object(sys, "executable", str(program / "AWQM.exe")),
                   patch("awqm.windows_update.require_admin"),
                   patch.object(manager, "account_sid"), patch.object(manager, "check_layout"),
                   patch.object(windows_security, "check_program_acl", side_effect=inspect),

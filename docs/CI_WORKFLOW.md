@@ -1,5 +1,7 @@
 # CI/CD lanes — development and qualification
 
+For the unified Windows distribution introduced in v0.45, the full Windows workflow builds and validates one public `AWQM-Setup.exe`. It also produces the internal service archive for the protected update and rollback procedure. The [installation guide](../README.md) covers operator setup. The foundation and portable development branches retain the following validation lanes.
+
 Ordinary development pushes use quick, change-aware Windows source checks:
 runtime dependencies, compile check, explicit leaf test groups, baseline
 and demo smoke. Unknown changes, requirements, broad/shared modules or

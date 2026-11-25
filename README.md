@@ -1,16 +1,20 @@
 # Aruba Wireless Quality Monitor (AWQM)
 
-Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
+Windows 11 x64에서 Aruba 무선 네트워크의 상태를 확인하는 프로그램입니다.
 
-**v0.44.0** · 단말 수는 각 WLC의 최신 연결 관측으로 집계하고, RF 분석에는 Radio와 시각이 일치하는 관측을 사용합니다. 일별 이력 집계 중에도 서비스 하트비트와 수집이 계속됩니다.
-개발 검증은 합성 관측과 루프백 HTTPS를 사용합니다. 운영 적합성 확인에는 전용 Windows 11 서비스 계정·재부팅 시험, 현장 WLC·AAA·Airtime 검증 및 72시간 시험 결과가 필요합니다.
+## 설치하고 대시보드 열기
 
-## Windows 11 x64 패키지
+1. v0.45.0 배포 파일인 **`AWQM-Setup.exe`** 하나를 내려받아 더블클릭합니다. 일반 사용자 권한으로 설치되며 필요한 런타임도 함께 설치됩니다.
+2. 설치가 끝나면 **Aruba Wireless Quality Monitor** 창과 기본 브라우저가 열립니다. 관리자가 승인한 운영 HTTPS 주소가 설정된 PC에서는 기존 계정으로 로그인합니다. 현장 설정이 없는 PC에서는 합성 데이터가 담긴 **모의 대시보드**가 열립니다.
+3. 다음부터는 Windows 시작 메뉴의 **Aruba Wireless Quality Monitor**를 클릭합니다. 브라우저 탭을 닫았다면 앱 창에서 **대시보드 열기**를 누릅니다. 모의 대시보드를 종료하려면 앱 창에서 **닫기**를 누릅니다. 등록된 수집 서비스는 별도로 동작합니다.
 
-- **폴더형** `AWQM_0.44.0_Win11_x64.zip`을 풀면 `AWQM` 폴더에 실행 파일, 서비스·관리 도구, 런타임과 문서가 들어 있습니다. 서비스 시험에는 이 폴더 전체가 필요합니다. [Windows 서비스 안내](docs/WINDOWS_SERVICE.md)
-- **휴대형** `AWQM_Portable_0.44.0_Win11_x64.zip`을 풀면 `AWQM.exe` 하나가 나옵니다. 일반 사용자로 더블클릭해 모의 화면(1), 합성 수집 엔진(2) 또는 종료(0)를 선택합니다. 서비스 등록과 권한이 필요한 관리 작업은 폴더형을 사용하십시오.
+일반 설치 위치는 `%LOCALAPPDATA%\Programs\AWQM`입니다. 일반 사용자가 포트나 설정 파일을 입력할 필요는 없습니다. 이전 v0.44.0에서 제공한 폴더형·휴대형 ZIP은 그 버전의 배포 형식입니다.
 
-두 패키지 모두 `AWQM.exe --version`으로 내장 버전 `0.44.0`을 확인할 수 있습니다.
+### 수집 서비스를 운영하는 관리자
+
+서비스 호스트에서는 `AWQM-Setup.exe /ALLUSERS`로 시스템 설치를 준비합니다. 신규 호스트에는 `%ProgramFiles%\AWQM`에 프로그램이 설치됩니다. 승인된 WLC 설정·호스트 키·인증서와 전용 서비스 계정을 준비한 관리자는 같은 앱에서 서비스를 등록·시작·중지할 수 있습니다. 기존 서비스가 있는 호스트에는 설치 프로그램이 별도 업데이트 후보를 준비합니다. [서비스 설치와 운영](docs/WINDOWS_SERVICE.md) · [기존 설치 업데이트](docs/PROGRAM_SWITCH.md)
+
+운영 적합성 확인에는 현장 WLC·AAA·Airtime 검증, Windows 11 재부팅 후 서비스 자동 시작, 해당 빌드의 72시간 시험 결과가 필요합니다. 버전별 상태는 릴리스 노트에서 확인하세요.
 
 ## 실행 (개발 환경)
 ```sh
@@ -18,7 +22,7 @@ python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 python launcher.py --demo
 ```
-브라우저에서 http://127.0.0.1:8765 를 확인합니다. 명시적 --demo 옵션이 있어야 모의 화면이 실행됩니다. 루프백 전용입니다.
+이 개발 명령은 현재 PC에서만 접근할 수 있는 모의 서버를 띄웁니다. 브라우저에서 `http://127.0.0.1:8765`를 엽니다.
 
 ## 모의 수집 엔진 화면 (네트워크 접속 없음)
 
@@ -42,7 +46,7 @@ Windows EXE에서도 동일하게 `AWQM.exe --validate-cli radio local-output.tx
 
 ## Windows 진단 서비스 (현장 검증 후보 기능)
 
-보호된 onedir 서비스용 폴더 ZIP에만 `AWQM_Service.exe`와 `AWQM_Manager.exe`가 들어 있습니다. 사내 승인, 비관리자 전용 서비스 계정, 보호된 NTFS 폴더, 검증된 WLC Host Key 및 DPAPI 자격 증명을 준비한 뒤 설치합니다. 관리자는 등록 전에 설치 폴더와 런타임 파일의 쓰기 권한을 확인합니다. [서비스 구성 및 검증 절차](docs/WINDOWS_SERVICE.md).
+시스템 설치의 `AWQM.exe`가 Windows 서비스와 관리 작업을 함께 처리합니다. 명령줄에서는 설치 폴더에서 `.\\AWQM.exe --manager --help`로 관리 명령을 확인할 수 있습니다. 사내 승인, 비관리자 전용 서비스 계정, 보호된 NTFS 폴더, 검증된 WLC Host Key 및 DPAPI 자격 증명을 준비한 뒤 설치합니다. 관리자는 등록 전에 설치 폴더와 런타임 파일의 쓰기 권한을 확인합니다. [서비스 구성 및 검증 절차](docs/WINDOWS_SERVICE.md).
 
 ## 진단 서비스의 HTTPS 웹 조회 (선택)
 
@@ -134,7 +138,7 @@ AP 상세에서 원본 7일, 5분 집계 30일, 1시간 집계 365일 조회 및
 
 ## 빌드 의존성 보안 검증
 
-Windows ZIP의 실제 설치 패키지 버전을 별도 CI에서 취약점 조회하고 누락·검사 실패·알려진 취약점은 보안 검증 미통과로 처리합니다. [보안 검증 범위](docs/DEPENDENCY_AUDIT.md).
+Windows 실행 파일에 포함된 의존성 버전을 별도 CI에서 취약점 조회하고 누락·검사 실패·알려진 취약점은 보안 검증 미통과로 처리합니다. [보안 검증 범위](docs/DEPENDENCY_AUDIT.md).
 
 ## SSH 의존성 업데이트 및 로컬 검증
 
@@ -164,31 +168,9 @@ Windows ZIP의 실제 설치 패키지 버전을 별도 CI에서 취약점 조�
 
 별도 Chromium CI에서 실제 로그인, AP 검색/페이지 이동, 상세 및 이력 내보내기, 메뉴 전환, 권한과 세션 만료, WSS 및 두 화면 크기를 합성 데이터로 검사합니다. 브라우저 테스트 도구는 EXE에 포함하지 않습니다. [검증 안내](docs/VALIDATION.md).
 
-## Windows 휴대형 빌드
+## Windows 설치 프로그램 빌드
 
-Windows x64 CPython 3.14.10에서 시작합니다. 준비 명령은 지정한 새 경로에 빌드용 Python을 복사하고 공식 SQLite ZIP의 해시를 검증합니다. 아래 명령은 저장소 루트에서 실행합니다.
-
-```powershell
-$runtime = Join-Path $env:TEMP ('awqm-build-' + [guid]::NewGuid().ToString('N'))
-python tools/windows_runtime.py prepare $runtime
-if ($LASTEXITCODE -ne 0) { throw '빌드용 Python 준비 실패' }
-$env:PYTHONNOUSERSITE = '1'
-$builder = Join-Path $runtime 'python.exe'
-& $builder -m pip install -r requirements-build.txt
-if ($LASTEXITCODE -ne 0) { throw '빌드 의존성 설치 실패' }
-& $builder -m PyInstaller --noconfirm --clean --hidden-import win32timezone --onefile --name AWQM --add-data "awqm/static;awqm/static" launcher.py
-if ($LASTEXITCODE -ne 0) { throw 'EXE 빌드 실패' }
-& $builder tools/windows_runtime.py verify dist/AWQM.exe native-runtime.json --onefile
-```
-검증 결과에는 실행 파일에 포함된 SQLite DLL의 SHA-256이 기록됩니다. [휴대형 Windows 빌드 워크플로](.github/workflows/windows-portable.yml)
-
-- [확정 설계 기준 및 개발 범위](docs/DESIGN.md)
-- [CLI 출력 검증 안내](docs/CLI_VALIDATION.md)
-- [작업 현황 및 검증 게이트](docs/STATUS.md)
-- [DB 저장 및 복구 설계](docs/STORAGE.md)
-
-실제 계정, AP 이름, IP, SSID, CLI 원본, DB 및 인증서를 공개 저장소에 올리지 않습니다.
-
+서비스와 데스크톱 창은 같은 실행 파일을 사용합니다. Windows 빌드 워크플로는 고정된 Python 및 SQLite 런타임으로 PyInstaller 폴더 빌드를 만들고, 내부 서비스 업데이트 ZIP을 검증합니다. Inno Setup으로 단일 배포 파일 `AWQM-Setup.exe`를 생성합니다. [Windows 빌드 및 검사](.github/workflows/windows-build.yml)
 
 ## 개발/배포 CI 구분
 
