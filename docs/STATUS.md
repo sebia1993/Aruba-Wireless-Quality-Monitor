@@ -45,3 +45,5 @@ Current launcher defaults to no live access; explicit --demo, --engine-demo, --v
 - v0.33.0-dev: optional AP standby and UAC AP-database observations, separate local validation, conservative physical AP identity reconciliation and read-time expiry, per-WLC summary and AP detail. Single-line layouts only; real device semantics and readiness remain unverified. v0.32 Windows and exact dependency audit passed. v0.33 CI pending.
 
 - v0.34.0-dev: absolute diagnostic HTTP socket lifetime, bounded request/header envelope and stricter framing, synchronized WSS admission handoff, real loopback regression. Already running operations are not cancelled by a socket deadline. CI pending.
+
+- v0.35.0-dev: guarded post-start data/log rollback and previous program reversal, immutable configuration/secrets requirement, explicit displacement acknowledgment and association history permission, retained newer files and hash-checked resumption after directory/program rename faults. v0.34 Windows and advisory CI passed; v0.35 CI pending. No automatic activation or actual field rollback.

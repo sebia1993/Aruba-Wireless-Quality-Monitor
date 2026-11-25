@@ -13,6 +13,7 @@ from .update_snapshot import prepare,verify,restore_copy,_safe_part,_walk,_path
 from .service_runtime import exclusive
 from .winservice import SERVICE_NAME
 from .program_switch import apply,inspect,reverse,locations
+from .data_rollback import rollback
 
 def require_admin():
     import win32security
@@ -61,7 +62,16 @@ def scm_stopped(cfg,installed,require_disabled=False):
 
 def manage_update(cfg,args):
     require_admin()
-    sid=check_layout(cfg,require_credentials=True)
+    # Data/log folders can be absent in a journaled rename interruption.
+    # Validate the stable config/secrets and backup roots even in that case;
+    # the rollback core verifies every present/displaced/staged tree.
+    if args.action=="rollback-data":
+        sid=account_sid(cfg.account)
+        for p in (cfg.root,safe_path(cfg.root,"config"),safe_path(cfg.root,"secrets"),
+                  safe_path(cfg.root,"backup"),safe_path(cfg.root,"config/service.json"),
+                  cfg.known_hosts,*(t.credential for t in cfg.targets)):
+            check_acl(p,sid)
+    else:sid=check_layout(cfg,require_credentials=True)
     protect=lambda p:check_acl(p,sid)
     if args.action=="prepare-update":
         installed=fixed_local(Path(os.environ["ProgramFiles"])/"AWQM")
@@ -83,7 +93,7 @@ def manage_update(cfg,args):
         bundle=bundle_path(cfg,args.id)
         dest=bundle_path(cfg,args.output_id)
         print(json.dumps(restore_copy(bundle,dest,protect),ensure_ascii=False,indent=2))
-    elif args.action in ("switch-program","switch-status","reverse-program"):
+    elif args.action in ("switch-program","switch-status","reverse-program","rollback-data"):
         installed=fixed_local(Path(os.environ["ProgramFiles"])/"AWQM")
         bundle=bundle_path(cfg,args.id)
         # Windows cannot move the running frozen program tree. Run a
@@ -100,6 +110,11 @@ def manage_update(cfg,args):
             if args.action=="switch-program":
                 result=apply(installed,cfg.root,bundle,args.id,args.archive,args.sha256,guard,
                              program_protect=check_program_acl,state_protect=protect)
+            elif args.action=="rollback-data":
+                result=rollback(installed,cfg.root,bundle,args.id,guard,
+                    program_protect=check_program_acl,state_protect=protect,
+                    acknowledge=args.acknowledge_data_displacement,
+                    include_association=args.include_association_history)
             elif args.action=="reverse-program":
                 result=reverse(installed,cfg.root,bundle,args.id,guard,
                                program_protect=check_program_acl,state_protect=protect)
@@ -107,5 +122,5 @@ def manage_update(cfg,args):
                 guard()
                 result=inspect(installed,cfg.root,bundle,args.id,program_protect=check_program_acl,state_protect=protect)
         print(json.dumps(result,ensure_ascii=False,indent=2))
-        print("Service startup remains disabled; no automatic activation or live data restoration.")
+        print("Service startup remains disabled; review recovery state before any manual activation.")
     else:raise ValueError("unsupported update operation")
