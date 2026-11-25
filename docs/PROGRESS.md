@@ -1,4 +1,4 @@
-# AWQM development progress (v0.37.1-dev portable integration)
+# AWQM development progress (v0.39.1-dev portable integration)
 
 Planning is approved and complete. This is a provisional engineering estimate,
 not a measured test-pass percentage or field readiness claim. Each of the ten
@@ -36,4 +36,11 @@ release or real corporate equipment validation has been performed.
 
 v0.36 Windows CI and exact dependency audit passed (45528221718). v0.37 fixes duplicate/retry aggregate invalidation and queue accounting, with four storage regression cases. CI pending; the provisional 78.9% estimate is unchanged until verified evidence warrants reassessment. Full retained cardinality and Windows service qualification remain open.
 
-Portable branch now incorporates the full v0.37.0-dev foundation and preserves onefile restrictions. Additional portable CI gates: exact dependency audit, loopback HTTPS/WSS, retained-history, frozen SSH and launcher regression. Progress remains 78.9% pending verification; no production readiness or published new release.
+
+v0.38 adds representative actual Store lifecycle validation: 32 Radios / 120 minute cycles, durable stage interruption and restart, duplicate/revision safety, exact raw/aggregate verification, checksummed backup/restore and approved retirement on the restored synthetic copy. CI pending; 78.9% unchanged pending verified results and reassessment. Full-cardinality throughput and service qualification still open.
+
+
+v0.39 fixes stale detail/search after menu navigation, isolates in-flight callbacks, and adds separate actual Chromium browser CI for operator/admin login, search/pagination, detail/history export, WSS and revocation at two viewports. CI pending; existing 78.9% estimate retained until verified evidence. Browser dependencies are excluded from build packaging.
+
+
+v0.37.1 portable build and exact dependency audit passed (45530631175). v0.39.1 portable integration incorporates v0.39, including lifecycle and browser UI gates. Progress remains provisional 78.9%; no new production release or field qualification.

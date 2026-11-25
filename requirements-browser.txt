@@ -1,0 +1,3 @@
+# CI-only test runner, never installed in the frozen build environment.
+-r requirements.txt
+playwright==1.65.2

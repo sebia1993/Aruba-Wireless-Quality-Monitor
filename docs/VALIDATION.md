@@ -50,3 +50,11 @@ verification, wrong-password rejection and changed/missing key rejection.
 No production SSH or AAA, no external network and no actual site data.
 Both the unit suite and frozen executable run this test in Windows CI.
 No real-controller compatibility claim. 72-hour execution remains user-owned.
+
+## Representative actual SQLite lifecycle trial (v0.38)
+
+Run `AWQM.exe --validate-scale lifecycle --output C:\\AWQM-Validation\\lifecycle-01` in a NEW isolated destination. CI uses 32 invented Radios and 120 minute cycles (3,840 rows) through the actual Store writer, deliberately interrupts one cycle after staging, reopens the Store and verifies recovered receipts and identical replay. It rebuilds both closed-day aggregate resolutions, checks every Radio's exact time/value/coverage, creates and checks a full raw+aggregate backup, restores into a separate directory, tests approved/unapproved retirement and verifies both surviving aggregate series and unchanged source data. Reports real per-cycle P95, aggregation, backup and restore seconds. The synthetic files remain in the new destination; only result JSON is packaged by CI. This is a correctness trial, not a full day/4,000-Radio writer or 109.92-million-row retained benchmark, concurrent writer, production recovery, browser, real-device, SCM or 72-hour qualification.
+
+## Actual browser UI trial (v0.39)
+
+Separate CI job installs `requirements-browser.txt` and the Playwright Chromium binary; neither is included in the packaged application. Run `python -m tools.browser_validation --output browser-validation` after installing the browser in an isolated test environment. Uses an invented 102-Radio Store, actual diagnostic TLS endpoint and synthetic identity verifier. Exercises 1440x900 light and 390x844 dark viewports, actual login and cookie session, pagination, search, Radio detail/history CSV download, detail clearing and fresh search on navigation, disabled search on unrelated menus, WebSocket publication, operator/admin boundaries, server-side revocation and logout. The fixture-only certificate exception does not change product TLS settings. Result JSON only; no private keys, tokens, downloads or DB artifacts. This is a representative Chromium interaction check on the CI runner, not physical Windows 11, production AAA, full browser load, cross-browser or real-device qualification.
