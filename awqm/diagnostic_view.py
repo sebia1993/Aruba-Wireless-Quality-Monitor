@@ -60,7 +60,14 @@ class DiagnosticView:
                         approval_until=q.get("valid_until") if approved else None,
                         incident_id=q.get("incident_id") if approved else None,
                         ap_anchor=deepcopy((anchor_views or {}).get(r["radio_id"])) if live else None))
-                if available:self.rows=rows;self.index=index;self.ap_index=ap_index
+                if available:
+                    # Public list/search ordering must not depend on the private
+                    # identity format or a name-to-physical-ID migration.
+                    # Keep a deterministic tie-breaker for duplicate AP names
+                    # and multiple Radio observations; never merge them.
+                    rows.sort(key=lambda r:(r["ap_name"].casefold(),r["controller"].casefold(),
+                                            r["band"],str(r["channel"]),r["id"]))
+                    self.rows=rows;self.index=index;self.ap_index=ap_index
             else:
                 self.rows=[dict(r,freshness="stale_or_unconfirmed") for r in self.rows]
             self.neighbor_enabled=bool(neighbor_enabled)

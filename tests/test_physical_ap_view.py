@@ -64,3 +64,23 @@ class PhysicalAPViewTests(unittest.TestCase):
         self.assertEqual(result["rows"][0]["freshness"],"stale_or_unconfirmed")
         self.assertEqual(result["rows"][0]["risk_status"],"UNKNOWN")
         self.assertIsNone(result["rows"][0]["incident_id"])
+
+    def test_list_and_search_pagination_independent_of_private_identity_order(self):
+        # The physical AP rows sort last by internal ID but first by display
+        # name. Changing identity representation must not shift search pages.
+        a=self.row(self.ap,0,"DEMO-0001")
+        b=self.row(self.ap,1,"DEMO-0002")
+        legacy=[self.row("legacy",n,f"DEMO-{n:04d}") for n in range(3,19)]
+        rows=[a,b,*legacy]
+        self.store.save_batch(rows)
+        self.view.publish({},[(r.radio_id,r.observed_at) for r in rows])
+        for query in ("","demo-"):
+            first=self.view.page(query,page=1,size=8)
+            second=self.view.page(query,page=2,size=8)
+            third=self.view.page(query,page=3,size=8)
+            self.assertEqual([p["total"] for p in (first,second,third)],[18,18,18])
+            self.assertEqual([r["ap_name"] for p in (first,second,third) for r in p["rows"]],
+                             [f"DEMO-{n:04d}" for n in range(1,19)])
+        self.assertEqual(self.view.page(self.view.token(a.radio_id))["total"],1)
+        self.assertEqual(self.view.page(self.ap)["total"],0)
+        self.assertEqual(self.view.ap_radios(self.view.token(a.radio_id))["total"],2)

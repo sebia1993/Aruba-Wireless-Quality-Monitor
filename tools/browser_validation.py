@@ -167,7 +167,8 @@ def cross_menu_search(page):
     expect(radios.get_by_text("1 / 13 · 102건")).to_be_visible()
     radios.get_by_role("button", name="다음").click()
     expect(radios.get_by_text("2 / 13 · 102건")).to_be_visible()
-    expect(radios.get_by_text("DEMO-BROWSER-0009",exact=True)).to_be_visible()
+    expect(radios.locator("tbody tr td:first-child")).to_have_text(
+        [f"DEMO-BROWSER-{n:04d}" for n in range(9,17)])
     search.get_by_role("searchbox").fill("MISSING-FIXTURE-ONLY")
     search.get_by_role("searchbox").press("Enter")
     for heading in ("AP / Radio", "사용자 단말", "장애 이력"):
@@ -346,7 +347,11 @@ def browser_test(output):
                     context=browser.new_context()
                     try:
                         page=context.new_page()
-                        fragment="#radio/"+view.token("browser-fixture-0001")
+                        # Derive the public deep link from the actual published
+                        # fixture, not the obsolete pre-physical-ID string.
+                        radio=view.page("DEMO-BROWSER-0001")
+                        require(radio["total"]==1,"ambiguous deep-link fixture")
+                        fragment="#radio/"+radio["rows"][0]["id"]
                         login(page,url,"admin",fragment)
                         expect(page.locator("#detailBody h3").first).to_contain_text("DEMO-BROWSER-0001")
                         page.get_by_role("link",name="목록으로 돌아가기").click()
