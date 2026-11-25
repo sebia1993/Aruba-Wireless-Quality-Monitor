@@ -19,3 +19,15 @@ Remaining independent gates: actual Win11 SCM installation/restart/stop/reboot w
 ## Actual loopback TLS/WSS capacity (v0.29)
 
 Run `AWQM.exe --validate-scale https --output C:\\AWQM-Validation\\https-01` in a new synthetic destination. It runs a full fixture ingestion, starts only a 127.0.0.1 TLS listener with a temporary generated certificate and synthetic local verifier, opens ten distinct authenticated WSS connections, and issues 50 concurrent HTTPS dashboard/search requests while measuring real notification fanout. It tests duplicate and eleventh WSS admission rejection, cross-origin rejection, logout revocation, and response coverage/identity masking. HTTPS P95 <=2s and all ten WSS notification deliveries <=2s are the gate. Only the result JSON is included in the CI artifact. No test private key, raw database, tokens or credentials are exported. These numbers exclude browser rendering, enterprise AAA and real WLC delays. Actual browser, full retained DB, Windows SCM, and 72-hour qualification remain separate.
+
+
+## Retained-history benchmark (v0.30)
+
+The approved sizing model is 40,320,000 raw observations (7 days), 34,560,000 5-minute rows (30 days), and 35,040,000 hourly rows (365 days), for 109,920,000 historical rows with 4,000 Radios and one configuration epoch per bucket. The isolated generator materializes the real SQLite schemas and indexes with invented values; it bypasses the live ingestion and aggregate computation paths deliberately. Current latest rows use the real Store writer. The read benchmark calls the production diagnostic history read model and serializes the response to JSON. Five AP/Radio selections per resolution, exact cardinality/time/value/provenance checks, raw 24h P95 <=3s, 30d 5m and 365d hourly P95 <=5s.
+
+CI runs 32 Radios (879,360 historical rows) over the full date windows. It is explicitly a representative smaller-cardinality read test. Full-cardinality execution is separate:
+
+```powershell
+AWQM.exe --validate-scale retained-full --output D:\AWQM-Validation\retained-full-01
+```
+Use a dedicated fixed local test drive, a nonexistent output directory, and at least 150 GB free. Actual storage can be tens of GB or more; reserve checks may stop generation. The harness does not remove or overwrite any existing data, and leaves its own synthetic data for inspection. Remove it manually only after reviewing the result. The result contains row counts, data bytes, generation time and measured per-query timing. It is not a cold-cache claim, concurrent writer stress, full ingestion/aggregation or backup/retention validation. A representative pass does not satisfy the full-scale read gate. Windows service lifecycle, browser rendering, security and 72-hour soak remain separate.

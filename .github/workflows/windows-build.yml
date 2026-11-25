@@ -29,6 +29,8 @@ jobs:
         run: python launcher.py --validate-scale capacity --output capacity-validation
       - name: Full synthetic concurrent HTTPS and WSS (loopback only)
         run: python launcher.py --validate-scale https --output https-validation
+      - name: Retained history representative read benchmark (32 Radios, 365 days)
+        run: python launcher.py --validate-scale retained --output retained-validation
       - name: Build Windows folder EXE
         run: python -m PyInstaller --noconfirm --clean --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
       - name: Create Windows service and manager entry points
@@ -87,23 +89,25 @@ jobs:
           Copy-Item README.md,VERSION.txt -Destination dist\AWQM
           Copy-Item capacity-validation\capacity-result.json -Destination dist\AWQM
           Copy-Item https-validation\https-result.json -Destination dist\AWQM
+          Copy-Item retained-validation\retained-result.json -Destination dist\AWQM
           Copy-Item docs -Destination dist\AWQM\docs -Recurse
           python -m pip freeze | Set-Content -Encoding utf8 dist\AWQM\BUILD-DEPENDENCIES.txt
-          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.29.0-dev_Win11_x64.zip
-          $hash = (Get-FileHash AWQM_0.29.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
-          "$hash  AWQM_0.29.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
+          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.30.0-dev_Win11_x64.zip
+          $hash = (Get-FileHash AWQM_0.30.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  AWQM_0.30.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
       - name: Frozen offline package verification and staging
         shell: pwsh
         run: |
-          & .\dist\AWQM\AWQM.exe --stage-package AWQM_0.29.0-dev_Win11_x64.zip --sha256 (Get-FileHash AWQM_0.29.0-dev_Win11_x64.zip -Algorithm SHA256).Hash --output staged-verification
+          & .\dist\AWQM\AWQM.exe --stage-package AWQM_0.30.0-dev_Win11_x64.zip --sha256 (Get-FileHash AWQM_0.30.0-dev_Win11_x64.zip -Algorithm SHA256).Hash --output staged-verification
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: AWQM-Windows-dev-x64
           path: |
-            AWQM_0.29.0-dev_Win11_x64.zip
+            AWQM_0.30.0-dev_Win11_x64.zip
             SHA256SUMS.txt
             capacity-validation/capacity-result.json
             https-validation/https-result.json
+            retained-validation/retained-result.json
           if-no-files-found: error
           retention-days: 3

@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.29.0-dev — 수동 조사 및 장기 Radio 이력 조회. 운영 배포 금지.**
+**현재 단계: v0.30.0-dev — 장기 보존 DB 성능 검증. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -116,6 +116,10 @@ AP 상세에서 원본 7일, 5분 집계 30일, 1시간 집계 365일 조회 및
 ## HTTPS·WSS 동시 조회 검증
 
 가상 사용자 10개 연결, 50회 HTTPS 조회와 알림 전달을 실제 루프백 TLS 연결로 시험하는 `--validate-scale https` 검증 모드를 추가했습니다. 실제 브라우저·AAA·장비 검증과는 별개입니다. [검증 안내](docs/VALIDATION.md).
+
+## 장기 보존 DB 검증
+
+`--validate-scale retained`로 32 Radio의 365일 보존 데이터 조회를 검증합니다. 별도 `retained-full` 모드는 4,000 Radio, 109,920,000행 합성 DB를 생성하므로 전용 테스트 저장소에서만 실행합니다. 실제 수집·집계·72시간 검증과 구분합니다. [검증 안내](docs/VALIDATION.md).
 
 ## Windows 빌드
 ```powershell
