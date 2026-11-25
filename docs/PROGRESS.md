@@ -1,4 +1,4 @@
-# AWQM development progress (v0.37.0-dev)
+# AWQM development progress (v0.38.0-dev)
 
 Planning is approved and complete. This is a provisional engineering estimate,
 not a measured test-pass percentage or field readiness claim. Each of the ten
@@ -35,3 +35,6 @@ release or real corporate equipment validation has been performed.
 
 
 v0.36 Windows CI and exact dependency audit passed (45528221718). v0.37 fixes duplicate/retry aggregate invalidation and queue accounting, with four storage regression cases. CI pending; the provisional 78.9% estimate is unchanged until verified evidence warrants reassessment. Full retained cardinality and Windows service qualification remain open.
+
+
+v0.38 adds representative actual Store lifecycle validation: 32 Radios / 120 minute cycles, durable stage interruption and restart, duplicate/revision safety, exact raw/aggregate verification, checksummed backup/restore and approved retirement on the restored synthetic copy. CI pending; 78.9% unchanged pending verified results and reassessment. Full-cardinality throughput and service qualification still open.

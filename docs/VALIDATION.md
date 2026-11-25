@@ -50,3 +50,7 @@ verification, wrong-password rejection and changed/missing key rejection.
 No production SSH or AAA, no external network and no actual site data.
 Both the unit suite and frozen executable run this test in Windows CI.
 No real-controller compatibility claim. 72-hour execution remains user-owned.
+
+## Representative actual SQLite lifecycle trial (v0.38)
+
+Run `AWQM.exe --validate-scale lifecycle --output C:\\AWQM-Validation\\lifecycle-01` in a NEW isolated destination. CI uses 32 invented Radios and 120 minute cycles (3,840 rows) through the actual Store writer, deliberately interrupts one cycle after staging, reopens the Store and verifies recovered receipts and identical replay. It rebuilds both closed-day aggregate resolutions, checks every Radio's exact time/value/coverage, creates and checks a full raw+aggregate backup, restores into a separate directory, tests approved/unapproved retirement and verifies both surviving aggregate series and unchanged source data. Reports real per-cycle P95, aggregation, backup and restore seconds. The synthetic files remain in the new destination; only result JSON is packaged by CI. This is a correctness trial, not a full day/4,000-Radio writer or 109.92-million-row retained benchmark, concurrent writer, production recovery, browser, real-device, SCM or 72-hour qualification.

@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.37.0-dev — SQLite 중복 재처리 및 집계 정합성 개선. 운영 배포 금지.**
+**현재 단계: v0.38.0-dev — SQLite 저장·복구·집계·백업 및 보존 정책 연속 검증. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -148,6 +148,10 @@ Windows ZIP의 실제 설치 패키지 버전을 별도 CI에서 취약점 조�
 ## Airtime 현장 검증용 오프라인 검사
 
 `--validate-cli client-info-airtime`와 `--compare-file`로 두 출력의 TID 필드 구조·변화 수를 확인합니다. 실제 Airtime 수치나 원인 확정은 하지 않습니다. [검증 기준](docs/AIRTIME_VALIDATION.md).
+
+## SQLite 저장 및 복구 검증
+
+`--validate-scale lifecycle --output <새 폴더>`로 실제 저장 경로의 합성 데이터 재처리, 일별 집계, 백업/복원, 명시적 원본 보존 정책을 검증합니다. 32 Radio/120개 시점의 대표 규모이며 전체 용량 시험은 별도입니다. [검증 안내](docs/VALIDATION.md).
 
 ## Windows 빌드
 ```powershell
