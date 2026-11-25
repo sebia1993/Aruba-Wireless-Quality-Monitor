@@ -193,7 +193,26 @@ def run(args, report):
         report["phase"] = "offline upgrade"
         bundle = ["--id", "fixture-upgrade"]
         archive = ["--archive", str(args.archive), "--sha256", args.sha256]
-        manager_run("prepare-update", *bundle, *archive, outside=True)
+        try:
+            manager_run("prepare-update", *bundle, *archive, outside=True)
+        except subprocess.CalledProcessError:
+            # Collect a traceback on a second synthetic snapshot; the frozen
+            # manager's result remains the acceptance result for this trial.
+            from types import SimpleNamespace
+            import traceback
+            from awqm.windows_update import manage_update
+            probe = SimpleNamespace(action="prepare-update", id="diagnostic-snapshot",
+                                    archive=args.archive, sha256=args.sha256,
+                                    include_association_history=False)
+            try:
+                manage_update(load_config(root), probe)
+            except Exception as exc:
+                report["snapshot_diagnostic"] = {
+                    "exception": type(exc).__name__, "winerror": getattr(exc, "winerror", None),
+                    "api": getattr(exc, "funcname", None),
+                    "stack": [Path(f.filename).name + "/" + f.name + "/" + str(f.lineno)
+                              for f in traceback.extract_tb(exc.__traceback__)]}
+            raise
         manager_run("verify-update", *bundle, outside=True)
         manager_run("switch-program", *bundle, *archive, outside=True)
         require((installed / "VERSION.txt").read_text(encoding="utf-8").strip() == receipt["version"],
