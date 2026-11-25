@@ -9,3 +9,7 @@ Maintenance currently exposes internal APIs and is explicit, serialized, not a b
 `Store` is a single-process/single-writer contract; cross-process service exclusivity and a concurrent maintenance scheduler are not yet implemented.
 
 Diagnostic measurements remain unvalidated: current state is UNKNOWN, quality score is unavailable and no operational incident transition is produced. Aggregate queries omit invalidated days until rebuild.
+
+## Replay-safe aggregate revision (v0.37.0-dev)
+
+Exact committed samples are not staged again. Exact pending receipts retain their original revision and are recovered even when raw already exists. Queue capacity counts only new receipts. Only genuinely new samples invalidate their own day's completed aggregate before raw commit. Conflicting payloads and retired-day writes still fail closed; mixed batches are atomic at staging. The single Store/writer invariant remains required. Regression tests cover a completed day replay, mixed days, retry after raw commit, conflicts and queue limits. This does not qualify full-cardinality performance or actual service recovery.

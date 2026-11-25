@@ -68,6 +68,78 @@ class StorageLifecycle(unittest.TestCase):
             self.assertEqual(s.prune_raw(now,["20261101"]),["20261101"])
             self.assertFalse((s.root/"radio_20261101.db").exists())
             with self.assertRaises(ValueError):s.save(row(T+250))
+    def test_duplicate_replay_preserves_completed_aggregate(self):
+        with tempfile.TemporaryDirectory() as root:
+            s=Store(root,pending_limit=1)
+            s.save(row(T,u=25))
+            s.aggregate_day("20261101",day_start("20261102"))
+            before=s.history("r:0",T,T+300,"5m")
+            with s._db(s.root/"core.db") as c:
+                manifest=c.execute("SELECT * FROM aggregate_manifest").fetchall()
+            # Identical replay, including repeated keys, is a true no-op.
+            self.assertEqual(s.save_batch([row(T,u=25),row(T,u=25)]),0)
+            self.assertEqual(s.history("r:0",T,T+300,"5m"),before)
+            with s._db(s.root/"core.db") as c:
+                self.assertEqual(c.execute("SELECT * FROM aggregate_manifest").fetchall(),manifest)
+            # One new sample plus one duplicate fits a one-row queue.
+            self.assertEqual(s.save_batch([row(T,u=25),row(T+86400,u=30)]),1)
+            self.assertEqual(s.history("r:0",T,T+300,"5m"),before)
+            self.assertEqual(s.pending_count(),0)
+
+    def test_mixed_duplicate_and_late_sample_invalidates_only_new_day(self):
+        with tempfile.TemporaryDirectory() as root:
+            s=Store(root)
+            s.save_batch([row(T,u=20),row(T+86400,u=30)])
+            s.aggregate_day("20261101",day_start("20261103"))
+            s.aggregate_day("20261102",day_start("20261103"))
+            before=s.history("r:0",T,T+300,"5m")
+            self.assertEqual(s.save_batch([row(T,u=20),row(T+86460,u=40)]),1)
+            self.assertEqual(s.history("r:0",T,T+300,"5m"),before)
+            self.assertEqual(s.history("r:0",T+86400,T+86700,"5m"),[])
+            s.aggregate_day("20261102",day_start("20261103"))
+            data=s.history("r:0",T+86400,T+86700,"5m")
+            self.assertEqual(data[0]["observed"],2)
+            self.assertEqual(data[0]["utilization_avg"],35)
+
+    def test_retry_pending_after_raw_commit_preserves_revision(self):
+        from awqm.storage import RAW_SCHEMA
+        with tempfile.TemporaryDirectory() as root:
+            s=Store(root,pending_limit=1)
+            payload=s._encode(row(T,u=20))
+            # Simulate a crash after durable staging and raw commit, before
+            # updating latest and clearing the pending receipt.
+            with s._db(s.root/"core.db") as c:
+                c.execute("INSERT INTO pending VALUES(?,?,?,?)",payload)
+                c.execute("INSERT INTO aggregate_manifest(day,revision) VALUES(?,1)",(payload[3],))
+            with s._db(s._raw_path(payload[3])) as c:
+                c.execute(RAW_SCHEMA)
+                c.execute("INSERT INTO radio_raw VALUES(?,?,?)",payload[:3])
+            with self.assertRaises(ValueError):s.save(row(T,u=99))
+            self.assertEqual(s.pending_count(),1)
+            self.assertEqual(s.save_batch([row(T,u=20)]),1)
+            self.assertEqual(s.pending_count(),0)
+            self.assertEqual(s.snapshot()["radios"][0]["observed_at"],T)
+            with s._db(s.root/"core.db") as c:
+                self.assertEqual(c.execute("SELECT revision FROM aggregate_manifest").fetchone()[0],1)
+            self.assertEqual(len(s.history("r:0",T,T+1)),1)
+
+    def test_pending_conflict_and_limit_do_not_stage_partial_batch(self):
+        with tempfile.TemporaryDirectory() as root:
+            s=Store(root,pending_limit=1)
+            payload=s._encode(row(T,u=20))
+            with s._db(s.root/"core.db") as c:
+                c.execute("INSERT INTO pending VALUES(?,?,?,?)",payload)
+                c.execute("INSERT INTO aggregate_manifest(day,revision) VALUES(?,1)",(payload[3],))
+            with self.assertRaises(ValueError):
+                s.save_batch([row(T,u=90),row(T+86400)])
+            with self.assertRaises(RuntimeError):
+                s.save_batch([row(T,u=20),row(T+86400)])
+            self.assertEqual(s.pending_count(),1)
+            with s._db(s.root/"core.db") as c:
+                self.assertEqual(c.execute("SELECT day,revision FROM aggregate_manifest").fetchall(),[(payload[3],1)])
+            self.assertEqual(s.save_batch([row(T,u=20)]),1)
+            self.assertEqual(s.pending_count(),0)
+
     def test_backup(self):
         with tempfile.TemporaryDirectory() as root:
             p=Path(root);s=Store(p/"data");s.save(row())

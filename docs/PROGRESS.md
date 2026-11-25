@@ -1,4 +1,4 @@
-# AWQM development progress (v0.36.0-dev)
+# AWQM development progress (v0.37.0-dev)
 
 Planning is approved and complete. This is a provisional engineering estimate,
 not a measured test-pass percentage or field readiness claim. Each of the ten
@@ -32,3 +32,6 @@ v0.32 pins Paramiko 5.1.0 and cryptography 50.0.2 and adds real loopback SSH/hos
 will separately perform the 72-hour trial; keep the existing soak tool and
 record its status as not executed by the developer, not passed. No production
 release or real corporate equipment validation has been performed.
+
+
+v0.36 Windows CI and exact dependency audit passed (45528221718). v0.37 fixes duplicate/retry aggregate invalidation and queue accounting, with four storage regression cases. CI pending; the provisional 78.9% estimate is unchanged until verified evidence warrants reassessment. Full retained cardinality and Windows service qualification remain open.

@@ -112,7 +112,9 @@ class Store:
         return self.root/f"radio_{day}.db"
 
     def _preflight(self,items):
+        """Check existing raw payloads; return keys already present on disk."""
         by_day={}
+        present=set()
         for rid,t,p,day in items:
             by_day.setdefault(day,[]).append((rid,t,p))
         for day,rows in by_day.items():
@@ -121,8 +123,11 @@ class Store:
             with self._db(path) as c:
                 for rid,t,p in rows:
                     old=c.execute("SELECT payload FROM radio_raw WHERE radio_id=? AND observed_at=?",(rid,t)).fetchone()
-                    if old and not self._same(old[0],p):
-                        raise ValueError("conflicting sample")
+                    if old is not None:
+                        if not self._same(old[0],p):
+                            raise ValueError("conflicting sample")
+                        present.add((rid,t))
+        return present
 
     def save(self,row):
         return self.save_batch([row])>0
@@ -140,20 +145,30 @@ class Store:
         if not items:return 0
         with self.lock:
             ordered=sorted(items.values(),key=lambda x:(x[1],x[0]))
-            self._preflight(ordered)
+            present=self._preflight(ordered)
             with self._db(self.root/"core.db") as c:
                 pending=c.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
-                if pending+len(ordered)>self.pending_limit:
-                    raise RuntimeError("durable queue limit reached")
+                staged=[]
                 for rid,t,p,day in ordered:
                     if c.execute("SELECT retired FROM aggregate_manifest WHERE day=? AND retired=1",(day,)).fetchone():
                         raise ValueError("retired partition cannot be reopened")
                     old=c.execute("SELECT payload FROM pending WHERE radio_id=? AND observed_at=?",(rid,t)).fetchone()
-                    if old and not self._same(old[0],p):
-                        raise ValueError("conflicting pending sample")
-                    c.execute("INSERT OR IGNORE INTO pending VALUES(?,?,?,?)",(rid,t,p,day))
-                # Invalidate aggregate completion BEFORE any raw partition write.
-                for day in {x[3] for x in ordered}:
+                    if old is not None:
+                        if not self._same(old[0],p):
+                            raise ValueError("conflicting pending sample")
+                        # The original staging transaction already invalidated
+                        # the day. Leave the receipt for recovery, even if raw
+                        # exists (a crash may have preceded the latest commit).
+                        continue
+                    if (rid,t) not in present:
+                        staged.append((rid,t,p,day))
+                # Identical committed or staged samples consume no new queue
+                # capacity and must not invalidate a completed aggregate.
+                if staged and pending+len(staged)>self.pending_limit:
+                    raise RuntimeError("durable queue limit reached")
+                c.executemany("INSERT INTO pending VALUES(?,?,?,?)",staged)
+                # Invalidate only newly staged days BEFORE any raw write.
+                for day in {x[3] for x in staged}:
                     c.execute("""INSERT INTO aggregate_manifest(day,revision) VALUES(?,1)
                       ON CONFLICT(day) DO UPDATE SET revision=revision+1""",(day,))
             return self.recover()
