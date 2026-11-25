@@ -1,6 +1,7 @@
 """Capability-scoped current-user device settings and observations for the local browser."""
 from collections import deque
 from dataclasses import asdict
+import re
 from threading import RLock
 import time
 
@@ -10,6 +11,41 @@ from .device_profiles import DeviceProfile, Profiles
 SLOTS = tuple(f"WLC-{i}" for i in range(1, 5))
 PAGE_SIZE = 100
 TABLES = ("장비", "AP", "Radio", "SSID / BSSID", "명령 결과")
+SEARCH_FIELDS = {"AP": (0, 1), "Radio": (0,), "SSID / BSSID": (0, 1, 2)}
+MAC_QUERY = re.compile(r"(?:[0-9a-f]{12}|(?:[0-9a-f]{2}:){5}[0-9a-f]{2}|(?:[0-9a-f]{2}-){5}[0-9a-f]{2}|(?:[0-9a-f]{4}\.){2}[0-9a-f]{4})", re.I)
+
+
+def _mac(value):
+    return re.sub(r"[:.\-]", "", value).casefold() if MAC_QUERY.fullmatch(value) else None
+
+
+def _search_rows(states, table, query):
+    """Search only displayed identifiers from existing observations, not raw CLI or credentials.
+
+    Preserve the individual WLC claims and their observation timestamps. This is
+    not a reconciled physical inventory and never proves AP Down or recovery.
+    """
+    headers, matches = (), []
+    folded, mac = query.casefold(), _mac(query)
+    for slot in SLOTS:
+        state = states[slot]
+        observed = state.get("profile")
+        if observed is None:
+            continue
+        columns, rows = state.get("tables", {}).get(table, ((), ()))
+        if columns:
+            headers = columns
+        host = observed.host
+        source_match = folded in slot.casefold() or folded in host.casefold()
+        freshness = ("갱신 지연 / 이전 관측" if state.get("stale") else
+                     "수집 중" if state.get("running") else "수집 중 아님")
+        for row in rows:
+            identifiers = [str(row[i]) for i in SEARCH_FIELDS[table] if i < len(row)]
+            bssid_match = (table == "SSID / BSSID" and len(row) > 2 and
+                           mac is not None and _mac(str(row[2])) == mac)
+            if source_match or bssid_match or any(folded in v.casefold() for v in identifiers):
+                matches.append((slot, host, freshness, *row))
+    return ("출처 WLC", "관측 WLC IP", "수집 상태", *headers), matches
 # Collection failure is not evidence of AP Down or a service outage.
 FAILURES = frozenset(("SSH 키 불일치", "SSH 키 미확인", "인증 실패", "CLI 열기 실패",
                       "설정 확인 필요", "SSH 연결 실패", "조회 실패", "CLI 통신 실패"))
@@ -65,12 +101,14 @@ class DeviceWeb:
     def _saved(self):
         return {p.id: p for p in self.profiles.list()}
 
-    def _snapshot(self, id, table, page):
+    def _snapshot(self, id, table, page, *, query=None):
         saved = self._saved()
         entries = []
+        states = {}
         for slot in SLOTS:
             p = saved.get(slot)
             state = self.monitor.state(slot)
+            states[slot] = state
             observed = state.get("profile")
             entries.append({
                 "id": slot, "profile": asdict(p) if p else None,
@@ -81,15 +119,16 @@ class DeviceWeb:
                 "stale": state.get("stale", False), "observed_at": state.get("observed_at"),
                 "connection": state.get("connection", "미연결"), "cli": state.get("cli", "미실행"),
             })
-        state = self.monitor.state(id)
-        tables = state.get("tables", {})
-        headers, rows = tables.get(table, ((), ()))
+        if query is None:
+            headers, rows = states[id].get("tables", {}).get(table, ((), ()))
+        else:
+            headers, rows = _search_rows(states, table, query)
         start = page * PAGE_SIZE
         return {"slots": entries, "default_username": self.profiles.default_username(),
                 "interval": self.interval, "alerts_enabled": self.alerts_enabled,
                 "alerts": list(self.alert_history), "table": {"name": table, "headers": headers,
                 "rows": rows[start:start + PAGE_SIZE], "total": len(rows), "page": page,
-                "page_size": PAGE_SIZE}}
+                "page_size": PAGE_SIZE, "scope": "all" if query is not None else "slot"}}
 
     def dispatch(self, data):
         if type(data) is not dict or not isinstance(data.get("action"), str):
@@ -105,6 +144,15 @@ class DeviceWeb:
                 if id not in SLOTS or table not in TABLES or type(page) is not int or not 0 <= page <= 10000:
                     raise ValueError("조회 범위를 확인하세요.")
                 return self._snapshot(id, table, page)
+            if action == "search":
+                if set(data) != {"action", "table", "query", "page"}:
+                    raise ValueError("검색 요청을 확인하세요.")
+                table, query, page = data["table"], data["query"], data["page"]
+                if (type(table) is not str or table not in SEARCH_FIELDS or type(page) is not int or not 0 <= page <= 10000
+                        or type(query) is not str or len(query) > 128 or not query.strip()
+                        or any(ord(ch) < 32 or ord(ch) == 127 for ch in query)):
+                    raise ValueError("검색 범위를 확인하세요.")
+                return self._snapshot(None, table, page, query=query.strip())
             if action == "interval":
                 if set(data) != {"action", "seconds"}:
                     raise ValueError("수집 주기를 확인하세요.")

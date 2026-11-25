@@ -42,6 +42,16 @@ class DeviceSettingsEntryTests(unittest.TestCase):
                     self.assertNotIn(token, body)
                     self.assertEqual(len(json.loads(body)["slots"]), 4)
                     self.assertNotIn('"password":', body)
+                    search = {"action":"search","table":"AP","query":"test","page":0}
+                    for origin, key in ((base[:-1], "wrong"), ("http://outside.invalid", token)):
+                        with self.assertRaises(HTTPError) as result:
+                            request(origin, key, search)
+                        self.assertEqual(result.exception.code, 403)
+                        result.exception.close()
+                    with request(base[:-1], token, search) as response:
+                        found = json.load(response)
+                    self.assertEqual(found["table"]["scope"], "all")
+                    self.assertEqual(found["table"]["total"], 0)
                     with request(base[:-1], token, {"action":"interval","seconds":120}) as response:
                         self.assertEqual(json.load(response), {"ok":True})
                     self.assertEqual(Profiles(root).poll_interval(), 120)

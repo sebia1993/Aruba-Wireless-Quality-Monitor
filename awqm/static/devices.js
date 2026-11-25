@@ -2,7 +2,8 @@
 const $ = id => document.getElementById(id);
 const token = new URLSearchParams(location.hash.slice(1)).get("settings");
 const slotIds = ["WLC-1","WLC-2","WLC-3","WLC-4"];
-let snapshot = null, selected = slotIds[0], page = 0, view = "overview", busy = false, loading = false, sequence = 0, intervalEdited = false, alertsEdited = false;
+let snapshot = null, selected = slotIds[0], page = 0, view = "overview", busy = false, loading = false, sequence = 0, intervalEdited = false, alertsEdited = false, searchQuery = "";
+const searchable = ["AP","Radio","SSID / BSSID"];
 const headings = {overview:"종합 현황",settings:"장비 설정",observations:"실시간 관측",operations:"운영 설정"};
 const fields = ["host","username","fingerprint","known_hosts"];
 function status(message) { $("notice").textContent = message; }
@@ -35,8 +36,9 @@ function fill() {
   $("password").value="";$("remember").checked=!!s?.remember;
   $("credential-note").textContent=s?.has_password?"설정을 변경하지 않으면 기존 비밀번호를 사용할 수 있습니다.":"장비별 비밀번호를 입력하세요.";
 }
+function resetSearch() {searchQuery="";$("observation-query").value="";page=0;}
 function select(id) {
-  selected=id;page=0;$("slot").value=id;$("observed-slot").value=id;fill();refresh();
+  resetSearch();selected=id;page=0;$("slot").value=id;$("observed-slot").value=id;fill();refresh();
 }
 function render() {
   if(!snapshot)return;
@@ -62,7 +64,7 @@ function render() {
   const s=active();
   $("remove").disabled=busy||!s?.profile;
   const data=snapshot.table;
-  $("observed").textContent=[s?.observed_host??"관측 없음",s?.status,s?.connection,s?.cli,
+  $("observed").textContent=data.scope==="all"?"전체 WLC 검색 · 출처별 관측 (통합/장애 확정 아님)":[s?.observed_host??"관측 없음",s?.status,s?.connection,s?.cli,
     s?.observed_at?new Date(s.observed_at*1000).toLocaleString("ko-KR"):"시각 없음",s?.stale?"오래된 관측":""].filter(Boolean).join(" · ");
   const table=$("readings");table.replaceChildren();
   const thead=el("thead"), h=el("tr");for(const title of data.headers)h.append(el("th",title));thead.append(h);table.append(thead);
@@ -73,7 +75,7 @@ function render() {
 async function refresh() {
   const id=selected, table=$("table").value, p=page, order=++sequence;
   try {
-    const data=await api({action:"read",id,table,page:p});
+    const data=await api(searchQuery?{action:"search",table,query:searchQuery,page:p}:{action:"read",id,table,page:p});
     if(order!==sequence)return;
     const initial=snapshot===null;snapshot=data;render();if(initial)fill();
     if(initial||loading)status("현재 PC의 실제 관측 · 미수집 데이터는 정상으로 간주하지 않습니다.");
@@ -102,12 +104,20 @@ $("device-nav").addEventListener("click",e=>{if(e.target.dataset.view)show(e.tar
 $("sample").addEventListener("click",()=>{location.href="/#settings="+encodeURIComponent(token||"");});
 $("slot").addEventListener("change",()=>select($("slot").value));
 $("observed-slot").addEventListener("change",()=>select($("observed-slot").value));
-$("table").addEventListener("change",()=>{page=0;refresh();});
+$("table").addEventListener("change",()=>{if(!searchable.includes($("table").value))resetSearch();page=0;refresh();});
+$("observation-search").addEventListener("submit",e=>{
+  e.preventDefault();
+  const query=$("observation-query").value.trim();
+  if(!query){status("검색어를 입력하세요.");return;}
+  if(!searchable.includes($("table").value))$("table").value="AP";
+  searchQuery=query;page=0;refresh();
+});
+$("clear-search").addEventListener("click",()=>{resetSearch();refresh();});
 $("previous").addEventListener("click",()=>{page=Math.max(0,page-1);refresh();});
 $("next").addEventListener("click",()=>{page++;refresh();});
 $("refresh").addEventListener("click",refresh);
-$("test").addEventListener("click",()=>act(form("test"),"연결 테스트를 요청했습니다.",()=>{page=0;show("observations");}));
-$("save").addEventListener("click",()=>act(form("save"),"장비를 저장하고 수집을 요청했습니다.",()=>{page=0;show("observations");}));
+$("test").addEventListener("click",()=>act(form("test"),"연결 테스트를 요청했습니다.",()=>{resetSearch();show("observations");}));
+$("save").addEventListener("click",()=>act(form("save"),"장비를 저장하고 수집을 요청했습니다.",()=>{resetSearch();show("observations");}));
 $("stop").addEventListener("click",()=>act({action:"stop",id:selected},"조회 중지를 요청했습니다."));
 $("remove").addEventListener("click",()=>{if(confirm(selected+" 등록 정보와 저장된 비밀번호를 삭제할까요?"))act({action:"remove",id:selected},"등록을 삭제했습니다.");});
 $("default-account").addEventListener("click",()=>act({action:"default_account",username:$("username").value.trim()},"새 장비 기본 계정을 변경했습니다."));

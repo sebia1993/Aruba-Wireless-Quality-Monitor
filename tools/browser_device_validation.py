@@ -79,6 +79,16 @@ def verify(output):
             expect(page.locator("#notice")).to_contain_text("저장하고 수집")
             page.locator("#table").select_option("Radio")
             expect(page.locator("#readings tbody tr")).to_have_count(2)
+            page.locator("#observation-query").fill("WLC-1")
+            page.locator("#observation-search button[type=submit]").click()
+            expect(page.locator("#observed")).to_contain_text("전체 WLC 검색")
+            expect(page.locator("#readings tbody tr")).to_have_count(2)
+            expect(page.locator("#readings tbody tr").first).to_contain_text("WLC-1")
+            page.locator("#observation-query").fill("no-such-identifier")
+            page.locator("#observation-search button[type=submit]").click()
+            expect(page.locator("#readings tbody tr")).to_have_count(0)
+            page.locator("#clear-search").click()
+            expect(page.locator("#readings tbody tr")).to_have_count(2)
             if devices.monitor.requests != [("WLC-1","fixture-only-password",True),("WLC-1","fixture-only-password",False)]:
                 raise RuntimeError("Browser did not reach the expected collector actions")
             page.close()
@@ -124,7 +134,8 @@ def verify(output):
             result = {"status":"pass","desktop_and_mobile":True,"direct_web_registration":True,
                       "browser_close_keeps_collection":True,"account_reuse":True,
                       "password_not_returned_to_form":True,"persisted_interval":True,"stop_and_remove":True,
-                      "persisted_alert_preference":True,"deduplicated_alert_log":True}
+                      "persisted_alert_preference":True,"deduplicated_alert_log":True,
+                      "cached_all_wlc_search":True}
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")
             print(json.dumps(result))
         finally:
