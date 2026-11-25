@@ -270,24 +270,23 @@ def standard_user_trial(installer, receipt, username, *, full=False, previous=No
             raise RuntimeError("Expected the fresh standard-user token")
         profile = current_profile()
         progress("standard-user token profile resolved")
+        if (not profile.is_dir() or os.environ.get("USERNAME", "").casefold() != username.casefold()
+                or not os.environ.get("USERPROFILE") or not profile.samefile(os.environ["USERPROFILE"])):
+            raise RuntimeError("Windows-created process environment does not match the actual user token")
+        progress("standard-user environment identity verified")
         local = known_folder(0x1C, "F1B32785-6FBA-4FCF-9D55-7B8E7F157091")
         roaming = known_folder(0x1A, "3EB685DB-65F9-4CF6-A03A-E3EF65729F3D")
         programs = known_folder(0x02, "A77F5D77-2E2B-44C3-A6A2-ABA601054A51")
         if (not profile.is_dir() or any(not x.is_dir() or not x.resolve().is_relative_to(profile.resolve())
                                          for x in (local, roaming, programs))):
             raise RuntimeError("Expected shell folders in the actual standard user's profile")
-        # Only the disposable hosted fixture can normalize inherited shell
-        # environment values. The native Windows 11 trial remains strict.
-        env = {"USERPROFILE":str(profile), "LOCALAPPDATA":str(local),
-               "APPDATA":str(roaming), "USERNAME":username}
-        for key, value in env.items():
-            previous_value = os.environ.get(key, "")
-            matches = (previous_value.casefold() == value.casefold() if key == "USERNAME" else
-                       bool(previous_value) and Path(previous_value).exists() and Path(previous_value).samefile(value))
-            if not matches:
-                if not full:
-                    raise RuntimeError("Process environment does not match loaded user profile: " + key)
-                os.environ[key] = value
+        # Do not repair the environment inside a qualification trial: the
+        # installer and child processes must receive the real user's paths.
+        for key, value in (("LOCALAPPDATA", local), ("APPDATA", roaming)):
+            supplied = os.environ.get(key, "")
+            if not supplied or not value.samefile(supplied):
+                raise RuntimeError("Process environment does not match loaded shell folder: " + key)
+        progress("standard-user shell folders and environment verified")
         record["profile_from_token"] = True
         record["shell_folders_initialized"] = True
         app = local / "Programs" / "AWQM" / "AWQM.exe"
