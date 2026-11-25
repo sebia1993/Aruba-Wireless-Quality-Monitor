@@ -98,6 +98,16 @@ def verify(output):
             expect(page.locator("#notice")).to_contain_text("수집 주기를 저장")
             if devices.profiles.poll_interval() != 120 or devices.monitor.interval != 120:
                 raise RuntimeError("Interval was not applied and persisted")
+            page.locator("#alerts-enabled").check()
+            page.locator("#save-alerts").click()
+            expect(page.locator("#notice")).to_contain_text("알림 설정을 저장")
+            if not devices.profiles.alerts_enabled():
+                raise RuntimeError("Alert preference was not persisted")
+            devices.monitor.states["WLC-1"].update(status="SSH 연결 실패",running=False)
+            if len(devices.poll_alerts()) != 1 or devices.poll_alerts():
+                raise RuntimeError("Alert deduplication failed")
+            page.locator("#refresh").click()
+            expect(page.locator("#alert-history")).to_contain_text("SSH 연결 실패")
             page.locator("#device-nav [data-view=settings]").click()
             page.locator("#slot").select_option("WLC-1")
             page.locator("#stop").click()
@@ -113,7 +123,8 @@ def verify(output):
                 raise RuntimeError("Mobile layout overflows")
             result = {"status":"pass","desktop_and_mobile":True,"direct_web_registration":True,
                       "browser_close_keeps_collection":True,"account_reuse":True,
-                      "password_not_returned_to_form":True,"persisted_interval":True,"stop_and_remove":True}
+                      "password_not_returned_to_form":True,"persisted_interval":True,"stop_and_remove":True,
+                      "persisted_alert_preference":True,"deduplicated_alert_log":True}
             output.write_text(json.dumps(result, indent=2), encoding="utf-8")
             print(json.dumps(result))
         finally:

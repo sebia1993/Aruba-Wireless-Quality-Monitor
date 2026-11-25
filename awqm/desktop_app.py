@@ -329,10 +329,27 @@ class DesktopWindow:
             notice = "권한 요청을 취소했습니다." if exc.winerror == 1223 else "서비스 관리 창을 열 수 없습니다."
             g.SetWindowText(self.controls[self.NOTICE], notice)
 
+    def show_alert(self, event):
+        import pywintypes
+        import win32gui as g
+        if not self.tray:
+            return
+        try:
+            # NIF_INFO with an informational/warning balloon. Windows may suppress
+            # it during focus assist; the local web log retains the event.
+            text = event["id"] + " · " + event["status"] + " (수집 상태)"
+            g.Shell_NotifyIcon(g.NIM_MODIFY, (self.hwnd, 1, 0x10, 0, 0, "", text,
+                              10000, "AWQM 수집 알림", 2))
+        except (pywintypes.error, OSError):
+            pass
+
     def tick(self):
         import win32event
         import win32gui as g
         import win32process
+        if self.dashboard.devices is not None:
+            for event in self.dashboard.devices.poll_alerts():
+                self.show_alert(event)
         if self.manager is not None and win32event.WaitForSingleObject(self.manager, 0) == win32event.WAIT_OBJECT_0:
             code = win32process.GetExitCodeProcess(self.manager)
             self.manager.Close()

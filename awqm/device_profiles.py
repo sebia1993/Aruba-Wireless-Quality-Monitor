@@ -135,6 +135,21 @@ class Profiles:
             db.execute("CREATE TABLE IF NOT EXISTS desktop_settings (id INTEGER PRIMARY KEY CHECK(id=1), interval INTEGER NOT NULL)")
             db.execute("INSERT INTO desktop_settings(id, interval) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET interval=excluded.interval", (seconds,))
 
+    def alerts_enabled(self):
+        if not (self.root / "devices.sqlite3").exists():
+            return False
+        with self._lock, self._database() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS desktop_alerts (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL CHECK(enabled IN (0,1)))")
+            row = db.execute("SELECT enabled FROM desktop_alerts WHERE id=1").fetchone()
+            return bool(row[0]) if row else False
+
+    def set_alerts_enabled(self, enabled):
+        if type(enabled) is not bool:
+            raise ValueError("알림 설정을 확인하세요.")
+        with self._lock, self._database() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS desktop_alerts (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL CHECK(enabled IN (0,1)))")
+            db.execute("INSERT INTO desktop_alerts(id, enabled) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled", (int(enabled),))
+
     def default_username(self):
         if not (self.root / "devices.sqlite3").exists():
             return ""

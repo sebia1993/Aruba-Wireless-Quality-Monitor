@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 const token = new URLSearchParams(location.hash.slice(1)).get("settings");
 const slotIds = ["WLC-1","WLC-2","WLC-3","WLC-4"];
-let snapshot = null, selected = slotIds[0], page = 0, view = "overview", busy = false, loading = false, sequence = 0, intervalEdited = false;
+let snapshot = null, selected = slotIds[0], page = 0, view = "overview", busy = false, loading = false, sequence = 0, intervalEdited = false, alertsEdited = false;
 const headings = {overview:"종합 현황",settings:"장비 설정",observations:"실시간 관측",operations:"운영 설정"};
 const fields = ["host","username","fingerprint","known_hosts"];
 function status(message) { $("notice").textContent = message; }
@@ -50,6 +50,15 @@ function render() {
   for(const node of [$("slot"),$("observed-slot")])
     for(const option of node.options){const s=snapshot.slots.find(x=>x.id===option.value);option.textContent=option.value+" · "+(s?.profile?.host??"미등록");}
   if(!intervalEdited)$("interval").value=snapshot.interval;
+  if(!alertsEdited)$("alerts-enabled").checked=!!snapshot.alerts_enabled;
+  const history=$("alert-history");
+  history.replaceChildren();
+  if(!snapshot.alerts?.length)history.append(el("p","현재 실행 중 기록된 수집 오류 없음"));
+  else {
+    const list=el("ul");
+    for(const alert of snapshot.alerts)list.append(el("li",new Date(alert.at*1000).toLocaleString("ko-KR")+" · "+alert.id+" · "+alert.status));
+    history.append(list);
+  }
   const s=active();
   $("remove").disabled=busy||!s?.profile;
   const data=snapshot.table;
@@ -79,7 +88,7 @@ function form(action) {
 async function act(data, message, after) {
   if(busy)return;
   busy=true;
-  const controls=["test","save","stop","remove","default-account","save-interval","slot","observed-slot"];
+  const controls=["test","save","stop","remove","default-account","save-interval","save-alerts","slot","observed-slot"];
   for(const id of controls)$(id).disabled=true;
   try {
     await api(data);status(message);
@@ -103,6 +112,8 @@ $("stop").addEventListener("click",()=>act({action:"stop",id:selected},"조회 �
 $("remove").addEventListener("click",()=>{if(confirm(selected+" 등록 정보와 저장된 비밀번호를 삭제할까요?"))act({action:"remove",id:selected},"등록을 삭제했습니다.");});
 $("default-account").addEventListener("click",()=>act({action:"default_account",username:$("username").value.trim()},"새 장비 기본 계정을 변경했습니다."));
 $("interval").addEventListener("input",()=>{intervalEdited=true;});
+$("alerts-enabled").addEventListener("change",()=>{alertsEdited=true;});
+$("save-alerts").addEventListener("click",()=>act({action:"alerts",enabled:$("alerts-enabled").checked},"수집 오류 알림 설정을 저장했습니다.",()=>{alertsEdited=false;}));
 $("save-interval").addEventListener("click",()=>act({action:"interval",seconds:Number($("interval").value)},"수집 주기를 저장했습니다.",()=>{intervalEdited=false;}));
 for(const id of ["host","username"])$(id).addEventListener("input",()=>{$("password").value="";$("remember").checked=false;});
 refresh();setInterval(()=>{if(!busy)refresh();},5000);
