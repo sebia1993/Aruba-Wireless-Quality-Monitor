@@ -4,17 +4,28 @@ The writer publishes snapshots; browser refresh does not trigger SSH. Radio
 identifiers contain wired MACs internally and are replaced by opaque tokens.
 No client MAC, username, SSID or raw CLI data is included in this interface.
 """
-import hashlib,hmac,secrets
+import hashlib,hmac,secrets,re
 from copy import deepcopy
 from threading import RLock
 from .reporting import csv_report,html_report,WINDOWS,timestamp
+
+# The live merger assigns site:wired-MAC and appends the physical Radio ID.
+# Never group legacy or malformed identities by display name or IP.
+_AP_ID = re.compile(r"[A-Za-z0-9_.-]{1,64}:(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", re.ASCII)
+
+def _physical_ap(row):
+    ap, radio = row.get("ap_id"), row.get("radio_id")
+    if (isinstance(ap,str) and _AP_ID.fullmatch(ap) and isinstance(radio,str)
+            and radio.startswith(ap+":") and re.fullmatch(r"[0-9]+",radio[len(ap)+1:],re.ASCII)):
+        return ap
+    return None
 
 class DiagnosticView:
     def __init__(self,store,clock,key=None,incidents=None,association_history=None):
         if store.mode!="diagnostic":raise ValueError("diagnostic store required")
         self.store=store;self.clock=clock;self.key=key or secrets.token_bytes(32)
         self.lock=RLock();self.rows=[];self.index={};self.meta={};self.incidents=incidents;self.association_history=association_history;self.client_rows=[];self.client_enabled=False;self.neighbor_views={};self.neighbor_enabled=False
-        self.publication_revision=0
+        self.publication_revision=0;self.ap_index={}
     def token(self,radio_id):
         return hmac.new(self.key,radio_id.encode("utf-8"),hashlib.sha256).hexdigest()[:32]
     def publish(self,result,current=(),available=True,quality=None,client_views=(),client_enabled=False,neighbor_views=None,neighbor_enabled=False,anchor_views=None):
@@ -28,11 +39,13 @@ class DiagnosticView:
                     self.rows=[dict(r,freshness="stale_or_unconfirmed") for r in self.rows]
                     available=False
                 current=set(current) if available else set()
-                rows=[];index={}
+                rows=[];index={};ap_index={}
                 for r in snapshot["radios"]:
                     if r["source"]!="aos8-cli-unvalidated":continue
                     token=self.token(r["radio_id"])
                     index[token]=r["radio_id"]
+                    physical=_physical_ap(r)
+                    if physical is not None:ap_index[token]=physical
                     live=(r["radio_id"],r["observed_at"]) in current
                     q=(quality or {}).get(r["radio_id"],{})
                     approved=bool(live and q.get("observed_at")==r["observed_at"] and now<q.get("valid_until",0))
@@ -47,7 +60,7 @@ class DiagnosticView:
                         approval_until=q.get("valid_until") if approved else None,
                         incident_id=q.get("incident_id") if approved else None,
                         ap_anchor=deepcopy((anchor_views or {}).get(r["radio_id"])) if live else None))
-                if available:self.rows=rows;self.index=index
+                if available:self.rows=rows;self.index=index;self.ap_index=ap_index
             else:
                 self.rows=[dict(r,freshness="stale_or_unconfirmed") for r in self.rows]
             self.neighbor_enabled=bool(neighbor_enabled)
@@ -70,14 +83,17 @@ class DiagnosticView:
             at=self.meta.get("published_at");now=int(self.clock())
             return {"type":"publication","revision":self.publication_revision,
                     "available":bool(self.meta.get("available") and at is not None and 0<=now-at<=20)}
-    def page(self,query="",page=1,size=100,*,token=None):
+    def page(self,query="",page=1,size=100,*,token=None,ap_radio_token=None):
         if not isinstance(query,str) or len(query)>128 or not 1<=page<=10000 or not 1<=size<=100:
             raise ValueError("invalid query")
         query=query.casefold()
         with self.lock:
             meta=dict(self.meta);meta.pop("operations",None);now=int(self.clock())
             stale=not meta.get("available") or not 0<=now-meta.get("published_at",0)<=20
-            if token is None:
+            if ap_radio_token is not None:
+                physical=self.ap_index.get(ap_radio_token)
+                rows=[r for r in self.rows if physical is not None and self.ap_index.get(r["id"])==physical]
+            elif token is None:
                 rows=[r for r in self.rows if any(query in str(r[k]).casefold() for k in ("ap_name","controller","band","channel","id"))]
             else:
                 rows=[r for r in self.rows if r["id"]==token]
@@ -112,6 +128,18 @@ class DiagnosticView:
                             or not 0<=now-resource["observed_at"]<=(360 if label=="memory" else 240)):
                             resource.update(status="stale",data=None)
             return {**meta,"rows":data,"total":len(rows),"page":page,"size":size,"inventory_radios":len(self.rows)}
+    def ap_radios(self,token,page=1,size=20):
+        """Resolve an opaque Radio token to stored physical AP identity.
+
+        Reuse freshness/attestation masking, including stale retained rows.
+        This lists known Radio observations only, not AP availability or inventory.
+        """
+        if not isinstance(token,str) or not re.fullmatch(r"[0-9a-f]{32}",token):
+            raise ValueError("invalid Radio")
+        with self.lock:
+            result=self.page(page=page,size=size,ap_radio_token=token)
+            return {**{k:result.get(k) for k in ("available","published_at","rows","total","page","size")},
+                    "identity_available":token in self.ap_index}
     def operation_status(self):
         with self.lock:
             now=int(self.clock())

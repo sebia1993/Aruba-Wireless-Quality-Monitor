@@ -87,7 +87,11 @@ def fixture(root):
     rows=[]
     for n in range(1,103):
         ident=f"browser-fixture-{n:04d}"
-        rows.append(Radio(ident,ident,f"DEMO-BROWSER-{n:04d}","WLC-1","5GHz",44,
+        # Two Radio observations of one physical AP (rename between observations).
+        # Keep list size, individual names and existing history fixtures unchanged.
+        ap="fixture:02:00:00:00:00:01" if n in (1,2) else ident
+        rid=ap+":"+str(n-1) if n in (1,2) else ident
+        rows.append(Radio(rid,ap,f"DEMO-BROWSER-{n:04d}","WLC-1","5GHz",44,
                           now,40,5,-94,2,source="aos8-cli-unvalidated",epoch="fixture-1"))
     store.save_batch(rows)
     ledger=QualityLedger(store)
@@ -238,6 +242,10 @@ def browser_test(output):
                             expect(table).to_have_count(1)
                             page.get_by_role("button",name="DEMO-BROWSER-0001",exact=True).click()
                             expect(page.locator("#detail")).to_be_visible()
+                            page.get_by_role("button",name="동일 물리 AP Radio 조회",exact=True).click()
+                            related=page.locator(".physical-ap-panel tbody tr")
+                            expect(related).to_have_count(2)
+                            expect(related).to_contain_text(["DEMO-BROWSER-0001","DEMO-BROWSER-0002"])
                             with page.expect_popup() as popup:
                                 page.get_by_role("link", name="전체 페이지에서 열기").click()
                             detail_page = popup.value

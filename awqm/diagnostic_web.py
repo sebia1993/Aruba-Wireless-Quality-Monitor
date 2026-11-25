@@ -198,7 +198,7 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
             if self.path=="/login-detail.js":
                 self._send(200,(STATIC/"login-detail.js").read_bytes(),"text/javascript; charset=utf-8");return
             try:
-                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html","/api/neighbors","/api/association-history","/api/admin/collection"))
+                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html","/api/neighbors","/api/ap-radios","/api/association-history","/api/admin/collection"))
             except AuthDenied:
                 if self.path=="/":self._login()
                 else:self._json(401,{"error":"authentication_required"})
@@ -222,6 +222,11 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
                     rows=view.page(size=1,token=q["id"])["rows"]
                     if rows:self._json(200,rows[0])
                     else:self._json(404,{"error":"unknown_radio"})
+                elif path.path=="/api/ap-radios":
+                    q=self._query(path,{"id","page"})
+                    result=view.ap_radios(q["id"],int(q["page"]))
+                    audit.record(s.username,"ap_radio_view",q["id"])
+                    self._json(200,result)
                 elif path.path in ("/api/history","/api/history.csv","/api/history.html"):
                     q=self._query(path,{"id","start","end"},optional=("resolution",))
                     report=view.history(q["id"],int(q["start"]),int(q["end"]),q.get("resolution","raw"))

@@ -145,6 +145,43 @@ async function openRadio(id){
     if(!expired&&selected===ticket)out.replaceChildren(el("p","Radio 정보를 찾을 수 없습니다. 목록에서 다시 선택하세요."));
   }
 }
+function physicalApPanel(r){
+  const panel=el("section",null,"physical-ap-panel"),out=el("div"),button=el("button","동일 물리 AP Radio 조회");
+  panel.append(el("h3","동일 물리 AP의 Radio"),el("p","저장된 식별 관계 기준 · 이름/IP로 합치지 않음 · AP Up/Down 및 전체 Radio 수 확정 아님"),button,out);
+  let serial=0;
+  async function load(page){
+    const wanted=selected,attempt=++serial;
+    if(!wanted||wanted.id!==r.id||expired)return;
+    button.disabled=true;out.replaceChildren(el("p","조회 중"));
+    try{
+      const value=await request("/api/ap-radios?"+new URLSearchParams({id:r.id,page:String(page)}));
+      if(expired||selected!==wanted||attempt!==serial)return;
+      out.replaceChildren();
+      if(!value.identity_available){
+        out.append(el("p","물리 AP 식별 관계 미확인 · 다른 Radio와 통합하지 않습니다."));
+        return;
+      }
+      out.append(el("p",value.total+"개 저장 Radio · 조회 시점 기준"+(value.available?"":" · 현재 수집 확인 불가")));
+      if(value.rows.length)out.append(table(["AP 관측 이름","WLC","대역","채널","관측 시각 KST","수집 상태","품질 점수","Radio 상세"],value.rows.map(row=>{
+        let control;
+        if(row.id===r.id)control=el("span","선택한 Radio");
+        else if(detailRoute){control=el("a","Radio 상세");control.href="/#radio/"+row.id;}
+        else{control=el("button","Radio 상세");control.addEventListener("click",()=>openRadio(row.id));}
+        return [row.ap_name,row.controller,row.band,row.channel,kst(row.observed_at),
+          row.freshness==="observed"?"최근 관측":"오래됨 / 확인 불가",row.quality_score??"미검증",control];
+      })));
+      const pages=Math.max(1,Math.ceil(value.total/value.size));
+      if(pages>1||page>1){
+        const controls=el("div",null,"pager"),prev=el("button","이전"),next=el("button","다음");
+        prev.disabled=page<=1;next.disabled=page>=pages;
+        prev.onclick=()=>load(page-1);next.onclick=()=>load(page+1);
+        controls.append(prev,el("span",page+" / "+pages),next);out.append(controls);
+      }
+    }catch(e){if(!expired&&selected===wanted&&attempt===serial)out.replaceChildren(el("p","동일 AP 관측을 조회할 수 없습니다."));}
+    finally{if(attempt===serial)button.disabled=false;}
+  }
+  button.addEventListener("click",()=>load(1));return panel;
+}
 function openHistory(r){
   incidentPanel=null;selected={id:r.id,name:r.ap_name,band:r.band};$("detail").hidden=false;
   const d=$("detailBody");d.replaceChildren(el("h3",r.ap_name+" · "+r.band),el("p","원본·집계 이력 · 실제 서비스 영향 및 원인 미확인"));
@@ -191,7 +228,7 @@ function openHistory(r){
     }catch(e){if(!expired&&selected===wanted)output.textContent="조회 불가 · 데이터 유지보수 중이거나 조회 조건을 확인하세요.";}
     finally{button.disabled=end.disabled=resolution.disabled=hours.disabled=false;}
   });
-  const controls=el("div",null,"pager");controls.append(end,resolution,hours,button);d.append(controls,output,neighborPanel(r),jobsPanel(r));
+  const controls=el("div",null,"pager");controls.append(end,resolution,hours,button);d.append(controls,output,physicalApPanel(r),neighborPanel(r),jobsPanel(r));
 }
 
 const incidentLabels={DETECTED:"최초 위험",PERSISTENT:"지속 위험",RECOVERING:"회복 관측 중",RESOLVED:"RF 정책 정상화",TRANSIENT:"일시 위험",UNCONFIRMED:"현재 확인 불가",CONTEXT_LOST:"관측 조건 변경 · 정상화 아님"};
