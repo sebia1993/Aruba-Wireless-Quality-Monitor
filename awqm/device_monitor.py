@@ -169,6 +169,13 @@ class DeviceMonitor:
         self._states = {}
         self._closed = False
 
+    def configure_interval(self, seconds):
+        """Apply the new base interval on subsequent polls without interrupting SSH."""
+        if type(seconds) is not int or not 60 <= seconds <= 600:
+            raise ValueError("수집 주기는 60~600초 사이의 정수로 입력하세요.")
+        with self._lock:
+            self._interval = seconds
+
     def start(self, profile, password, *, once=False):
         with self._lock:
             if self._closed:

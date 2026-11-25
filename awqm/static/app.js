@@ -3,21 +3,12 @@ const $=id=>document.getElementById(id);
 const settingsButton = $("device-settings");
 if (settingsButton) {
   const token = new URLSearchParams(location.hash.slice(1)).get("settings");
-  settingsButton.addEventListener("click", async () => {
-    const status = $("device-settings-status");
+  settingsButton.addEventListener("click", () => {
     if (!token) {
-      status.textContent = "Windows의 Aruba Wireless Quality Monitor 창에서 ‘장비 설정’을 여세요.";
+      $("device-settings-status").textContent = "Windows AWQM에서 웹 대시보드를 열어 주세요.";
       return;
     }
-    try {
-      const response = await fetch("/api/desktop/settings", {
-        method: "POST", headers: {"X-AWQM-Settings": token}, cache: "no-store"
-      });
-      if (!response.ok) throw new Error();
-      status.textContent = "Windows 앱에서 장비 설정 창을 확인하세요.";
-    } catch {
-      status.textContent = "앱에서 ‘장비 설정’을 직접 여세요.";
-    }
+    location.href = "/devices#settings=" + encodeURIComponent(token);
   });
 }
 let snapshot=null, view="overview", selected=null, clientMode="candidate";

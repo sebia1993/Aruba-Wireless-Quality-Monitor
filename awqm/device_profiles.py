@@ -117,6 +117,24 @@ class Profiles:
         with self._database() as db:
             return [DeviceProfile(*row) for row in db.execute(f"SELECT {_COLUMNS} FROM profiles ORDER BY id")]
 
+    def poll_interval(self):
+        if not (self.root / "devices.sqlite3").exists():
+            return 60
+        with self._lock, self._database() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS desktop_settings (id INTEGER PRIMARY KEY CHECK(id=1), interval INTEGER NOT NULL)")
+            row = db.execute("SELECT interval FROM desktop_settings WHERE id=1").fetchone()
+            value = row[0] if row else 60
+            if type(value) is not int or not 60 <= value <= 600:
+                raise ValueError("저장된 수집 주기를 확인하세요.")
+            return value
+
+    def set_poll_interval(self, seconds):
+        if type(seconds) is not int or not 60 <= seconds <= 600:
+            raise ValueError("수집 주기는 60~600초 사이의 정수로 입력하세요.")
+        with self._lock, self._database() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS desktop_settings (id INTEGER PRIMARY KEY CHECK(id=1), interval INTEGER NOT NULL)")
+            db.execute("INSERT INTO desktop_settings(id, interval) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET interval=excluded.interval", (seconds,))
+
     def default_username(self):
         if not (self.root / "devices.sqlite3").exists():
             return ""

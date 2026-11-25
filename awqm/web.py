@@ -9,12 +9,12 @@ from urllib.parse import urlsplit,parse_qs
 from .reporting import history_report,csv_report,html_report
 
 STATIC=Path(__file__).resolve().parent/"static"
-def handler_for(store,engine=None, *, settings_token=None, request_settings=None):
+def handler_for(store,engine=None, *, settings_token=None, devices=None):
     token=secrets.token_urlsafe(32) if engine else None
     class Handler(BaseHTTPRequestHandler):
         def _local(self):
             host=self.headers.get("Host","")
-            return host in (f"127.0.0.1:{self.server.server_port}",f"localhost:{self.server.server_port}")
+            return self.headers.get_all("Host") == [host] and host in (f"127.0.0.1:{self.server.server_port}",f"localhost:{self.server.server_port}")
         def _json(self,status,value):
             body=json.dumps(value,ensure_ascii=False).encode()
             self.send_response(status)
@@ -50,6 +50,10 @@ def handler_for(store,engine=None, *, settings_token=None, request_settings=None
                     self._json(503,{"error":"history_unavailable"});return
             routes={"/":("index.html","text/html; charset=utf-8"),"/style.css":("style.css","text/css; charset=utf-8"),
                     "/app.js":("app.js","text/javascript; charset=utf-8")}
+            if devices is not None:
+                routes.update({"/devices": ("devices.html", "text/html; charset=utf-8"),
+                               "/devices.js": ("devices.js", "text/javascript; charset=utf-8"),
+                               "/devices.css": ("devices.css", "text/css; charset=utf-8")})
             if self.path=="/api/snapshot":
                 snapshot=store.snapshot()
                 snapshot["clients"]=synthetic_clients(snapshot["radios"]) if engine is None else engine.client_views()
@@ -72,22 +76,43 @@ def handler_for(store,engine=None, *, settings_token=None, request_settings=None
             self.send_header("Content-Length",str(len(body)))
             self.send_header("Cache-Control","no-store")
             self.send_header("X-Content-Type-Options","nosniff")
-            self.send_header("Content-Security-Policy","default-src 'self'; frame-ancestors 'none'; object-src 'none'")
+            self.send_header("Content-Security-Policy","default-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'")
+            self.send_header("Referrer-Policy","no-referrer")
             self.end_headers()
             self.wfile.write(body)
         def do_POST(self):
-            if self.path == "/api/desktop/settings":
+            if self.path == "/api/desktop/devices":
                 origin = "http://" + self.headers.get("Host", "")
                 supplied = self.headers.get("X-AWQM-Settings", "")
-                if (not self._local() or not settings_token or request_settings is None
-                        or self.headers.get("Origin") != origin or not supplied.isascii()
-                        or not hmac.compare_digest(supplied, settings_token)
-                        or self.headers.get("Content-Length", "0") != "0"
-                        or self.headers.get("Transfer-Encoding") is not None):
-                    self.send_error(403)
+                if (not self._local() or not settings_token or devices is None
+                        or self.headers.get_all("Origin") != [origin]
+                        or self.headers.get_all("X-AWQM-Settings") != [supplied]
+                        or not supplied.isascii() or not hmac.compare_digest(supplied, settings_token)):
+                    self._json(403, {"error": "현재 PC의 AWQM에서 웹 화면을 다시 여세요."})
                     return
-                request_settings()
-                self._json(200, {"opened": True})
+                try:
+                    lengths = self.headers.get_all("Content-Length", [])
+                    if (len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdigit()
+                            or self.headers.get_all("Transfer-Encoding")
+                            or self.headers.get("Content-Type", "").split(";")[0] != "application/json"):
+                        raise ValueError("요청 형식을 확인하세요.")
+                    length = int(lengths[0])
+                    if not 1 <= length <= 8192:
+                        raise ValueError("요청 크기를 확인하세요.")
+                    self.connection.settimeout(5)
+                    raw = self.rfile.read(length)
+                    if len(raw) != length:
+                        raise ValueError("요청이 완전하지 않습니다.")
+                    value = devices.dispatch(json.loads(raw))
+                except (ValueError, TypeError, KeyError) as error:
+                    # Only explicitly raised validation errors are presented; never echo JSON or credentials.
+                    message = str(error) if type(error) is ValueError else "장비 설정 요청을 확인하세요."
+                    self._json(400, {"error": message[:160]})
+                    return
+                except (RuntimeError, OSError):
+                    self._json(503, {"error": "장비 설정 또는 조회를 처리할 수 없습니다."})
+                    return
+                self._json(200, value)
                 return
             if engine is None or not self._local():
                 self.send_error(403);return
@@ -125,13 +150,13 @@ def handler_for(store,engine=None, *, settings_token=None, request_settings=None
     return Handler
 
 @contextmanager
-def demo_server(port, *, settings_token=None, request_settings=None):
+def demo_server(port, *, settings_token=None, devices=None):
     """Own an isolated synthetic store and its refresh worker for one listener."""
     with tempfile.TemporaryDirectory(prefix="awqm-demo-") as root:
         store=Store(root)
         seed(store)
         server=ThreadingHTTPServer(("127.0.0.1",port),handler_for(
-            store, settings_token=settings_token, request_settings=request_settings))
+            store, settings_token=settings_token, devices=devices))
         stopped=threading.Event()
         def refresh():
             while not stopped.wait(60):
