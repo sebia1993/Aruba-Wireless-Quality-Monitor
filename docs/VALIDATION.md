@@ -16,13 +16,15 @@ Keep the validation utility and acceptance criteria available; never record the
 trial as passed without actual results. This does not transfer other developer
 integration, security, performance or Windows service lifecycle tests.
 
-For the actual elapsed-time soak, use a dedicated Windows 11 x64 client PC with at least 100 GB free and a NEW directory. The process must run uninterrupted for 72 real hours. Do not use a production data directory, share credentials, or connect to actual WLCs.
+Use a dedicated Windows 11 x64 client PC with at least 100 GB free. From the extracted package directory, run the following in PowerShell. Choose a new output directory for each attempt. The four synthetic workers exercise SQLite persistence, maintenance and 60-second target scheduling without device credentials. Keep the machine awake and the process running for 72 real hours. Schedule the Windows restart trial at a different time.
 ```powershell
-AWQM.exe --validate-scale soak --output D:\AWQM-Validation\soak-01
+.\AWQM.exe --validate-scale soak --output D:\AWQM-Validation\soak-01
 ```
-This uses real monotonic and wall clocks, all 4 full-capacity fixture workers, 60-second target scheduling, SQLite persistence and maintenance. It records periodic coverage and read-model timing. A short or accelerated test cannot qualify. Clock or execution gaps, storage/maintenance errors, missing coverage, or >2s read time fail the gate. Only the final result "passed" after 72 hours counts toward this synthetic soak. Hosted GitHub Windows runners are Windows Server, not the approved Windows 11 client; they cannot qualify the 72-hour gate.
+The harness updates `D:\AWQM-Validation\soak-01\soak-result.json` during the run. Inspect it locally with `Get-Content -Raw -LiteralPath D:\AWQM-Validation\soak-01\soak-result.json | ConvertFrom-Json`. For acceptance, the final `state` must be `passed`. Both `elapsed_seconds` and `wall_elapsed_seconds` must reach 259,200, with at least 4,300 checks, zero `missed_checks`, `max_read_model_seconds` at most 2, and `failure` null. Each coverage check expects four coherent controllers, 4,000 mapped Radios and 20,000 active clients. The harness also checks the published inventory count and rejects clock/execution gaps, storage errors and failed maintenance.
 
-Remaining independent gates: actual Win11 SCM installation/restart/stop/reboot with dedicated account and offline environment; long-term retained DB query performance; authenticated HTTPS concurrency and browser layout; security/dependency audit; production release checklist. The actual corporate WLC CLI/permission/AAA/Airtime verification remains operator-owned. This harness is not a promise of field compatibility.
+Return the result JSON, the tested package filename and its verified ZIP SHA-256. Retain the working database and backups locally. Preserve a `failed` or `incomplete` result with its `failure` value. A `running` record left by a terminated process, or a missing result, leaves the trial unqualified. A retry starts in a new directory.
+
+The target-PC service restart has a separate [Windows 11 reboot procedure](WINDOWS_SERVICE.md#windows-11-reboot-qualification). The owner separately verifies corporate WLC CLI permissions, AAA and Airtime.
 
 ## Actual loopback TLS/WSS capacity (v0.29)
 
@@ -55,9 +57,9 @@ No real-controller compatibility claim. 72-hour execution remains user-owned.
 
 Run `AWQM.exe --validate-scale lifecycle --output C:\\AWQM-Validation\\lifecycle-01` in a NEW isolated destination. CI uses 32 invented Radios and 120 minute cycles (3,840 rows) through the actual Store writer, deliberately interrupts one cycle after staging, reopens the Store and verifies recovered receipts and identical replay. It rebuilds both closed-day aggregate resolutions, checks every Radio's exact time/value/coverage, creates and checks a full raw+aggregate backup, restores into a separate directory, tests approved/unapproved retirement and verifies both surviving aggregate series and unchanged source data. Reports real per-cycle P95, aggregation, backup and restore seconds. The synthetic files remain in the new destination; only result JSON is packaged by CI. This is a correctness trial, not a full day/4,000-Radio writer or 109.92-million-row retained benchmark, concurrent writer, production recovery, browser, real-device, SCM or 72-hour qualification.
 
-## Actual browser UI trial (v0.39)
+## Actual browser UI trial
 
-Separate CI job installs `requirements-browser.txt` and the Playwright Chromium binary; neither is included in the packaged application. Run `python -m tools.browser_validation --output browser-validation` after installing the browser in an isolated test environment. Uses an invented 102-Radio Store, actual diagnostic TLS endpoint and synthetic identity verifier. Exercises 1440x900 light and 390x844 dark viewports, actual login and cookie session, pagination, search, Radio detail/history CSV download, detail clearing and fresh search on navigation, disabled search on unrelated menus, WebSocket publication, operator/admin boundaries, server-side revocation and logout. The fixture-only certificate exception does not change product TLS settings. Result JSON only; no private keys, tokens, downloads or DB artifacts. This is a representative Chromium interaction check on the CI runner, not physical Windows 11, production AAA, full browser load, cross-browser or real-device qualification.
+The separate CI job installs `requirements-browser.txt` and Chromium. Run `python -m tools.browser_validation --output browser-validation` in the isolated browser test environment. The fixture uses a 102-Radio Store, the diagnostic HTTPS endpoint and synthetic accounts. At 1440×900 (light) and 390×844 (dark) it exercises login, cross-menu search, pagination, Radio history, a native CSV download, WebSocket publication, role boundaries, revocation and logout. Search covers authorized Radios/APs, incidents and approved client observations. The fixture opens and reloads a client detail page and checks masking. It records the results in `browser-result.json`. The separate concurrent browser trial below measures full-inventory render time.
 
 ## Native form regression (v0.40)
 

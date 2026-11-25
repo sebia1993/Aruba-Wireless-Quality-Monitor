@@ -45,15 +45,15 @@ class PortableLauncherTests(unittest.TestCase):
                 manager.assert_called_once()
 
     def test_interactive_explicit_demo_and_exit(self):
-        with patch.object(sys.stdin,"isatty",return_value=True), patch("builtins.input",side_effect=["invalid","2"]), patch("launcher.serve_engine") as engine:
+        with patch.object(sys.stdin,"isatty",return_value=True), patch("builtins.input",side_effect=["invalid","2"]), patch("awqm.engine_demo.serve_engine") as engine:
             self.run_args()
             engine.assert_called_once_with(8765,False,open_browser=True)
-        with patch.object(sys.stdin,"isatty",return_value=True), patch("builtins.input",return_value="0"), patch("launcher.serve") as demo:
+        with patch.object(sys.stdin,"isatty",return_value=True), patch("builtins.input",return_value="0"), patch("awqm.web.serve") as demo:
             self.run_args()
             demo.assert_not_called()
 
     def test_explicit_demo_keeps_browser_opt_in(self):
-        with patch("launcher.serve") as demo:
+        with patch("awqm.web.serve") as demo:
             self.run_args("--demo","--smoke-test")
             demo.assert_called_once_with(8765,True,open_browser=False)
 
@@ -64,7 +64,7 @@ class PortableLauncherTests(unittest.TestCase):
         with patch("awqm.scale_validation.main") as scale:
             self.run_args("--validate-scale","retained","--output","fixture")
             scale.assert_called_once()
-        with patch("launcher.probe_main") as probe:
+        with patch("awqm.probe.main") as probe:
             self.run_args("--validate-cli","client-info-airtime","fixture.txt")
             probe.assert_called_once()
 

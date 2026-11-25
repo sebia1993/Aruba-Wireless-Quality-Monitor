@@ -376,7 +376,7 @@ function associationPanel(){
       const d=await request("/api/association-history?"+new URLSearchParams({id:input.value.trim(),page:String(p)}));
       if(expired||!panel.isConnected)return;
       out.replaceChildren(el("p",d.enabled?"최근 30일 양성 관측 이력 · 관측 공백은 접속 종료가 아님":"이력 수집 비활성 또는 현장 승인 만료"));
-      if(d.rows.length)out.append(table(["보호 ID","AP","대역","AAC","A-UAC 관측","S-UAC 관측","관측 유형","첫 관측","최근 관측"],d.rows.map(r=>[r.id,r.ap_name,r.band,r.aac,r.auac,r.suac,({first_observation:"첫 관측",after_observation_gap:"관측 공백 후",attachment_changed:"접속 위치 변경 관측",anchor_context_changed:"앵커 컨텍스트 변경",user_anchor_observation_changed:"UAC 관측 변경",metadata_changed:"메타데이터 변경"})[r.event]||r.event,kst(r.first_at),kst(r.last_at)])));
+      if(d.rows.length)out.append(table(["보호 ID","AP","대역","AAC","A-UAC 관측","S-UAC 관측","관측 유형","첫 관측","최근 관측"],d.rows.map(r=>[r.id,r.ap_name,r.band,r.aac,r.auac,r.suac,({first_observation:"첫 관측",after_observation_gap:"관측 공백 후",attachment_changed:"접속 위치 변경 관측",anchor_context_changed:"앵커 컨텍스트 변경",user_anchor_observation_changed:"UAC 관측 변경",metadata_changed:"메타데이터 변경",physical_mapping_unverified:"물리 AP·Radio 연결 미검증"})[r.event]||r.event,kst(r.first_at),kst(r.last_at)])));
       const prev=el("button","이전"),next=el("button","다음");
       prev.disabled=p<=1;next.disabled=p*d.size>=d.total;
       prev.addEventListener("click",()=>{p--;load();});next.addEventListener("click",()=>{p++;load();});

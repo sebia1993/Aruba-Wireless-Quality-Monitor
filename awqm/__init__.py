@@ -1,2 +1,2 @@
 """AWQM development foundation."""
-__version__ = "0.42.1-dev"
+__version__ = "0.43.1-dev"

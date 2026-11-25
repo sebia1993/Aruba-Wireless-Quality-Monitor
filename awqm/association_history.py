@@ -5,7 +5,7 @@ collection interruption is never interpreted as disconnection or seamless roam.
 Raw client MAC/IP/name/SSID/BSSID never enter this ledger.
 """
 from dataclasses import dataclass
-from collections import defaultdict
+from collections import Counter, defaultdict
 import hashlib,hmac,json,re,secrets,time
 from .service_config import safe_path
 from .dpapi import protect,unprotect
@@ -15,6 +15,10 @@ COMMANDS=("show user-table","show user-table standby")
 CHECKS=frozenset(("active_association_mapping","bss_radio_mapping","active_table_uac_scope",
     "standby_table_uac_scope","tunnel_forwarding_scope","privacy_approval","retention_approval"))
 CONTRACT="aos8-connection-history-v1"
+MAPPING_PREFIX = "wired-ap-v1:"
+
+def known_mapping(context):
+    return isinstance(context, str) and re.fullmatch(MAPPING_PREFIX + "[0-9a-f]{32}", context) is not None
 LIMIT=30*86400
 
 def user_table(text):
@@ -115,12 +119,13 @@ class AssociationHistory:
         a=self.approvals.get(s.controller)
         return bool(a and s.field_tag and now<(s.field_until or 0) and a.permits(s.field_tag,at,now))
     def ingest(self,radios,snapshots,frames,claims,now):
-        sig=tuple(sorted((s.controller,s.field_connection,s.field_tag,s.observed_at,s.association_at,
+        sig=tuple(sorted((s.controller,s.field_connection,s.field_tag,s.observed_at,s.association_at,s.inventory_at,s.anchor_at,
             getattr(frames.get(s.controller,(None,None,{}))[1],"observed_at",None),
             tuple((cmd,r.observed_at) for cmd,r in sorted(frames.get(s.controller,(None,None,{}))[2].items()))) for s in snapshots))
         if sig==self.signature:return 0
-        by=defaultdict(list)
-        for r in radios:by[(r.controller,r.ap_name,r.band,r.channel)].append(r)
+        radios_by_ap=defaultdict(list)
+        for r in radios:
+            radios_by_ap[(r.controller,r.ap_id,r.ap_name,r.band,r.channel)].append(r)
         # UAC observations may be on different controllers from AAC.
         uac=defaultdict(lambda:{"active":set(),"standby":set()})
         bsses=defaultdict(list);loc=defaultdict(list)
@@ -129,11 +134,22 @@ class AssociationHistory:
             if not frame or not frame[0] or frame[0].field_connection!=s.field_connection:continue
             bss=frame[1]
             if bss and 0<=now-bss.observed_at<=330 and self.permitted(s,bss.observed_at,now):
+                anchors=Counter((a["name"],a["ip"]) for a in s.active if "A" in a["roles"])
+                inventory=defaultdict(list)
+                for ap in s.inventory:
+                    inventory[(ap["name"],ap["ip"])].append(ap["mac"])
                 for b in bss.data:
                     if not b["service"]:continue
-                    rr=by[(s.controller,b["ap_name"],b["band"],b["channel"])]
-                    anchors=[a for a in s.active if a["name"]==b["ap_name"] and a["ip"]==b["ip"] and "A" in a["roles"]]
-                    if len(rr)==1 and len(anchors)==1:bsses[b["bssid"]].append((rr[0],b,s))
+                    identity=(b["ap_name"],b["ip"])
+                    if not anchors[identity]:continue
+                    wired=inventory[identity]
+                    radio=None
+                    if anchors[identity]==1 and len(wired)==1:
+                        ap_id=self.site+":"+wired[0]
+                        matches=radios_by_ap.get((s.controller,ap_id,b["ap_name"],b["band"],b["channel"]),())
+                        if len(matches)==1:radio=matches[0]
+                    # An unresolved active BSS still counts as a conflicting claim.
+                    bsses[b["bssid"]].append((radio,b,s))
             for cmd,reading in frame[2].items():
                 if cmd not in COMMANDS or not 0<=now-reading.observed_at<=330 or not self.permitted(s,reading.observed_at,now):continue
                 for row in reading.data:
@@ -148,7 +164,7 @@ class AssociationHistory:
             matches=bsses.get(claim["bssid"],())
             if len(matches)!=1:continue
             r,b,s=matches[0]
-            if b["ssid"]!=claim["ssid"] or b["ap_name"]!=claim["ap_name"]:continue
+            if r is None or b["ssid"]!=claim["ssid"] or b["ap_name"]!=claim["ap_name"]:continue
             local=[(row,snap) for row,snap in loc.get(raw,()) if snap.controller==s.controller and all(row[k]==claim[k] for k in ("ap_name","bssid","ssid"))]
             if len(local)!=1:continue
             row,snap=local[0];at=snap.association_at
@@ -161,7 +177,7 @@ class AssociationHistory:
                 status="positive_table_observation" if au or su else "unknown"
             samples.append((self.token("device",raw),at,self.token("ap",r.ap_id),r.ap_name,self.token("radio",r.radio_id),
                 r.band,self.token("bss",claim["bssid"]),self.token("network",claim["ssid"]),r.controller,
-                self.token("context",s.field_connection+"|"+r.epoch),au,su,status))
+                MAPPING_PREFIX+self.token("context",s.field_connection+"|"+r.epoch),au,su,status))
         if len(samples)>50000:raise ValueError("history sample limit exceeded")
         changed=0
         with self.store.lock,self.store._db(self.store.root/"association.db") as c:
@@ -173,7 +189,7 @@ class AssociationHistory:
                 aac, auac, suac = values[6], values[8], values[9]
                 grant_start = max(self.approvals[source].approved_at
                                   for source in (aac, auac, suac) if source is not None)
-                if old and old[0] < grant_start:
+                if old and (old[0] < grant_start or not known_mapping(old[9])):
                     old = None
                 if old and at-old[1]<=300 and tuple(values)==old[2:]:
                     c.execute("UPDATE association_segments SET last_at=? WHERE id=? AND first_at=?",(at,ident,old[0]));continue
@@ -207,12 +223,18 @@ class AssociationHistory:
         try:
             with self.store._db(self.store.root/"association.db") as c:
                 count=c.execute("SELECT count(*) FROM association_segments WHERE "+where,args).fetchone()[0]
-                rows=c.execute("SELECT id,first_at,last_at,ap_name,band,aac,auac,suac,uac_status,event FROM association_segments WHERE "+where+" ORDER BY last_at DESC,id,first_at DESC LIMIT 50 OFFSET ?",(*args,(page-1)*50)).fetchall()
+                rows=c.execute("SELECT id,first_at,last_at,ap_name,band,aac,auac,suac,uac_status,event,context_token FROM association_segments WHERE "+where+" ORDER BY last_at DESC,id,first_at DESC LIMIT 50 OFFSET ?",(*args,(page-1)*50)).fetchall()
         finally:self.store.lock.release()
-        cols=("id","first_at","last_at","ap_name","band","aac","auac","suac","uac_status","event")
+        cols=("id","first_at","last_at","ap_name","band","aac","auac","suac","uac_status","event","context_token")
         visible = []
         for record in rows:
             row = dict(zip(cols, record))
+            if known_mapping(row.pop("context_token")):
+                row["mapping_status"] = "wired_inventory_matched"
+            else:
+                # Existing observations lack the inventory used to reconstruct the old join.
+                row["mapping_status"] = "unverified"
+                row["event"] = "physical_mapping_unverified"
             for role in ("auac", "suac"):
                 source = row[role]
                 if source not in active or row["first_at"] < active[source]:

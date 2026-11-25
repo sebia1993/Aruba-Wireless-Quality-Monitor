@@ -1,4 +1,6 @@
-# Development status (v0.42.1-dev portable integration)
+# Development status (v0.43.1-dev portable candidate)
+
+Both v0.42 packages passed full candidate CI. The folder service recovered automatically in 30.328 seconds on the hosted Windows Server, and restarted after an offline upgrade and rollback. v0.43 addresses a positive association-history join between distinct same-named APs and marks older observations with unverified physical mappings. Its build checks the native versions returned by the final executable. The target Windows 11 reboot, the deferred full retained database, and owner-run field and soak trials require separate results. [Folder CI](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45541222743) · [Portable CI](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45541930331)
 
 The [v0.41 folder package](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45536314896) and [single executable](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45536519893) passed full candidate CI. On Windows 11, 10 synthetic operators completed 50 browser searches and dashboard reads with a render P95 of 0.482 seconds. The v0.42 candidate extends search across authorized diagnostic views, validates the comparison group used for client quality, and checks the SCM recovery policy before enabling startup. The 109,920,000-row trial remains deferred by the owner.
 
