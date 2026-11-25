@@ -5,6 +5,7 @@ Scale tests measure the real parser/worker/merge/store/read model. They do NOT
 establish real WLC latency, Windows SCM lifecycle or browser rendering latency.
 """
 import argparse,concurrent.futures,json,math,platform,shutil,sys,tempfile,time
+from contextlib import ExitStack
 from pathlib import Path
 from threading import Event
 from .fixture_session import table
@@ -12,7 +13,7 @@ from .worker import ControllerWorker
 from .engine import Engine
 from .storage import Store
 from .diagnostic_view import DiagnosticView
-from .maintenance import Maintenance,write_json
+from .maintenance import BackgroundMaintenance,Maintenance,write_json
 
 def mac(prefix,n):
     return ":".join([f"{prefix:02x}",*map(lambda x:f"{x:02x}",n.to_bytes(5,"big"))])
@@ -123,48 +124,82 @@ def soak(root,hours=72,aps=500,clients=10):
     if shutil.disk_usage(root).free<100*10**9:raise ValueError("at least 100 GB free required for full synthetic soak")
     store=Store(root/"data",mode="diagnostic")
     e=Engine(workers(time.monotonic,time.time,aps,clients,True),store,site="synthetic-soak")
-    maintenance=Maintenance(store,root/"backups")
+    maintenance=BackgroundMaintenance(Maintenance(store,root/"backups"))
     view=DiagnosticView(store,time.time,key=b"synthetic-soak-only")
     start=time.monotonic();wall_start=time.time();next_check=start+180;previous=start
     checks=0;missed=0;read_max=0;failure=None;last_publish=-1e20
+    last_sample=None
     status_path=root/"soak-result.json"
     def record(state):
         report={"kind":"synthetic_full_capacity_real_time_soak","version":__import__("awqm").__version__,
             "state":state,"elapsed_seconds":round(time.monotonic()-start,3),
             "wall_elapsed_seconds":round(time.time()-wall_start,3),"required_seconds":72*3600,
             "checks":checks,"missed_checks":missed,"max_read_model_seconds":round(read_max,6),
-            "failure":failure,"real_device_validated":False,"scm_validated":False,
+            "failure":failure,"last_sample":last_sample,"real_device_validated":False,"scm_validated":False,
             "browser_https_load_validated":False,"windows_11_x64":True,"clock":"real_monotonic_and_wall"}
         write_json(status_path,report);return report
-    record("running")
+    end=start+72*3600
+    def clock_gap(now):
+        return now-previous>120 or abs((time.time()-wall_start)-(now-start))>120
+
+    exception_reason="validation_failure"
     try:
-        while time.monotonic()-start<72*3600:
-            now=time.monotonic()
-            if now-previous>120 or abs((time.time()-wall_start)-(now-start))>120:
-                failure="clock_or_execution_gap";break
-            previous=now
-            result=e.pulse() or e.last_result
-            if e.error:failure="engine_storage_failure";break
-            m=maintenance.tick()
-            if m.get("status") in ("failed","disk_protection","pending_writes"):
-                failure="maintenance_or_disk_failure";break
-            if now-last_publish>=5:
-                view.publish(result,e.published_radios);last_publish=now
-            if now>=next_check:
-                checks+=1
-                if result.get("mapped_radios")!=4000 or result.get("active_clients")!=20000 or result.get("coherent_controllers")!=4:missed+=1
-                before=time.perf_counter();page=view.page();read_max=max(read_max,time.perf_counter()-before)
-                if page["total"]!=4000:missed+=1
-                next_check+=60
-                if next_check<=now:failure="missed_validation_interval";break
-                record("running")
-            time.sleep(.25)
-        if failure is None and (time.monotonic()-start<72*3600 or time.time()-wall_start<72*3600 or checks<4300 or missed or read_max>2):
-            failure="duration_or_coverage_gate_not_met"
-        return record("passed" if failure is None else "failed")
-    except BaseException:
-        failure="interrupted";record("incomplete");raise
-    finally:e.close()
+        with ExitStack() as resources:
+            resources.callback(e.close)
+            resources.callback(maintenance.close)
+            record("running")
+            while True:
+                now=time.monotonic()
+                if clock_gap(now):
+                    failure="clock_or_execution_gap";break
+                previous=now
+                if now>=end and time.time()-wall_start>=72*3600:
+                    if next_check<end:
+                        missed+=1
+                        failure="missed_validation_interval"
+                    break
+                result=e.pulse() or e.last_result
+                if e.error:failure="engine_storage_failure";break
+                m=maintenance.tick()
+                if m.get("status") in ("failed","disk_protection","pending_writes"):
+                    failure="maintenance_or_disk_failure";break
+                if now-last_publish>=5:
+                    view.publish(result,e.published_radios);last_publish=now
+                if now>=next_check:
+                    checks+=1
+                    before=time.perf_counter()
+                    page=view.page()
+                    read_seconds=time.perf_counter()-before
+                    read_max=max(read_max,read_seconds)
+                    last_sample={k:result.get(k) for k in ("mapped_radios","active_clients","coherent_controllers")}
+                    last_sample["published_radios"]=page["total"]
+                    if (last_sample["mapped_radios"]!=4000 or last_sample["active_clients"]!=20000
+                        or last_sample["coherent_controllers"]!=4 or last_sample["published_radios"]!=4000):
+                        missed+=1
+                        failure="coverage_mismatch"
+                        break
+                    if read_seconds>2:
+                        failure="read_time_exceeded"
+                        break
+                    next_check+=60
+                    if next_check<=now:failure="missed_validation_interval";break
+                    record("running")
+                time.sleep(.25)
+            if failure is None and maintenance.finish().get("status") in ("failed","disk_protection","pending_writes"):
+                failure="maintenance_or_disk_failure"
+            if failure is None and (time.monotonic()-start<72*3600 or time.time()-wall_start<72*3600 or checks<4300 or missed or read_max>2):
+                failure="duration_or_coverage_gate_not_met"
+            exception_reason="cleanup_failure"
+        # Waiting for the final maintenance pass and closing workers are part of
+        # the trial. The deadline alone must not hide a gap in those operations.
+        if failure is None and clock_gap(time.monotonic()):
+            failure="clock_or_execution_gap"
+    except BaseException as exc:
+        if failure is None:
+            failure="interrupted" if isinstance(exc,(KeyboardInterrupt,SystemExit)) else exception_reason
+        record("incomplete" if failure=="interrupted" else "failed")
+        raise
+    return record("passed" if failure is None else "failed")
 
 def main():
     p=argparse.ArgumentParser(description="Isolated synthetic validation; never contacts real WLCs")

@@ -25,7 +25,7 @@ from .ssh_shell import ShellSession
 from .worker import ControllerWorker
 from .storage import Store,disk_level
 from .engine import Engine
-from .maintenance import Maintenance,write_json
+from .maintenance import BackgroundMaintenance,Maintenance,write_json
 from .service_config import load_config,secret,safe_path,load_profile
 from .windows_security import check_identity,check_layout
 
@@ -179,9 +179,10 @@ def run_service(root,stop,on_ready=None):
                       live_neighbors=LiveNeighbors(neighbor_approvals,quality.incidents) if neighbor_approvals else None,association_history=history)
         resources.callback(engine.close)
         backup_root=safe_path(cfg.root,"backup");audit_path=safe_path(cfg.root,"logs/web-audit.db")
-        maintenance=Maintenance(store,backup_root,
+        maintenance=BackgroundMaintenance(Maintenance(store,backup_root,
             retention=Retention(store,backup_root,audit_path) if retention_enabled else None,
-            audit_path=audit_path,archive_days=archive_days)
+            audit_path=audit_path,archive_days=archive_days))
+        resources.callback(maintenance.close)
         view=DiagnosticView(store,time.time,incidents=quality.incidents,association_history=history) if web else None
         if web:
             server=create_listener(web,cfg,engine.workers,gate,view,stop,manual_enabled=manual_enabled,operations=operations)

@@ -5,10 +5,12 @@ their own protected local policy.
 Run from the single collection coordinator, not from an HTTP request.
 """
 import hashlib,json,os,shutil,sqlite3,time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from uuid import uuid4
 from .archive_retention import ArchiveRetention
-from .storage import DAY,MONTH,day_for,day_start,disk_level,Store
+from .storage import DAY,MONTH,day_for,day_start,disk_level,Store,AggregateCancelled,AggregateRevisionChanged
 
 def digest(path):
     h=hashlib.sha256()
@@ -114,6 +116,37 @@ def restore_new(source,destination):
         shutil.rmtree(stage,ignore_errors=True);raise
     return dst
 
+class BackgroundMaintenance:
+    """Run one maintenance pass at a time while collection and heartbeat continue."""
+    def __init__(self, maintenance):
+        self.maintenance = maintenance
+        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="awqm-maintenance")
+        self.pending = None
+        self.last = None
+
+    def tick(self):
+        if self.pending is not None:
+            if self.pending.done():
+                return self.finish()
+            return {"status":"running"}
+        if self.last is not None and self.maintenance.clock() < self.maintenance.next_at:
+            return self.last
+        self.pending = self.pool.submit(self.maintenance.tick)
+        return {"status":"running"}
+
+    def finish(self):
+        if self.pending is not None:
+            job = self.pending
+            self.pending = None
+            self.last = job.result()
+        return self.last
+
+    def close(self):
+        self.maintenance.stop_requested.set()
+        self.pool.shutdown(wait=True)
+        self.finish()
+
+
 class Maintenance:
     def __init__(self,store,backup_root,clock=time.time,usage=shutil.disk_usage,retention=None,audit_path=None,
                  archive_days=None):
@@ -126,6 +159,7 @@ class Maintenance:
         self.clock=clock;self.usage=usage;self.retention=retention;self.audit_path=audit_path
         self.state=json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
         self.next_at=0
+        self.stop_requested = Event()
     def tick(self,force=False):
         """One closed-day rebuild per run; daily core / weekly aggregate backup.
 
@@ -150,7 +184,7 @@ class Maintenance:
                 done={r[0] for r in c.execute("SELECT day FROM aggregate_manifest WHERE completed_revision=revision AND raw_count IS NOT NULL")}
             days=sorted(m[1] for p in self.store.root.glob("radio_*.db") if (m:=DAY.fullmatch(p.name)) and m[1]<today and m[1] not in done)
             if days:
-                self.store.aggregate_day(days[0],now)
+                self.store.aggregate_day(days[0],now,cancel=self.stop_requested)
                 self.state["last_aggregated_day"]=days[0]
             weekly=now-self.state.get("last_aggregate_backup",-10**12)>=7*86400
             daily=now-self.state.get("last_core_backup",-10**12)>=86400
@@ -173,6 +207,11 @@ class Maintenance:
                 self.state["last_archive_retention_attempt"] = now
                 protected = (self.state.get("last_backup"), self.state.get("last_aggregate_backup_name"))
                 self.state["archive_retention"] = self.archive_retention.run(now, protected)
+        except AggregateRevisionChanged:
+            # New observations invalidated this pass. The next tick rebuilds the day.
+            self.state.update(status="revision_changed",error=None)
+        except AggregateCancelled:
+            self.state.update(status="cancelled",error=None)
         except (OSError,ValueError,RuntimeError,sqlite3.Error,TypeError) as exc:
             self.state.update(status="failed",error=type(exc).__name__)
         finally:

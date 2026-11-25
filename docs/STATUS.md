@@ -1,4 +1,6 @@
-# Development status (v0.43 development candidate)
+# Development status (v0.44 development candidate)
+
+The v0.43.0-dev frozen Windows 11 soak missed one coverage check at 240.134 seconds. The standard Radio poll runs every 60 seconds and the association poll every 120 seconds. v0.44 counts fresh association inventories independently while retaining the time-alignment requirement for RF attribution. A separate measured daily rebuild of 5,760,000 observations occupied the foreground store lock for over 130 seconds. The new coordinator runs maintenance in the background and validates the day revision before publishing aggregates. A new candidate requires its own uninterrupted 72-hour qualification.
 
 Both v0.42 packages passed full candidate CI. The folder service recovered automatically in 30.328 seconds on the hosted Windows Server, and restarted after an offline upgrade and rollback. v0.43 addresses a positive association-history join between distinct same-named APs and marks older observations with unverified physical mappings. Its build checks the native versions returned by the final executable. The v0.43 folder executable passed the [109,920,000-row read trial](VALIDATION.md#full-retained-result-on-windows-11) on Windows 11. The target service reboot and owner-run field and soak trials still require results. [Folder CI](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45541222743) · [Portable CI](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45541930331)
 

@@ -22,6 +22,8 @@ Use a dedicated Windows 11 x64 client PC with at least 100 GB free. From the ext
 ```
 The harness updates `D:\AWQM-Validation\soak-01\soak-result.json` during the run. Inspect it locally with `Get-Content -Raw -LiteralPath D:\AWQM-Validation\soak-01\soak-result.json | ConvertFrom-Json`. For acceptance, the final `state` must be `passed`. Both `elapsed_seconds` and `wall_elapsed_seconds` must reach 259,200, with at least 4,300 checks, zero `missed_checks`, `max_read_model_seconds` at most 2, and `failure` null. Each coverage check expects four coherent controllers, 4,000 mapped Radios and 20,000 active clients. The harness also checks the published inventory count and rejects clock/execution gaps, storage errors and failed maintenance.
 
+Starting with v0.44, a coverage miss or a read over two seconds produces an immediate failed result. The report includes the counts from the latest measurement. Every restart begins a new 72-hour trial.
+
 Return the result JSON, the tested package filename and its verified ZIP SHA-256. Retain the working database and backups locally. Preserve a `failed` or `incomplete` result with its `failure` value. A `running` record left by a terminated process, or a missing result, leaves the trial unqualified. A retry starts in a new directory.
 
 The target-PC service restart has a separate [Windows 11 reboot procedure](WINDOWS_SERVICE.md#windows-11-reboot-qualification). The owner separately verifies corporate WLC CLI permissions, AAA and Airtime.
