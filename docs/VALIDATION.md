@@ -78,3 +78,7 @@ The repeat [browser run for 084b41a](https://github.com/sebia1993/Aruba-Wireless
 The v0.41 browser fixture also opens the Radio history and incident detail in separate tabs, reloads the Radio detail, exports history and returns to the inventory. The URL fragment contains only the opaque Radio token or incident ID. Radio tokens are scoped to the service instance.
 
 The owner deferred the 4,000-Radio retained-history trial until a fixed test volume with 150 GB free is available. Record its outcome separately from the representative retained-history and ingestion trials.
+
+### Concurrent Chromium dashboard
+
+Full candidate CI runs `python -m tools.browser_load_validation --output browser-load-validation` with the browser dependencies. Ten distinct synthetic operators open isolated Chromium sessions against the loopback HTTPS service. The trial ingests one full fixture cycle, then measures 50 searches and dashboard renders over 4,000 Radios. It checks the returned APs, the rendered results, notification delivery, administrator access denial and session revocation. The timing limits are two seconds for render P95 and for delivery of the publication to all ten sessions. The JSON records the browser version, runner platform and timings. Ingestion during the rendered reads, live AAA and the full retained database require separate evidence.

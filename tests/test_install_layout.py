@@ -21,7 +21,7 @@ class InstallLayoutTests(unittest.TestCase):
             (program / "AWQM_Service.exe").touch()
 
             def inspect(path):
-                if path == library:
+                if path.samefile(library):
                     raise ValueError("unprotected fixture library")
 
             with (patch.dict(os.environ, {"ProgramFiles": directory}),

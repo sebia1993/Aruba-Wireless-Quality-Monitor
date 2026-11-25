@@ -69,7 +69,8 @@ class ArchiveRetentionTests(unittest.TestCase):
             result = self.rotation.run(self.now, (protected.name,))
             self.assertEqual(result["deleted"], removal.name)
         self.assertIsNone(self.rotation.run(self.now, (protected.name,))["deleted"])
-        self.assertEqual(set(self.archives.iterdir()), {manual, protected, latest_week, latest_core})
+        self.assertEqual({path.resolve() for path in self.archives.iterdir()},
+                         {manual, protected, latest_week, latest_core})
 
     def test_unexpected_content_and_corrupt_replacement_hold(self):
         old = self.archive("core", 20)

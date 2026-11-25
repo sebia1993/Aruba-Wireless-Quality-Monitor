@@ -1,10 +1,10 @@
 # Windows diagnostic service (v0.9.0-dev)
 
-This is development software. The service connects to configured WLCs only
-when the operator installs and starts it locally. It runs read-only
-safe-mode basic collection, stores unvalidated observations in a diagnostic
-DB, and never starts a web listener or enables automatic detail collection.
-Do not deploy as a verified production system.
+The diagnostic service runs on Windows from the folder package. Its default
+profile uses read-only safe-mode collection. A protected web configuration
+enables the optional HTTPS listener. Additional local attestations enable
+the corresponding quality metrics and detail collection. See
+[service HTTPS setup](DIAGNOSTIC_WEB.md) and [Radio validation](FIELD_VALIDATION.md).
 
 ## Prerequisites
 
@@ -48,8 +48,11 @@ same designated Windows identity that runs the service.
 - As authorized administrator: AWQM_Manager.exe install. Initial
   registration is manual startup for safe verification; no start occurs.
 - AWQM_Manager.exe start; AWQM_Manager.exe status; inspect protected
-  logs/service-status.json and diagnostic DB. Service status is not
-  evidence of RF data validity.
+  logs/service-status.json and diagnostic DB. SCM RUNNING follows the local
+  identity, configuration, database and optional listener startup checks.
+  The protected status file records a clean shutdown as stopped and a
+  runtime or cleanup failure as failed. Use SCM and the Windows event log
+  for failures before the protected status directory is available.
 - AWQM_Manager.exe stop and wait until STOPPED before changing credentials
   or configuration. Only after local verification use
   AWQM_Manager.exe enable-auto (or install --auto-start on an approved

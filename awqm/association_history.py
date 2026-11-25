@@ -169,12 +169,20 @@ class AssociationHistory:
                 old=c.execute("""SELECT first_at,last_at,ap_token,ap_name,radio_token,band,bss_token,network_token,
                     aac,context_token,auac,suac,uac_status FROM association_segments WHERE id=? ORDER BY first_at DESC LIMIT 1""",(ident,)).fetchone()
                 if old and at<=old[1]:continue
+                # A renewed grant starts a new sequence at an actual observation.
+                aac, auac, suac = values[6], values[8], values[9]
+                grant_start = max(self.approvals[source].approved_at
+                                  for source in (aac, auac, suac) if source is not None)
+                if old and old[0] < grant_start:
+                    old = None
                 if old and at-old[1]<=300 and tuple(values)==old[2:]:
                     c.execute("UPDATE association_segments SET last_at=? WHERE id=? AND first_at=?",(at,ident,old[0]));continue
                 event="first_observation"
                 if old:
                     if at-old[1]>300:event="after_observation_gap"
-                    elif values[4]!=old[6] or values[5]!=old[7] or values[0]!=old[2]:event="attachment_changed"
+                    # Compare the AP, physical Radio, BSS and network tokens.
+                    elif (values[0], values[2], values[4], values[5]) != (old[2], old[4], old[6], old[7]):
+                        event="attachment_changed"
                     elif values[6]!=old[8] or values[7]!=old[9]:event="anchor_context_changed"
                     elif tuple(values[8:])!=old[10:]:event="user_anchor_observation_changed"
                     else:event="metadata_changed"
@@ -185,15 +193,32 @@ class AssociationHistory:
     def page(self,now,ident="",page=1):
         if not isinstance(ident,str) or ident and not re.fullmatch(r"[a-f0-9]{32}",ident) or type(page) is not int or not 1<=page<=10000:
             raise ValueError("exact pseudonymous ID or empty filter required")
-        if not any(a.approved_at<=now<a.valid_until for a in self.approvals.values()):return {"enabled":False,"rows":[],"total":0,"page":page,"size":50}
-        # 30-day query ceiling applies immediately, independent of cleanup.
-        where="last_at>=? AND last_at<=?";args=[now-LIMIT,now]
+        active = {controller: grant.approved_at for controller, grant in self.approvals.items()
+                  if grant.approved_at <= now < grant.valid_until}
+        if not active:return {"enabled":False,"rows":[],"total":0,"page":page,"size":50}
+        # Filter observation ownership before counting or paginating.
+        scopes = " OR ".join("(aac=? AND first_at>=?)" for _ in active)
+        where = "last_at BETWEEN ? AND ? AND (" + scopes + ")"
+        args = [now - LIMIT, now]
+        for controller, approved_at in active.items():
+            args.extend((controller, approved_at))
         if ident:where+=" AND id=?";args.append(ident)
         if not self.store.lock.acquire(blocking=False):raise RuntimeError("storage busy")
         try:
             with self.store._db(self.store.root/"association.db") as c:
                 count=c.execute("SELECT count(*) FROM association_segments WHERE "+where,args).fetchone()[0]
-                rows=c.execute("SELECT id,max(first_at,?),last_at,ap_name,band,aac,auac,suac,uac_status,event FROM association_segments WHERE "+where+" ORDER BY last_at DESC,id,first_at DESC LIMIT 50 OFFSET ?",(now-LIMIT,*args,(page-1)*50)).fetchall()
+                rows=c.execute("SELECT id,first_at,last_at,ap_name,band,aac,auac,suac,uac_status,event FROM association_segments WHERE "+where+" ORDER BY last_at DESC,id,first_at DESC LIMIT 50 OFFSET ?",(*args,(page-1)*50)).fetchall()
         finally:self.store.lock.release()
         cols=("id","first_at","last_at","ap_name","band","aac","auac","suac","uac_status","event")
-        return {"enabled":True,"rows":[dict(zip(cols,r)) for r in rows],"total":count,"page":page,"size":50,"scope":"positive_observations_only"}
+        visible = []
+        for record in rows:
+            row = dict(zip(cols, record))
+            for role in ("auac", "suac"):
+                source = row[role]
+                if source not in active or row["first_at"] < active[source]:
+                    row[role] = None
+            if row["uac_status"] == "positive_table_observation" and not (row["auac"] or row["suac"]):
+                row["uac_status"] = "unknown"
+            row["first_at"] = max(row["first_at"], now - LIMIT)
+            visible.append(row)
+        return {"enabled":True,"rows":visible,"total":count,"page":page,"size":50,"scope":"positive_observations_only"}
