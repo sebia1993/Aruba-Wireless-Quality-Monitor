@@ -1,4 +1,6 @@
+import io
 import os
+from contextlib import redirect_stderr
 import sys
 import tempfile
 import unittest
@@ -11,6 +13,18 @@ from awqm import manager, windows_security
 
 @unittest.skipUnless(sys.platform == "win32", "Windows manager")
 class InstallLayoutTests(unittest.TestCase):
+    def test_manager_reports_native_error_number_without_account_or_exception_text(self):
+        import pywintypes
+        console = io.StringIO()
+        failure = pywintypes.error(1332, "LookupAccountName", "private account detail")
+        with patch.object(sys, "argv", ["AWQM_Manager.exe", "status"]), \
+             patch.object(manager, "control", side_effect=failure), \
+             redirect_stderr(console), self.assertRaises(SystemExit) as result:
+            manager.main()
+        self.assertEqual(result.exception.code, 2)
+        self.assertIn("Windows error 1332", console.getvalue())
+        self.assertNotIn("private account detail", console.getvalue())
+
     def test_program_tree_checked_before_password_prompt_or_registration(self):
         with tempfile.TemporaryDirectory() as directory:
             program = Path(directory) / "AWQM"
