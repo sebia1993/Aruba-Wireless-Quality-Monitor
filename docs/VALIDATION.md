@@ -43,6 +43,18 @@ AWQM.exe --validate-scale retained-full --output D:\AWQM-Validation\retained-ful
 Use a dedicated fixed local test drive, a nonexistent output directory, and at least 150 GB free. Actual storage can be tens of GB or more; reserve checks may stop generation. The harness does not remove or overwrite any existing data, and leaves its own synthetic data for inspection. Remove it manually only after reviewing the result. The result contains row counts, data bytes, generation time and measured per-query timing. It is not a cold-cache claim, concurrent writer stress, full ingestion/aggregation or backup/retention validation. A representative pass does not satisfy the full-scale read gate. Windows service lifecycle, browser rendering, security and 72-hour soak remain separate.
 
 
+### Full retained result on Windows 11
+
+On 2026-11-25, the v0.43.0-dev folder executable (commit `6738aa0`, SQLite 3.54.1) completed the full synthetic read trial with exit code 0. It generated 109,920,000 historical rows for 4,000 Radios in 1,331.434259 seconds. Data files occupied 42,933,936,128 bytes. Each P95 covers five distinct Radio queries including JSON serialization.
+
+| History read | Historical rows in database | P95 | Limit |
+| --- | ---: | ---: | ---: |
+| Raw, 24 hours | 40,320,000 | 0.038439 s | 3 s |
+| 5-minute buckets, 30 days | 34,560,000 | 1.635264 s | 5 s |
+| Hourly buckets, 365 days | 35,040,000 | 0.359088 s | 5 s |
+
+A read-only inspection confirmed 365 completed historical manifest entries and the Radio/time index on every aggregate partition. The current-day seed added 4,000 separate rows. The original `retained-result.json` SHA-256 is `7297d8a75699c3b9e1dacfe65292f3dd0205a2dfe3583ad886a852c2982b0436`. [Tested folder build](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45543587413)
+
 ## SSH dependency regression (v0.32)
 
 Run AWQM.exe --validate-ssh. Generates temporary in-memory 2048-bit
@@ -78,8 +90,6 @@ v0.40 browser login succeeds with HTTP 303 and the real same-origin Origin. The 
 The repeat [browser run for 084b41a](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45532402678) passed on both viewports, including a 381-byte native CSV that matched the HTTPS response.
 
 The v0.41 browser fixture also opens the Radio history and incident detail in separate tabs, reloads the Radio detail, exports history and returns to the inventory. The URL fragment contains only the opaque Radio token or incident ID. Radio tokens are scoped to the service instance.
-
-The owner deferred the 4,000-Radio retained-history trial until a fixed test volume with 150 GB free is available. Record its outcome separately from the representative retained-history and ingestion trials.
 
 ### Concurrent Chromium dashboard
 
