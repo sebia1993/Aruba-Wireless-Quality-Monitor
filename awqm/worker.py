@@ -21,6 +21,7 @@ from .live_neighbors import COMMAND as NEIGHBOR,width_value
 from .rf_neighbors import arm_neighbors
 from .association_history import COMMANDS as USER_TABLES,user_table
 from .manual_jobs import bind_ap
+from .controller_resources import COMMANDS as RESOURCE_COMMANDS,MEMORY,DATAPATH,memory,datapath
 
 PARSERS={
     "show cpuload":cpu_load,
@@ -32,6 +33,7 @@ PARSERS={
     "show ap bss-table":bss_table,
     MEMBERSHIP:group_membership,AP_LOAD:ap_load,CLIENT_LOAD:client_load,
     **{cmd:user_table for cmd in USER_TABLES},
+    MEMORY:memory,DATAPATH:datapath,
 }
 DETAIL_PARSERS={"show ap debug client-table":client_table,"show ap debug client-stats":station_stats,NEIGHBOR:arm_neighbors}
 DENIED=re.compile(r"(?im)^\s*(?:%\s*)?(?:permission denied|access denied|not authorized|authorization failed)")
@@ -50,12 +52,12 @@ class Reading:
     target: str|None=None
 
 class ControllerWorker:
-    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False,neighbor_approval=None,history_approval=None,manual_detail=False):
+    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False,neighbor_approval=None,history_approval=None,manual_detail=False,resource_approval=None):
         self.controller=controller;self.session_factory=session_factory
         self.clock=clock;self.wall=wall
-        self.field_approval=field_approval;self.enable_cluster=enable_cluster;self.neighbor_approval=neighbor_approval;self.history_approval=history_approval;self.manual_detail=bool(manual_detail)
+        self.field_approval=field_approval;self.enable_cluster=enable_cluster;self.neighbor_approval=neighbor_approval;self.history_approval=history_approval;self.manual_detail=bool(manual_detail);self.resource_approval=resource_approval
         self.live_detail=live_detail;self.client_approval=client_approval;self.station_approval=station_approval
-        polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table") and (enable_cluster or p.name!=MEMBERSHIP) and (history_approval is not None or p.name not in USER_TABLES))
+        polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table") and (enable_cluster or p.name!=MEMBERSHIP) and (history_approval is not None or p.name not in USER_TABLES) and (resource_approval is not None or p.name not in RESOURCE_COMMANDS))
         if enable_cluster:polls=polls+(Poll(AP_LOAD,120,20,2),Poll(CLIENT_LOAD,120,20,2))
         if field_approval is not None:polls=polls+(Poll("show version",600,30,0),)
         self.schedule=Scheduler(start=clock(),offset=offset,polls=polls,mode=mode)
@@ -119,6 +121,14 @@ class ControllerWorker:
                     elif self.schedule.due[cmd]==float("inf"):self.schedule.due[cmd]=self.clock()
             p=self.schedule.next(self.clock())
             if p is None:return self._detail_tick()
+            if p.name in RESOURCE_COMMANDS:
+                at=int(self.wall());a=self.resource_approval;r=self.field_approval;v=self.latest.get("show version")
+                protection=self.schedule.protection
+                if not (a and r and v and v.generation==self.generation and self.outcomes[v.command].status=="success"
+                    and protection.effective(self.clock())=="normal" and protection.last_cpu is not None and protection.last_cpu<70
+                    and r.permits(v.data,fingerprint(self.session),at,at,v.observed_at) and a.permits(r.tag,at,at)):
+                    self.schedule.finish(self.clock());self.latest.pop(p.name,None)
+                    return self._record(p.name,"withheld",reason="resource_authorization_or_protection")
             if p.name in USER_TABLES:
                 at=int(self.wall());a=self.history_approval;r=self.field_approval;v=self.latest.get("show version")
                 if not (self.schedule.protection.effective(self.clock())=="normal" and a and r and v and v.generation==self.generation and self.outcomes[v.command].status=="success"
@@ -200,11 +210,19 @@ class ControllerWorker:
         with self.lock:
             readings={}
             if self.session is not None:
-                for cmd in ("show cpuload",MEMBERSHIP,*LOAD_COMMANDS):
+                for cmd in ("show cpuload",MEMBERSHIP,*LOAD_COMMANDS,*RESOURCE_COMMANDS):
                     r=self.outcomes.get(cmd)
                     if r and r.generation==self.generation:readings[cmd]=r
+            validation=None
+            if self.resource_approval:
+                a=self.resource_approval;r=self.field_approval;v=self.latest.get("show version");now=int(self.wall())
+                valid=bool(self.session is not None and not self.blocked and not self.maintenance_requested and r and v
+                    and v.generation==self.generation and self.outcomes[v.command].status=="success"
+                    and r.permits(v.data,fingerprint(self.session),now,now,v.observed_at) and a.permits(r.tag,now,now))
+                validation={"valid":valid,"approved_at":a.approved_at,
+                    "until":min(a.valid_until,r.valid_until,v.observed_at+660) if valid else 0,"cpu_ids":a.cpu_ids}
             return {"connected":self.session is not None and not self.blocked,
-                    "readings":readings,"disabled":tuple(self.disabled)}
+                    "readings":readings,"disabled":tuple(self.disabled),"resource_validation":validation}
     def submit_detail(self,request_id,name,target,ttl=300,binding=None):
         # Separate queue lock allows reservation even while the worker awaits SSH.
         return self.jobs.submit(request_id,name,target,self.wall(),ttl,binding=binding)

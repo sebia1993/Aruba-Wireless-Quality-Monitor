@@ -15,6 +15,7 @@ from .live_clients import LiveClients,load_client_approvals
 from .station_validation import load_station_approvals
 from .client_correlation import load_correlation_approvals
 from .cluster import ClusterMonitor
+from .controller_resources import load_resource_approvals
 from .retention import Retention,load_retention
 from .live_neighbors import LiveNeighbors,load_neighbor_approvals
 from .association_history import AssociationHistory,load_history_approvals,load_key
@@ -123,6 +124,7 @@ def run_service(root,stop):
     manual_enabled=load_manual_policy(cfg)
     retention_enabled=load_retention(cfg)
     approvals=load_approvals(cfg)
+    resource_approvals=load_resource_approvals(cfg,approvals)
     client_approvals=load_client_approvals(cfg,approvals)
     station_approvals=load_station_approvals(cfg,client_approvals)
     correlation_approvals=load_correlation_approvals(cfg,station_approvals,retention_enabled=retention_enabled)
@@ -139,7 +141,7 @@ def run_service(root,stop):
         operations=configured_ops(cfg)
         store=Store(safe_path(cfg.root,"data"),mode="diagnostic")
         gate=ConnectionGate(cfg.known_hosts,stop=stop)
-        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode=profile,offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True,neighbor_approval=neighbor_approvals.get(t.id),history_approval=history_approvals.get(t.id),manual_detail=manual_enabled) for i,t in enumerate(cfg.targets)]
+        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode=profile,offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True,neighbor_approval=neighbor_approvals.get(t.id),history_approval=history_approvals.get(t.id),manual_detail=manual_enabled,resource_approval=resource_approvals.get(t.id)) for i,t in enumerate(cfg.targets)]
         # Always open the local history ledger so old incidents remain
         # inspectable after an attestation is revoked or expires.
         quality=QualityLedger(store)

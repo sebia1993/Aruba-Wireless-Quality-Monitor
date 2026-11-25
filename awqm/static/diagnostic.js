@@ -287,6 +287,15 @@ function clusterPanel(d){
   const labels={connected_observed:"연결 교차 관측",self_only:"자체 관측",peer_disagreement:"Peer 상태 상충",peer_issue_observed:"Peer 이상 관측",self_issue_observed:"자체 이상 관측",peer_only:"Peer 관측만 있음",unknown:"미확인"};
   const m=Object.fromEntries(["ap","client"].map(k=>[k,new Map(d.load[k].rows.map(r=>[r.controller,r]))]));
   c.append(table(["WLC","CPU %","멤버십","Role","Active AP","Standby AP","Active Client","Standby Client"],d.nodes.map(r=>[r.controller,r.cpu,labels[r.state]||r.state,r.role,m.ap.get(r.controller)?.active,m.ap.get(r.controller)?.standby,m.client.get(r.controller)?.active,m.client.get(r.controller)?.standby])));
+  c.append(el("h3","WLC 자원 관측"),el("p","메모리 보고 사용률과 Datapath CPU별 1초·4초 값은 서로 다른 지표입니다. 장비 장애나 RF 원인으로 확정하지 않습니다."));
+  const resourceLabels={disabled:"비활성",unavailable:"미확인",withheld:"보호/검증 대기",stale:"오래된 관측",attestation_unavailable:"검증 만료/불일치",cpu_inventory_mismatch:"CPU 목록 불일치",parse_error:"출력 형식 불일치",permission_denied:"권한 없음",unsupported:"명령 미지원",transport_error:"통신 오류",observed:"최근 관측"};
+  c.append(table(["WLC","메모리 보고 사용률 %","Free (Kb)","메모리 관측 시각","Datapath CPU 수","1초 최대 %","4초 최대 %","Datapath 관측 시각","수집 상태"],d.nodes.map(r=>{
+    const m=r.resources?.memory,p=r.resources?.datapath;
+    return [r.controller,m?.data?.reported_used_percent,m?.data?.free_kb,kst(m?.observed_at),p?.data?.cpu_count,p?.data?.max_1s_percent,p?.data?.max_4s_percent,kst(p?.observed_at),
+      "Mem "+(resourceLabels[m?.status]||"미확인")+" / DP "+(resourceLabels[p?.status]||"미확인")];
+  })));
+  const cores=d.nodes.flatMap(r=>(r.resources?.datapath?.data?.rows||[]).map(x=>[r.controller,x.id,x.type,x.percent_1s,x.percent_4s]));
+  if(cores.length){const detail=el("details");detail.append(el("summary","Datapath CPU별 상세 (64초 값 제외)"),table(["WLC","CPU ID","유형","1초 %","4초 %"],cores));c.append(detail);}
   for(const [key,title] of [["ap","AP"],["client","Client"]]){
     const l=d.load[key],status={unknown:"미확인",single_source:"단일 출처",crosschecked:"교차 확인",conflicting_observations:"관측값 상충"}[l.status]||l.status;
     c.append(el("p",title+" 전체 Active "+(l.active_total??"미확인")+" / Standby "+(l.standby_total??"미확인")+" · "+status+" · "+(l.source||"—")+" · "+kst(l.observed_at)));

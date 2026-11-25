@@ -92,22 +92,58 @@ jobs:
           Copy-Item retained-validation\retained-result.json -Destination dist\AWQM
           Copy-Item docs -Destination dist\AWQM\docs -Recurse
           python -m pip freeze | Set-Content -Encoding utf8 dist\AWQM\BUILD-DEPENDENCIES.txt
-          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.30.0-dev_Win11_x64.zip
-          $hash = (Get-FileHash AWQM_0.30.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
-          "$hash  AWQM_0.30.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
+          Copy-Item dist\AWQM\BUILD-DEPENDENCIES.txt -Destination BUILD-DEPENDENCIES.txt
+          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.31.0-dev_Win11_x64.zip
+          $hash = (Get-FileHash AWQM_0.31.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  AWQM_0.31.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
       - name: Frozen offline package verification and staging
         shell: pwsh
         run: |
-          & .\dist\AWQM\AWQM.exe --stage-package AWQM_0.30.0-dev_Win11_x64.zip --sha256 (Get-FileHash AWQM_0.30.0-dev_Win11_x64.zip -Algorithm SHA256).Hash --output staged-verification
+          & .\dist\AWQM\AWQM.exe --stage-package AWQM_0.31.0-dev_Win11_x64.zip --sha256 (Get-FileHash AWQM_0.31.0-dev_Win11_x64.zip -Algorithm SHA256).Hash --output staged-verification
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: AWQM-Windows-dev-x64
           path: |
-            AWQM_0.30.0-dev_Win11_x64.zip
+            AWQM_0.31.0-dev_Win11_x64.zip
             SHA256SUMS.txt
+            BUILD-DEPENDENCIES.txt
             capacity-validation/capacity-result.json
             https-validation/https-result.json
             retained-validation/retained-result.json
           if-no-files-found: error
+          retention-days: 3
+
+  dependency-audit:
+    needs: windows
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+      - uses: actions/download-artifact@v4
+        with:
+          name: AWQM-Windows-dev-x64
+          path: audit-input
+      - name: Install separate advisory scanner
+        run: python -m pip install pip-audit==2.10.1
+      - name: Audit exact build dependency versions
+        shell: pwsh
+        run: |
+          python -m pip_audit --strict --no-deps --disable-pip --progress-spinner off -r audit-input/BUILD-DEPENDENCIES.txt --format json --output dependency-audit.json
+          $scannerExit = $LASTEXITCODE
+          python tools/check_dependency_audit.py audit-input/BUILD-DEPENDENCIES.txt dependency-audit.json $scannerExit dependency-audit-summary.json
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AWQM-dependency-audit
+          path: |
+            audit-input/BUILD-DEPENDENCIES.txt
+            dependency-audit.json
+            dependency-audit-summary.json
+          if-no-files-found: warn
           retention-days: 3

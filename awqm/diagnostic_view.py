@@ -5,6 +5,7 @@ identifiers contain wired MACs internally and are replaced by opaque tokens.
 No client MAC, username, SSID or raw CLI data is included in this interface.
 """
 import hashlib,hmac,secrets
+from copy import deepcopy
 from threading import RLock
 from .reporting import csv_report,html_report,WINDOWS,timestamp
 
@@ -86,6 +87,16 @@ class DiagnosticView:
             if stale:
                 for k in ("coherent_controllers","mapped_radios","active_clients","unresolved_radios","client_conflicts"):meta[k]=None
                 meta["available"]=False;meta["cluster"]=None
+            elif meta.get("cluster"):
+                # Do not expose expired resource attestation metadata, even
+                # between coordinator publications.
+                meta["cluster"]=deepcopy(meta["cluster"])
+                for node in meta["cluster"].get("nodes",[]):
+                    for label,resource in node.get("resources",{}).items():
+                        until=resource.pop("valid_until",None)
+                        if resource.get("status")=="observed" and (until is None or now>=until
+                            or not 0<=now-resource["observed_at"]<=(360 if label=="memory" else 240)):
+                            resource.update(status="stale",data=None)
             return {**meta,"rows":data,"total":len(rows),"page":page,"size":size,"inventory_radios":len(self.rows)}
     def operation_status(self):
         with self.lock:

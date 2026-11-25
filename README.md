@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.30.0-dev — 장기 보존 DB 성능 검증. 운영 배포 금지.**
+**현재 단계: v0.31.0-dev — WLC 자원 관측 및 검증. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -120,6 +120,14 @@ AP 상세에서 원본 7일, 5분 집계 30일, 1시간 집계 365일 조회 및
 ## 장기 보존 DB 검증
 
 `--validate-scale retained`로 32 Radio의 365일 보존 데이터 조회를 검증합니다. 별도 `retained-full` 모드는 4,000 Radio, 109,920,000행 합성 DB를 생성하므로 전용 테스트 저장소에서만 실행합니다. 실제 수집·집계·72시간 검증과 구분합니다. [검증 안내](docs/VALIDATION.md).
+
+## 선택적 WLC 메모리·Datapath 관측
+
+별도 현장 검증과 승인 후 메모리 요약과 Datapath CPU별 1초·4초 사용률을 조회합니다. CPU 목록·검증 만료·보호 상태를 확인하며 64초 통계는 원인 판단에 사용하지 않습니다. [자원 관측 안내](docs/CONTROLLER_RESOURCES.md).
+
+## 빌드 의존성 보안 검증
+
+Windows ZIP의 실제 설치 패키지 버전을 별도 CI에서 취약점 조회하고 누락·검사 실패·알려진 취약점은 보안 검증 미통과로 처리합니다. [보안 검증 범위](docs/DEPENDENCY_AUDIT.md).
 
 ## Windows 빌드
 ```powershell
