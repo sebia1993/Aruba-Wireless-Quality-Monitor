@@ -427,6 +427,26 @@ class _DeviceSSH(PinnedSSH):
         super().__init__(profile.host, profile.known_hosts, port=port)
         self.profile = profile
         self.stopped = stopped
+        self._device_socket = None
+
+    def close_cli(self):
+        # The cancellable socket rejects packets after Stop. Do not try to
+        # send SSH channel EOF/CLOSE through it; terminate the entire local
+        # transport instead. This is not a claim that a WLC command ended.
+        self.close()
+
+    def close(self):
+        sock = self._device_socket
+        try:
+            if sock is not None:
+                sock.close()
+                if sock.fileno() != -1:
+                    raise OSError("local SSH socket close unconfirmed")
+                self._device_socket = None
+        finally:
+            # Even a socket close error must attempt Paramiko cleanup, and
+            # must propagate so DeviceMonitor retains its owner guard.
+            super().close()
 
     def _connect_client(self, client, username, password):
         from paramiko.auth_strategy import Password
@@ -440,6 +460,7 @@ class _DeviceSSH(PinnedSSH):
             return password
 
         sock = _DeviceSocket(self.host, self.stopped) if self.stopped is not None else None
+        self._device_socket = sock
         try:
             if sock is not None:
                 sock.connect_device(self.host, self.port)

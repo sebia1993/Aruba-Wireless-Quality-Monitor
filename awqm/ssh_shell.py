@@ -91,6 +91,18 @@ class ShellSession:
         """Signal the reading thread; it owns the channel and closes its transport."""
         self._cancel.set()
     def close(self):
+        # Device transports may cancel their socket before the CLI worker
+        # exits. Sending a graceful channel EOF then raises even though the
+        # local TCP connection is gone. Use the transport's explicit
+        # whole-session close contract; never ignore an actual close error.
+        close_cli = getattr(self.transport, "close_cli", None)
+        if close_cli is not None:
+            try:
+                close_cli()
+            finally:
+                self.channel = None
+                self.prompt = None
+            return
         try:
             if self.channel is not None:
                 self.channel.close()

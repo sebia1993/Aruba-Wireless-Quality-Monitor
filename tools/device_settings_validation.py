@@ -232,7 +232,14 @@ def verify(entry, report, wait_for_refresh=False):
             call({"action":"stop","id":"WLC-1"})
             if not monitor.disconnected.wait(5):
                 raise RuntimeError("Stopping monitoring did not close SSH")
-            wait_for("Stopped WLC owner did not drain", lambda: read(call)["local_ownership"] == "idle")
+            # Report only the fixed categorical ownership state if teardown
+            # fails. Never write profile data, host keys or credentials.
+            def drained():
+                ownership = read(call)["local_ownership"]
+                if ownership == "close_unconfirmed":
+                    raise RuntimeError("Stopped WLC owner: close_unconfirmed")
+                return ownership == "idle"
+            wait_for("Stopped WLC owner did not drain", drained)
             state = read(call)
             if state["default_username"] != USER or slot(call, "WLC-2")["has_password"]:
                 raise RuntimeError("Default username or per-WLC password isolation failed")

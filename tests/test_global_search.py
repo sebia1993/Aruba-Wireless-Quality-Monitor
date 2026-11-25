@@ -1,6 +1,8 @@
 import json
 import tempfile
 import unittest
+from threading import Event, Thread
+from time import monotonic
 
 from awqm.diagnostic_view import DiagnosticView
 from awqm.quality_ledger import QualityLedger
@@ -47,6 +49,47 @@ class GlobalSearchTests(unittest.TestCase):
                 self.assertEqual([r["incident_id"] for r in result["rows"]], [self.incident])
         for query in ("02:00:00:00", "%", "_", "private-marker"):
             self.assertEqual(self.view.incident_list(1, "all", 0, 1200, query=query)["total"], 0)
+
+    def test_incident_list_handles_brief_read_contention_but_not_long_writer(self):
+        # Exercise an actual lock from another thread rather than reentering
+        # the RLock on this thread. No fake database response or lock bypass.
+        entered, release = Event(), Event()
+        def hold():
+            with self.store.lock:
+                entered.set()
+                release.wait(5)
+        worker = Thread(target=hold, daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            start = monotonic()
+            with self.assertRaisesRegex(RuntimeError, "storage busy"):
+                self.view.incident_list(1, "all", 0, 1200, query="Demo")
+            self.assertLess(monotonic()-start, 3)
+        finally:
+            release.set()
+            worker.join(3)
+        self.assertFalse(worker.is_alive())
+        # Hold a short-lived competing read; the list must wait for it rather
+        # than report an empty result or an immediate storage error.
+        entered, release = Event(), Event()
+        worker = Thread(target=hold, daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            from threading import Timer
+            timer = Timer(.05, release.set)
+            timer.start()
+            try:
+                result = self.view.incident_list(1, "all", 0, 1200, query="Demo")
+                self.assertEqual([r["incident_id"] for r in result["rows"]], [self.incident])
+            finally:
+                timer.cancel()
+                timer.join()
+        finally:
+            release.set()
+            worker.join(3)
+        self.assertFalse(worker.is_alive())
 
     def test_public_radio_token_is_searchable_and_internal_identifiers_are_private(self):
         token = self.view.page()["rows"][0]["id"]

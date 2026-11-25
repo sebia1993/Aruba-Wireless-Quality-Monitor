@@ -61,10 +61,11 @@ class Incidents:
             CREATE INDEX IF NOT EXISTS rf_review_incident ON rf_incident_reviews(incident_id,at DESC);
             """)
     @contextmanager
-    def transaction(self):
-        # Same serialized writer lock as telemetry. Never wait on a long
-        # aggregation/backup from a web request.
-        if not self.store.lock.acquire(blocking=False):raise RuntimeError("storage busy")
+    def transaction(self, *, wait=0):
+        # Same serialized writer lock as telemetry. A list read can tolerate
+        # brief overlap with another read; a lengthy writer still returns 503.
+        # Review and detail retain their existing immediate-failure policy.
+        if not self.store.lock.acquire(timeout=wait):raise RuntimeError("storage busy")
         try:
             with self.store._db(self.store.root/"core.db") as c:yield c
         finally:self.store.lock.release()
@@ -214,7 +215,7 @@ class Incidents:
         if status=="open":clause+=" AND ended_at IS NULL"
         if status=="closed":clause+=" AND ended_at IS NOT NULL"
         # No internal MAC or context values leave this method.
-        with self.transaction() as c:
+        with self.transaction(wait=.5) as c:
             total=c.execute("SELECT COUNT(*) FROM rf_incidents WHERE "+clause,params).fetchone()[0]
             rows=c.execute("""SELECT incident_id,ap_name,controller,band,first_at,last_at,persistent_at,ended_at,state,evidence_rev,evidence
                 FROM rf_incidents WHERE """+clause+" ORDER BY last_at DESC,incident_id LIMIT ? OFFSET ?",

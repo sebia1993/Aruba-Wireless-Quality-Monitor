@@ -139,6 +139,43 @@ class DeviceSSHTests(unittest.TestCase):
                 finally:
                     session.close()
 
+    def test_stopped_live_socket_closes_without_sending_channel_eof(self):
+        # Actual Paramiko loopback connection; model the Stop race where
+        # sending any channel close packet is no longer permitted.
+        stopped = Event()
+        with server(self.trusted) as (port, peer, state):
+            session = devices.open_session(self.profile, PASSWORD, port=port, stopped=stopped)
+            sock = session.transport._device_socket
+            try:
+                self.assertEqual(session.run("show cpuload"), CPU)
+                channel = session.channel
+                stopped.set()
+                session.cancel()
+                with patch.object(channel, "close", side_effect=EOFError("cancelled socket")) as close:
+                    session.close()
+                    close.assert_not_called()
+                self.assertEqual(sock.fileno(), -1)
+                self.assertIsNone(session.transport.client)
+                self.assertIsNone(session.channel)
+                self.assertIsNone(session.prompt)
+                session.close()
+                self.assertEqual(peer.attempts, [USER])
+            finally:
+                session.close()
+
+    def test_device_socket_close_error_is_not_suppressed(self):
+        from unittest.mock import Mock
+        transport = devices._DeviceSSH(self.profile, 22, Event())
+        sock = Mock()
+        sock.close.side_effect = OSError("fixture socket close failure")
+        transport._device_socket = sock
+        transport.client = Mock()
+        client = transport.client
+        with self.assertRaises(OSError):
+            transport.close_cli()
+        client.close.assert_called_once()
+        self.assertIs(transport._device_socket, sock)
+
     def test_key_change_blocks_password_for_file_pin_and_conflicting_file_plus_pin(self):
         for source in ("file", "pin", "combined"):
             with self.subTest(source=source), server(self.trusted) as (port, peer, state):
