@@ -82,6 +82,13 @@ begin
     Result := 'Service installation requires the designated Program Files directory.';
 end;
 
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  { Interactive Inno Setup keeps a Ready page when every earlier page is hidden. }
+  if (CurPageID = wpReady) and not WizardSilent and not IsAdminInstallMode then
+    PostMessage(WizardForm.NextButton.Handle, $00F5, 0, 0);  { BM_CLICK }
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if (CurStep = ssDone) and StageUpgrade and not WizardSilent then

@@ -24,7 +24,7 @@ def wait_for(description, probe, timeout=45):
     raise TimeoutError(description)
 
 
-def validate(entry, application, *, installer=False):
+def validate(entry, application, *, installer=False, progress=lambda phase: None):
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
@@ -51,8 +51,10 @@ def validate(entry, application, *, installer=False):
         if installer:
             # Ordinary double-click semantics: no silent flags, arguments or UI input.
             setup = subprocess.Popen([entry])
+            progress(f"installer process started, PID {setup.pid}")
             try:
                 hwnd = wait_for("Default setup did not automatically open the dashboard", window, timeout=100)
+                progress("application window observed")
                 if setup.wait(timeout=15) != 0:
                     raise RuntimeError("Default installation reported an error")
             finally:
@@ -79,6 +81,7 @@ def validate(entry, application, *, installer=False):
                     if captured.is_file():
                         return captured.read_text(encoding="utf-8").strip()
                 address = wait_for("Default dashboard did not request a browser", read_url)
+                progress("browser open request observed")
                 url = urlsplit(address)
                 if url.scheme != "http" or url.hostname != "127.0.0.1" or not url.port:
                     raise RuntimeError("Fresh installation opened an unexpected URL")
@@ -91,6 +94,7 @@ def validate(entry, application, *, installer=False):
                     snapshot = json.load(response)
                 if not snapshot.get("radios") or not snapshot.get("clients"):
                     raise RuntimeError("Fresh dashboard is missing its initial sample data")
+                progress("dashboard response contained sample radio and client data")
                 print(f"Installed application opened its dashboard: "
                       f"{len(snapshot['radios'])} sample radios, {len(snapshot['clients'])} clients")
             finally:
@@ -104,13 +108,35 @@ def validate(entry, application, *, installer=False):
 
 def standard_user_trial(installer, receipt, username):
     record = {"passed": False}
+    def progress(phase):
+        temporary = receipt.with_suffix(".phase.tmp")
+        temporary.write_text(phase, encoding="utf-8")
+        temporary.replace(receipt.with_suffix(".phase"))
     try:
-        if os.environ.get("USERNAME", "").casefold() != username.casefold() or ctypes.windll.shell32.IsUserAnAdmin():
+        progress("standard-user Python started")
+        token_user = ctypes.create_unicode_buffer(257)
+        size = wintypes.DWORD(len(token_user))
+        if not ctypes.windll.advapi32.GetUserNameW(token_user, ctypes.byref(size)):
+            raise ctypes.WinError()
+        if token_user.value.casefold() != username.casefold() or ctypes.windll.shell32.IsUserAnAdmin():
             raise RuntimeError("Expected the fresh standard-user token")
-        app = Path(os.environ["LOCALAPPDATA"]) / "Programs" / "AWQM" / "AWQM.exe"
+        def folder(identifier):
+            value = ctypes.create_unicode_buffer(260)
+            if ctypes.windll.shell32.SHGetFolderPathW(None, identifier, None, 0, value) != 0:
+                raise RuntimeError("Could not resolve the standard user profile")
+            return Path(value.value)
+        profile, local = folder(0x28), folder(0x1C)  # CSIDL_PROFILE, CSIDL_LOCAL_APPDATA
+        if not local.is_relative_to(profile) or not profile.is_dir() or not local.is_dir():
+            raise RuntimeError("Expected local AppData in the new user profile")
+        if (not profile.samefile(os.environ["USERPROFILE"]) or not local.samefile(os.environ["LOCALAPPDATA"])
+                or os.environ["USERNAME"].casefold() != username.casefold()):
+            raise RuntimeError("Process environment does not match the standard user's loaded profile")
+        app = local / "Programs" / "AWQM" / "AWQM.exe"
         if app.exists():
             raise RuntimeError("Existing current-user application detected")
-        validate(installer.resolve(strict=True), app, installer=True)
+        progress("standard-user identity and fresh application directory verified")
+        validate(installer.resolve(strict=True), app, installer=True, progress=progress)
+        progress("application exited cleanly")
         record["passed"] = True
     except Exception as error:
         record["error"] = f"{type(error).__name__}: {error}"
