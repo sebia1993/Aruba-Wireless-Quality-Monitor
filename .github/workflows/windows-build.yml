@@ -182,6 +182,33 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  standard-user-launch:
+    needs: windows
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+      - uses: actions/download-artifact@v4
+        with:
+          name: AWQM-unified-installer
+          path: installer
+      - name: Qualify actual downloaded EXE under a disposable standard user
+        shell: pwsh
+        run: ./tools/hosted_standard_user_validation.ps1 -Installer installer/AWQM.exe -Output standard-user-launch.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AWQM-standard-user-launch-evidence
+          path: standard-user-launch.json
+          if-no-files-found: warn
+          retention-days: 7
+
   installed-app:
     needs: windows
     runs-on: windows-latest

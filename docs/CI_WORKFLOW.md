@@ -59,3 +59,7 @@ For a desktop device-settings release, add `--device-settings` to that command. 
 ### Web-first desktop candidate
 
 The full workflow includes an actual Chromium local-settings test (desktop/mobile viewports, registration/test/monitor, account reuse, stop/delete and persisted interval). The installed application is tested against two loopback SSH fixtures using the protected local web API, including no-browser-polling refresh, persistent host-key mismatch rejection before authentication, and no plaintext password persistence. An explicit desktop Quit command replaces WM_CLOSE in validation because window close hides to the tray. This is synthetic CI evidence, not corporate WLC or Windows 11 field qualification.
+
+### Standard-user hosted launch gate
+
+The full Windows workflow also runs the actual public EXE from a disposable, non-administrative local account on a hosted Windows Server runner. It checks the loaded user profile and token, first no-argument installation, unchanged installed executable and version marker on repeated launches, restored visibility of the same HWND/PID, Start menu launch and removal. Evidence is tied to the actual download file SHA-256 and records the Windows product type and build. This is an additional CI gate, not the native Windows 11 trial. The fixture refuses to create accounts on non-hosted machines.

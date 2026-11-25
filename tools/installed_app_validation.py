@@ -42,10 +42,10 @@ def validate(entry, application, *, installer=False, repeat=False, progress=lamb
     def window():
         return user32.FindWindowW("AWQM.Desktop", "Aruba Wireless Quality Monitor")
 
-    def snapshot():
+    def installed_snapshot():
         return tuple((p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest())
                      for p in (application, application.with_name("VERSION.txt")))
-    before = snapshot() if repeat else None
+    before = installed_snapshot() if repeat else None
     if window():
         raise RuntimeError("An existing dashboard window is open")
     with tempfile.TemporaryDirectory(prefix="awqm-first-launch-") as directory:
@@ -103,16 +103,17 @@ def validate(entry, application, *, installer=False, repeat=False, progress=lamb
                 if repeat:
                     user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
                     user32.IsIconic.argtypes = [wintypes.HWND]
+                    user32.IsWindowVisible.argtypes = [wintypes.HWND]
                     user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
                     duplicate = subprocess.Popen([entry])
                     try:
                         if duplicate.wait(timeout=20) != 0:
                             raise RuntimeError("Repeat download did not exit successfully")
                         wait_for("Existing dashboard was not restored",
-                                 lambda: window() == hwnd and not user32.IsIconic(hwnd), timeout=15)
+                                 lambda: window() == hwnd and user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd), timeout=15)
                         current_pid = wintypes.DWORD()
                         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(current_pid))
-                        if current_pid.value != pid.value or snapshot() != before:
+                        if current_pid.value != pid.value or installed_snapshot() != before:
                             raise RuntimeError("Repeat download replaced the app or opened another instance")
                     finally:
                         if duplicate.poll() is None:
@@ -127,11 +128,11 @@ def validate(entry, application, *, installer=False, repeat=False, progress=lamb
                     raise RuntimeError("Installed application did not exit when its window closed")
         finally:
             kernel.CloseHandle(process)
-    if repeat and snapshot() != before:
+    if repeat and installed_snapshot() != before:
         raise RuntimeError("Reopening the download modified the installed program")
 
 
-def standard_user_trial(installer, receipt, username):
+def standard_user_trial(installer, receipt, username, *, full=False):
     record = {"passed": False}
     def progress(phase):
         temporary = receipt.with_suffix(".phase.tmp")
@@ -162,6 +163,34 @@ def standard_user_trial(installer, receipt, username):
         progress("standard-user identity and fresh application directory verified")
         validate(installer.resolve(strict=True), app, installer=True, progress=progress)
         progress("application exited cleanly")
+        record["first_install"] = True
+        if full:
+            # Exercise the exact public EXE twice after the initial install,
+            # including the duplicate-process/window restoration assertion.
+            validate(installer.resolve(strict=True), app, installer=True, repeat=True, progress=progress)
+            record["same_download_no_reinstall"] = True
+            record["duplicate_window_restored"] = True
+            shortcut = folder(0x02) / "Aruba Wireless Quality Monitor.lnk"  # CSIDL_PROGRAMS
+            if not shortcut.is_file():
+                raise RuntimeError("Current-user Start menu entry missing")
+            validate(shortcut, app, progress=progress)
+            record["start_menu_relaunch"] = True
+            import winreg
+            registration = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{39E547C5-189F-47E5-AC56-0881E132A87D}_is1"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registration) as key:
+                registered = Path(winreg.QueryValueEx(key, "InstallLocation")[0])
+                uninstaller = Path(winreg.QueryValueEx(key, "UninstallString")[0].strip('"'))
+            expected = local / "Programs" / "AWQM Setup" / "Uninstall" / "unins000.exe"
+            if not registered.samefile(app.parent) or not uninstaller.samefile(expected):
+                raise RuntimeError("Unexpected uninstall registration; installation preserved")
+            completed = subprocess.run([str(uninstaller), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"], timeout=90)
+            if completed.returncode:
+                raise RuntimeError("Uninstall returned a failure")
+            wait_for("Uninstall did not remove the app and shortcut", lambda: not app.exists() and not shortcut.exists(), timeout=20)
+            record["uninstall_verified"] = True
+            record["installer_sha256"] = hashlib.sha256(installer.read_bytes()).hexdigest()
+            record["windows_build"] = sys.getwindowsversion().build
+            record["windows_product_type"] = sys.getwindowsversion().product_type
         record["passed"] = True
     except Exception as error:
         record["error"] = f"{type(error).__name__}: {error}"
@@ -180,6 +209,8 @@ if __name__ == "__main__":
         pending.replace(path)
     elif len(sys.argv) == 5 and sys.argv[1] == "--install-defaults":
         standard_user_trial(Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4])
+    elif len(sys.argv) == 5 and sys.argv[1] == "--hosted-standard-user":
+        standard_user_trial(Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4], full=True)
     elif len(sys.argv) == 4 and sys.argv[1] == "--repeat-download":
         validate(Path(sys.argv[2]).resolve(strict=True), Path(sys.argv[3]).resolve(strict=True),
                  installer=True, repeat=True)
