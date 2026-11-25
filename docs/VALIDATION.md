@@ -68,3 +68,7 @@ now use same-origin for HTML only. The browser trial observes native login and
 logout POST status/Origin (no header or cookie dump), and HTTP regression tests
 reject null/foreign/missing Origin. Repeat browser CI is required; no production
 authentication claim.
+
+### Native CSV download isolation
+
+v0.40 browser login succeeds with HTTP 303 and the real same-origin Origin. The native CSV download was canceled in Chromium. The next fixture revision uses a process-local exception for the generated certificate SPKI only, leaves approved HTTPS requests unintercepted, and independently verifies the exact certificate, response status, content headers, CSV content and masking before clicking the real download link. The saved file must match the verified endpoint bytes. No blanket TLS bypass, OS certificate-store change, mocked download or production application change. Repeat browser CI required.

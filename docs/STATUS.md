@@ -62,3 +62,4 @@ Current launcher defaults to no live access; explicit --demo, --engine-demo, --v
 
 - v0.40.0-dev: native browser login compatibility fix for diagnostic and synthetic authentication preview. HTML-only same-origin referrer policy; exact Origin rejects null/foreign/missing, CSRF unchanged; browser harness records actual form status/Origin classification. Initial v0.39 browser failures tracked in runs 45531140601 and 45531145843; corrected CI pending.
 - CI workflow improvement: fast source checks, independent foundation browser checks and explicitly requested full Windows/audit/browser qualification; SHA-specific non-cancelled full runs. Existing CSV download cancellation remains under investigation.
+- Correct the selector regression syntax error found by quick CI. Native login confirmed; CSV download cancellation is being isolated with trusted HTTPS response checks and a real native download using the test-only fixture SPKI. No product TLS weakening.

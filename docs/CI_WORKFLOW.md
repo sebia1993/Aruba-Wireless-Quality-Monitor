@@ -34,3 +34,5 @@ Recommended cycle: batch core changes on foundation, run quick/browser
 checks as appropriate, integrate once into portable, then explicitly run
 full candidate qualification. Record distinct outcomes for source checks,
 build, browser, dependency audit and remaining field qualification.
+
+Initial quick-check execution detected a syntax error in the new selector test; the test string is corrected and repeat CI is required.
