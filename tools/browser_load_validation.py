@@ -108,7 +108,8 @@ def fixture_server(root):
         thread.join()
 
 
-async def login(context, url, number, signal):
+async def login(context, url, number, signal, report):
+    report.update(login_index=number+1,login_stage="open_login_page")
     page = await context.new_page()
     def websocket(ws):
         if ws.url == "wss://" + urlsplit(url).netloc + "/ws/updates":
@@ -118,14 +119,19 @@ async def login(context, url, number, signal):
     await page.goto(url)
     await page.locator('input[name=username]').fill(f"fixture-load-{number}")
     await page.locator('input[name=password]').fill(PASSWORD)
+    report["login_stage"] = "native_form_response"
     async with page.expect_response(lambda response: response.url == url + "/auth/login") as pending:
         await page.locator('form[action="/auth/login"] button').click()
     response = await pending.value
     require(response.status == 303 and await response.request.header_value("origin") == url,
             "native login rejected")
+    report["login_stage"] = "dashboard_dom"
     await page.wait_for_function(MATCHES, arg="")
+    report["login_stage"] = "initial_publication_wss"
     await asyncio.wait_for(signal.ready.wait(), 8)
+    report["login_stage"] = "operator_identity"
     require(await page.locator("#role").inner_text() == "권한: operator", "operator identity missing")
+    report["login_stage"] = "complete"
     return page
 
 
@@ -169,7 +175,8 @@ async def exercise(root, report):
                     context = await browser.new_context(viewport={"width": 1440, "height": 900})
                     await context.route(outside_fixture, deny_external)
                     contexts.append(context)
-                    pages.append(await login(context, url, index, signal))
+                    pages.append(await login(context, url, index, signal, report))
+                    report["authenticated_sessions"] = len(pages)
                 report["authenticated_sessions"] = len(pages)
                 report["phase"] = "concurrent_browser_render"
                 samples, searches, dashboards = [], [], []

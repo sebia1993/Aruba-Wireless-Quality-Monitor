@@ -84,3 +84,27 @@ class PhysicalAPViewTests(unittest.TestCase):
         self.assertEqual(self.view.page(self.view.token(a.radio_id))["total"],1)
         self.assertEqual(self.view.page(self.ap)["total"],0)
         self.assertEqual(self.view.ap_radios(self.view.token(a.radio_id))["total"],2)
+
+    def test_dual_band_dashboard_order_matches_capacity_browser_contract(self):
+        # Insertion order, legacy IDs and canonical IDs must not reverse the
+        # established 5GHz / 2.4GHz display sequence within the same AP.
+        other="site:02:00:00:00:00:02"
+        rows=[
+            self.row(self.ap,1,"DEMO-AP-0001",band="2.4GHz",channel=6),
+            self.row(other,0,"DEMO-AP-0002",band="2.4GHz",channel=6),
+            self.row(self.ap,0,"DEMO-AP-0001",band="5GHz",channel=44),
+            self.row(other,1,"DEMO-AP-0002",band="5GHz",channel=44),
+            self.row("legacy",0,"DEMO-AP-0003",band="2.4GHz",channel=6),
+            self.row("legacy",1,"DEMO-AP-0003",band="5GHz",channel=44),
+        ]
+        self.store.save_batch(rows)
+        self.view.publish({},[(r.radio_id,r.observed_at) for r in rows])
+        expected=[(f"DEMO-AP-{n:04d}",band)
+                  for n in range(1,4) for band in ("5GHz","2.4GHz")]
+        def pairs(result):
+            return [(r["ap_name"],r["band"]) for r in result["rows"]]
+        self.assertEqual(pairs(self.view.page()),expected)
+        self.assertEqual(pairs(self.view.page("demo-ap-0002")),expected[2:4])
+        self.assertEqual(pairs(self.view.page(size=3))+pairs(self.view.page(page=2,size=3)),expected)
+        self.assertEqual(pairs(self.view.ap_radios(self.view.token(rows[0].radio_id))),expected[:2])
+        self.assertEqual(self.view.page()["total"],len(rows))

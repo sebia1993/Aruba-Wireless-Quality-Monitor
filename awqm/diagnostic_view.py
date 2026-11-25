@@ -12,6 +12,9 @@ from .reporting import csv_report,html_report,WINDOWS,timestamp
 # The live merger assigns site:wired-MAC and appends the physical Radio ID.
 # Never group legacy or malformed identities by display name or IP.
 _AP_ID = re.compile(r"[A-Za-z0-9_.-]{1,64}:(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", re.ASCII)
+# Retain the established dashboard band order for dual-band APs. This is
+# presentation order only, not Radio identity, capability or quality ranking.
+_BAND_ORDER = {"5GHz": 0, "2.4GHz": 1, "6GHz": 2}
 
 def _physical_ap(row):
     ap, radio = row.get("ap_id"), row.get("radio_id")
@@ -66,7 +69,8 @@ class DiagnosticView:
                     # Keep a deterministic tie-breaker for duplicate AP names
                     # and multiple Radio observations; never merge them.
                     rows.sort(key=lambda r:(r["ap_name"].casefold(),r["controller"].casefold(),
-                                            r["band"],str(r["channel"]),r["id"]))
+                                            _BAND_ORDER.get(r["band"],3),r["band"],
+                                            str(r["channel"]),r["id"]))
                     self.rows=rows;self.index=index;self.ap_index=ap_index
             else:
                 self.rows=[dict(r,freshness="stale_or_unconfirmed") for r in self.rows]
