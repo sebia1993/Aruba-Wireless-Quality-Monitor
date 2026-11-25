@@ -108,8 +108,8 @@ def provision_fixture(root, principal, sid, password):
     username = principal.split("\\")[-1]
     # LoadUserProfile requires the runner's backup/restore privileges to be
     # present. It handles enabling them. PyHANDLE uses explicit Close().
-    token = security.LogonUser(username, ".", win32con.LOGON32_LOGON_SERVICE,
-                               win32con.LOGON32_PROVIDER_DEFAULT, password)
+    token = security.LogonUser(username, ".", password, win32con.LOGON32_LOGON_SERVICE,
+                               win32con.LOGON32_PROVIDER_DEFAULT)
     try:
         profile = win32profile.LoadUserProfile(token, {"UserName": username, "Flags": 1})
         try:
@@ -250,6 +250,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     report = {"result": "incomplete", "phase": "preflight", "verified": [],
+              "build_sha": os.environ.get("AWQM_BUILD_SHA"), "build_run": os.environ.get("AWQM_BUILD_RUN"),
+              "harness_sha": os.environ.get("GITHUB_SHA"),
               "host_reboot": False, "field_equipment": False, "scope": "disposable Windows Server SCM"}
     try:
         run(args, report)
