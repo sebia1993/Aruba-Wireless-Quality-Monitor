@@ -6,7 +6,7 @@ safe-mode basic collection, stores unvalidated observations in a diagnostic
 DB, and never starts a web listener or enables automatic detail collection.
 Do not deploy as a verified production system.
 
-## Portable distribution restriction (v0.25.1-dev)
+## Portable distribution restriction
 
 The single-executable portable preview is **not** a qualified Windows service host. Do not elevate it or register it with SCM. Its manager/service switches support import smoke tests only. Onefile extraction and the bootloader process model require separate security and lifecycle qualification. The existing protected onedir development path remains available from source:
 

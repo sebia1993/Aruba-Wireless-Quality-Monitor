@@ -22,6 +22,7 @@ DEFAULT_POLLS=(
     Poll("show memory",180,10,5),
     Poll("show datapath utilization",120,30,5),
     Poll("show ap standby",300,60,5),
+    Poll("show ap uac-database",300,60,5),
     Poll("show user-table standby",300,90,5),
 )
 

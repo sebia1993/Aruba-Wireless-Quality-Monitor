@@ -169,6 +169,10 @@ def main():
     for action in ("switch-status","reverse-program"):
         q=sub.add_parser(action,help="inspect or reverse a pre-start program switch")
         q.add_argument("--id",required=True)
+    q=sub.add_parser("rollback-data",help="stopped/disabled post-start data and program restoration; preserves displaced trees")
+    q.add_argument("--id",required=True)
+    q.add_argument("--acknowledge-data-displacement",action="store_true",required=True)
+    q.add_argument("--include-association-history",action="store_true")
     sub.add_parser("provision-history-key",help="create a protected local history pseudonym key")
     sub.add_parser("smoke-test",help="verify imports only; no service change")
     a=p.parse_args()
@@ -179,7 +183,7 @@ def main():
             print("AWQM manager imports passed (no SCM operation)")
         elif a.action=="provision":provision(load_config(default_root()),a.controller,a.replace)
         elif a.action=="provision-history-key":provision_history_key(load_config(default_root()))
-        elif a.action in ("prepare-update","verify-update","restore-update-copy","switch-program","switch-status","reverse-program"):
+        elif a.action in ("prepare-update","verify-update","restore-update-copy","switch-program","switch-status","reverse-program","rollback-data"):
             from .windows_update import manage_update
             manage_update(load_config(default_root()),a)
         elif a.action.startswith("collection-"):collection_control(load_config(default_root()),a.action,getattr(a,"controller",None),getattr(a,"revision",None))

@@ -5,6 +5,7 @@ identifiers contain wired MACs internally and are replaced by opaque tokens.
 No client MAC, username, SSID or raw CLI data is included in this interface.
 """
 import hashlib,hmac,secrets
+from copy import deepcopy
 from threading import RLock
 from .reporting import csv_report,html_report,WINDOWS,timestamp
 
@@ -13,9 +14,10 @@ class DiagnosticView:
         if store.mode!="diagnostic":raise ValueError("diagnostic store required")
         self.store=store;self.clock=clock;self.key=key or secrets.token_bytes(32)
         self.lock=RLock();self.rows=[];self.index={};self.meta={};self.incidents=incidents;self.association_history=association_history;self.client_rows=[];self.client_enabled=False;self.neighbor_views={};self.neighbor_enabled=False
+        self.publication_revision=0
     def token(self,radio_id):
         return hmac.new(self.key,radio_id.encode("utf-8"),hashlib.sha256).hexdigest()[:32]
-    def publish(self,result,current=(),available=True,quality=None,client_views=(),client_enabled=False,neighbor_views=None,neighbor_enabled=False):
+    def publish(self,result,current=(),available=True,quality=None,client_views=(),client_enabled=False,neighbor_views=None,neighbor_enabled=False,anchor_views=None):
         now=int(self.clock())
         with self.lock:
             if available:
@@ -43,7 +45,8 @@ class DiagnosticView:
                         risk_status=q.get("status") if approved else "UNKNOWN",
                         approval=q.get("approval") if approved else None,
                         approval_until=q.get("valid_until") if approved else None,
-                        incident_id=q.get("incident_id") if approved else None))
+                        incident_id=q.get("incident_id") if approved else None,
+                        ap_anchor=deepcopy((anchor_views or {}).get(r["radio_id"])) if live else None))
                 if available:self.rows=rows;self.index=index
             else:
                 self.rows=[dict(r,freshness="stale_or_unconfirmed") for r in self.rows]
@@ -61,6 +64,12 @@ class DiagnosticView:
                 "storage_error":result.get("storage_error"),"cluster":result.get("cluster") if available else None,
                 "paused":bool(result.get("paused")),"operations":result.get("operations"),
                 "available":bool(available),"quality_scope":"locally_attested_radio_only"}
+            self.publication_revision+=1
+    def notification(self):
+        with self.lock:
+            at=self.meta.get("published_at");now=int(self.clock())
+            return {"type":"publication","revision":self.publication_revision,
+                    "available":bool(self.meta.get("available") and at is not None and 0<=now-at<=20)}
     def page(self,query="",page=1,size=100):
         if not isinstance(query,str) or len(query)>128 or not 1<=page<=10000 or not 1<=size<=100:
             raise ValueError("invalid query")
@@ -73,12 +82,32 @@ class DiagnosticView:
             for r in rows[(page-1)*size:page*size]:
                 x=dict(r)
                 if stale:x["freshness"]="stale_or_unconfirmed"
+                anchor=x.pop("ap_anchor",None)
+                if not stale and x["freshness"]=="observed" and anchor:
+                    observations=[{k:v for k,v in a.items() if k!="valid_until"} for a in anchor["observations"]
+                        if now<a["valid_until"] and 0<=now-a["observed_at"]<=600]
+                    x["ap_anchor"]={**anchor,"observations":observations} if observations else None
+                else:x["ap_anchor"]=None
                 if stale or x["freshness"]!="observed" or (x.get("approval_until") or 0)<=now:
                     x.update(quality="unvalidated",quality_score=None,risk_status="UNKNOWN",approval=None,approval_until=None,incident_id=None)
                 data.append(x)
             if stale:
                 for k in ("coherent_controllers","mapped_radios","active_clients","unresolved_radios","client_conflicts"):meta[k]=None
                 meta["available"]=False;meta["cluster"]=None
+            elif meta.get("cluster"):
+                # Do not expose expired resource attestation metadata, even
+                # between coordinator publications.
+                meta["cluster"]=deepcopy(meta["cluster"])
+                for node in meta["cluster"].get("nodes",[]):
+                    for item in node.get("ap_anchors",{}).values():
+                        until=item.pop("valid_until",None)
+                        if item.get("status")=="observed" and (until is None or now>=until or not 0<=now-item["observed_at"]<=600):
+                            item.update(status="stale",total=None,matched=None,unmatched=None)
+                    for label,resource in node.get("resources",{}).items():
+                        until=resource.pop("valid_until",None)
+                        if resource.get("status")=="observed" and (until is None or now>=until
+                            or not 0<=now-resource["observed_at"]<=(360 if label=="memory" else 240)):
+                            resource.update(status="stale",data=None)
             return {**meta,"rows":data,"total":len(rows),"page":page,"size":size,"inventory_radios":len(self.rows)}
     def operation_status(self):
         with self.lock:
@@ -173,15 +202,18 @@ class DiagnosticView:
         with self.lock:
             now=int(self.clock())
             fresh=bool(self.meta.get("available") and 0<=now-self.meta.get("published_at",0)<=20)
-            fields=("id","ap_name","controller","band","observed_at","health","snr","last_phy_rate","quality_score","quality_status","airtime","retry","candidate","scope","station_retry","station_start","station_end","station_tx_activity")
+            fields=("id","ap_name","controller","band","observed_at","health","snr","last_phy_rate","quality_score","quality_status","airtime","retry","candidate","scope","station_retry","station_start","station_end","station_tx_activity","confidence","peer_comparable","peer_degraded","candidate_scope")
             rows=[{k:r.get(k) for k in fields} for r in self.client_rows
                 if fresh and 0<=now-r["observed_at"]<=180 and now<r.get("valid_until",0) and any(query.casefold() in str(r[k]).casefold() for k in ("ap_name","id","controller","band"))]
             # Apply the separate station attestation expiry at read time as
             # well, even between coordinator publications.
             expiries={r["id"]:r.get("station_until") for r in self.client_rows}
+            candidate_expiry={r["id"]:r.get("candidate_until") for r in self.client_rows}
             for item in rows:
+                if now>=(candidate_expiry.get(item["id"]) or 0):
+                    item.update(candidate=None,confidence="unavailable",peer_comparable=None,peer_degraded=None,candidate_scope=None)
                 if item.get("station_end") is None or not 0<=now-item["station_end"]<=90 or now>=(expiries.get(item["id"]) or 0):
-                    item.update(station_retry=None,station_start=None,station_end=None,station_tx_activity="unknown")
+                    item.update(station_retry=None,station_start=None,station_end=None,station_tx_activity="unknown",candidate=None,confidence="unavailable",peer_comparable=None,peer_degraded=None,candidate_scope=None)
             return {"rows":rows[(page-1)*size:page*size],"total":len(rows),"page":page,"size":size,
                 "enabled":self.client_enabled,"available":fresh,"scope":"local_operator_attested_ephemeral_detail",
                 "persistent_storage":False,"airtime_validated":False,"cause_confirmed":False}

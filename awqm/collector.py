@@ -8,7 +8,7 @@ BASE_COMMANDS=frozenset(("show version","show cpuload","show lc-cluster group-me
     "show lc-cluster load distribution ap","show lc-cluster load distribution client",
     "show ap radio-summary","show ap active details","show ap database long","show ap association",
     "show user-table","show user-table standby","show ap bss-table","show ap standby",
-    "show memory","show datapath utilization"))
+    "show memory","show datapath utilization","show ap uac-database"))
 AP_COMMANDS=frozenset(("show ap debug client-table","show ap arm neighbors","show ap arm rf-summary","show ap arm history","show ap port status"))
 MAC=re.compile(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}",re.ASCII)
 AP=re.compile(r"[A-Za-z0-9_.-]{1,128}",re.ASCII)
@@ -69,15 +69,22 @@ class PinnedSSH:
         import paramiko
         self.close()
         client=paramiko.SSHClient()
-        client.load_host_keys(self.known_hosts)
-        client.set_missing_host_key_policy(paramiko.RejectPolicy())
         try:
+            try:
+                client.load_host_keys(self.known_hosts)
+            except (OSError,ValueError,paramiko.SSHException):
+                raise HostKeyUnapproved("approved host key file unavailable or invalid") from None
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
             key_name=self.host if self.port==22 else f"[{self.host}]:{self.port}"
             if client.get_host_keys().lookup(key_name) is None:
                 raise HostKeyUnapproved("no approved host key")
             client.connect(self.host,port=self.port,username=username,password=password,
-                           timeout=10,auth_timeout=15,banner_timeout=15,look_for_keys=False,allow_agent=False)
-            client.get_transport().set_keepalive(30)
+                           timeout=10,auth_timeout=15,banner_timeout=15,channel_timeout=15,
+                           look_for_keys=False,allow_agent=False)
+            transport=client.get_transport()
+            if transport is None or not transport.is_authenticated():
+                raise paramiko.AuthenticationException("SSH authentication incomplete")
+            transport.set_keepalive(30)
         except Exception:
             client.close()
             raise

@@ -6,7 +6,7 @@ from .reporting import KST,timestamp,cell
 STATES={"DETECTED":"최초 위험 관측","PERSISTENT":"지속 위험 관측","RECOVERING":"회복 관측 중",
     "RESOLVED":"RF 정책 정상화","TRANSIENT":"일시 위험","UNCONFIRMED":"현재 확인 불가",
     "CONTEXT_LOST":"관측 조건 변경 (정상화 아님)"}
-CANDIDATES={"RF04":"Radio 혼잡 관측","UNKNOWN":"원인 미확인","RF05":"동일 채널 경합 후보","RF06":"중첩 채널 경합 후보"}
+CANDIDATES={"RF03":"재시도·동시 품질 저하 후보(과거 근거)","RF04":"Radio 혼잡 관측","UNKNOWN":"원인 미확인","RF05":"동일 채널 경합 후보","RF06":"중첩 채널 경합 후보"}
 VERDICTS={"supported":"근거 지지","not_supported":"근거 반대/불충분","inconclusive":"판단 보류"}
 REASONS={"radio_evidence":"Radio 관측 근거","other_evidence":"별도 운영자 확인","insufficient_evidence":"자료 부족","conflicting_evidence":"상충 자료"}
 
@@ -34,6 +34,9 @@ def summary(detail):
         f'  * 판단 근거 #{detail["revision"]} ({time_label(e.get("observed_at"))}) : 채널 사용률 {metric(e.get("utilization"),"%")}, 간섭률 {metric(e.get("interference"),"%")}, NF {metric(e.get("noise")," dBm")}',
         f'  * 원인 후보 : {names(e)} (확정 원인 아님)',
         '- 조치내용']
+    if e.get("client_correlation"):
+        a=e["client_correlation"]
+        lines.insert(-1,f'  * RF03 과거 집계 근거 : {time_label(a["interval_end"])} / 후보 단말 {a["candidate_count"]}대, 비교 단말 최소 {a["min_comparable"]}대 / 저하 단말 최소 {a["min_degraded"]}대 (낮은 신뢰도, 단말 원인 미확정)')
     reviews=detail.get("reviews",[])
     if reviews:
         r=reviews[0]
@@ -47,7 +50,7 @@ def summary(detail):
 
 HEADERS=("record_type","incident_id","ap_name","controller","band","revision","observed_at_kst",
     "state","utilization_percent","interference_percent","noise_dbm","quality_score","candidates",
-    "neighbor_evidence","review_verdict","review_reason","review_candidate","service_impact","truncated")
+    "neighbor_evidence","client_correlation_evidence","review_verdict","review_reason","review_candidate","service_impact","truncated")
 
 def rows(detail):
     common={"incident_id":detail["incident_id"],"ap_name":detail["ap_name"],"controller":detail["controller"],
@@ -58,6 +61,10 @@ def rows(detail):
             utilization_percent=e.get("utilization"),interference_percent=e.get("interference"),
             noise_dbm=e.get("noise"),quality_score=e.get("quality_score"),
             candidates=",".join(c["code"] for c in e.get("candidates",[])),
+            client_correlation_evidence=("historical aggregate / "+time_label(e["client_correlation"]["interval_end"])+
+                " / candidate count "+str(e["client_correlation"]["candidate_count"])+
+                " / min comparable "+str(e["client_correlation"]["min_comparable"])+
+                " / min degraded "+str(e["client_correlation"]["min_degraded"])+" / low confidence" if e.get("client_correlation") else ""),
             neighbor_evidence="; ".join(line(n.get("ap_name"))+" "+line(n.get("candidate"))+" CH "+line(n.get("channel"))+
                 " / overlap "+line(n.get("overlap_mhz"))+" MHz / OTA "+time_label(n.get("neighbor_at")) for n in e.get("neighbor_evidence",[])))
     yield observation("summary",detail["revision"],detail["evidence"].get("observed_at"),detail.get("display_state",detail["state"]),detail["evidence"])

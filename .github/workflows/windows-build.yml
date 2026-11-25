@@ -22,12 +22,18 @@ jobs:
           architecture: 'x64'
       - name: Install build dependencies
         run: python -m pip install -r requirements-build.txt
+      - name: Check installed dependency consistency
+        run: python -m pip check
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Source demo smoke test
         run: python launcher.py --demo --smoke-test
       - name: Full synthetic capacity cycle (no SSH)
         run: python launcher.py --validate-scale capacity --output capacity-validation
+      - name: Full synthetic concurrent HTTPS and WSS (loopback only)
+        run: python launcher.py --validate-scale https --output https-validation
+      - name: Retained history representative read benchmark (32 Radios, 365 days)
+        run: python launcher.py --validate-scale retained --output retained-validation
       - name: Build Windows folder EXE
         run: python -m PyInstaller --noconfirm --clean --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
       - name: Create Windows service and manager entry points
@@ -49,6 +55,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\dist\AWQM\AWQM_Manager.exe reverse-program --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\dist\AWQM\AWQM_Manager.exe rollback-data --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Frozen executable smoke test
         shell: pwsh
         run: |
@@ -59,6 +67,11 @@ jobs:
         run: |
           "user 10%, system 10%, idle 80%" | Set-Content -Encoding utf8 cpu-fixture.txt
           & .\dist\AWQM\AWQM.exe --validate-cli cpu cpu-fixture.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Frozen client-info Airtime inspection option (no SSH)
+        shell: pwsh
+        run: |
+          & .\dist\AWQM\AWQM.exe --validate-cli --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Frozen diagnostic option smoke test (no SSH)
         shell: pwsh
@@ -75,6 +88,11 @@ jobs:
         run: |
           & .\dist\AWQM\AWQM.exe --auth-preview --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Frozen loopback SSH security regression (synthetic only)
+        shell: pwsh
+        run: |
+          & .\dist\AWQM\AWQM.exe --validate-ssh | Tee-Object -FilePath ssh-validation-result.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Frozen Windows DPAPI round trip (synthetic only)
         shell: pwsh
         run: |
@@ -85,22 +103,64 @@ jobs:
         run: |
           Copy-Item README.md,VERSION.txt -Destination dist\AWQM
           Copy-Item capacity-validation\capacity-result.json -Destination dist\AWQM
+          Copy-Item https-validation\https-result.json -Destination dist\AWQM
+          Copy-Item retained-validation\retained-result.json -Destination dist\AWQM
+          Copy-Item ssh-validation-result.json -Destination dist\AWQM
           Copy-Item docs -Destination dist\AWQM\docs -Recurse
           python -m pip freeze | Set-Content -Encoding utf8 dist\AWQM\BUILD-DEPENDENCIES.txt
-          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.25.0-dev_Win11_x64.zip
-          $hash = (Get-FileHash AWQM_0.25.0-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
-          "$hash  AWQM_0.25.0-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
+          Copy-Item dist\AWQM\BUILD-DEPENDENCIES.txt -Destination BUILD-DEPENDENCIES.txt
+          Compress-Archive -Path dist\AWQM -DestinationPath AWQM_0.37.1-dev_Win11_x64.zip
+          $hash = (Get-FileHash AWQM_0.37.1-dev_Win11_x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  AWQM_0.37.1-dev_Win11_x64.zip" | Set-Content -Encoding ascii SHA256SUMS.txt
       - name: Frozen offline package verification and staging
         shell: pwsh
         run: |
-          & .\dist\AWQM\AWQM.exe --stage-package AWQM_0.25.0-dev_Win11_x64.zip --sha256 (Get-FileHash AWQM_0.25.0-dev_Win11_x64.zip -Algorithm SHA256).Hash --output staged-verification
+          & .\dist\AWQM\AWQM.exe --stage-package AWQM_0.37.1-dev_Win11_x64.zip --sha256 (Get-FileHash AWQM_0.37.1-dev_Win11_x64.zip -Algorithm SHA256).Hash --output staged-verification
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: AWQM-Windows-dev-x64
           path: |
-            AWQM_0.25.0-dev_Win11_x64.zip
+            AWQM_0.37.1-dev_Win11_x64.zip
             SHA256SUMS.txt
+            BUILD-DEPENDENCIES.txt
             capacity-validation/capacity-result.json
+            https-validation/https-result.json
+            retained-validation/retained-result.json
+            ssh-validation-result.json
           if-no-files-found: error
+          retention-days: 3
+
+  dependency-audit:
+    needs: windows
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+      - uses: actions/download-artifact@v4
+        with:
+          name: AWQM-Windows-dev-x64
+          path: audit-input
+      - name: Install separate advisory scanner
+        run: python -m pip install pip-audit==2.10.1
+      - name: Audit exact build dependency versions
+        shell: pwsh
+        run: |
+          python -m pip_audit --strict --no-deps --disable-pip --progress-spinner off -r audit-input/BUILD-DEPENDENCIES.txt --format json --output dependency-audit.json
+          $scannerExit = $LASTEXITCODE
+          python tools/check_dependency_audit.py audit-input/BUILD-DEPENDENCIES.txt dependency-audit.json $scannerExit dependency-audit-summary.json
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AWQM-dependency-audit
+          path: |
+            audit-input/BUILD-DEPENDENCIES.txt
+            dependency-audit.json
+            dependency-audit-summary.json
+          if-no-files-found: warn
           retention-days: 3

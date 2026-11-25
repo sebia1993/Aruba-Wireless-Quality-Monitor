@@ -2,14 +2,14 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.25.1-dev — 수동 조사 및 장기 Radio 이력 조회. 운영 배포 금지.**
+**현재 단계: v0.37.1-dev — 최신 핵심 기능을 반영한 단일 EXE 통합 검증. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## Windows 11 x64 단일 EXE 개발 검증판
 
-GitHub Releases의 `AWQM_0.25.1-dev_Win11_x64.zip`을 한 번 압축 해제하면 `AWQM.exe` 하나만 나옵니다. Actions의 개발 artifact도 EXE를 직접 담으며 내부 ZIP은 없습니다. Python 설치가 필요하지 않습니다. 일반 사용자 권한으로 더블클릭하여 모의 화면(1) 또는 합성 수집 엔진(2)을 명시적으로 선택합니다. 로컬 브라우저가 열리지 않으면 화면에 표시된 localhost 주소를 사용합니다. `AWQM.exe --version`으로 버전을 확인할 수 있습니다.
+휴대형 배포판의 목표는 ZIP을 한 번 해제하면 `AWQM.exe` 하나만 있는 구조입니다. 더블클릭 후 모의 화면(1), 합성 수집 엔진(2) 또는 종료(0)를 선택합니다. `AWQM.exe --version`으로 내장 버전을 확인합니다. v0.37.1-dev 통합 빌드는 CI 및 보안 검증 대상으로, 공개 릴리스로 간주하지 않습니다. 기존 공개 v0.25.1-dev는 이전 기능의 검증판입니다.
 
-**운영 배포 금지. 관리자 권한으로 실행하지 마십시오.** PyInstaller onefile은 임시 폴더에서 라이브러리를 실행하므로 실제 Windows SCM 서비스 등록 및 권한이 필요한 관리자 작업은 이 휴대형 검증판에서 차단됩니다. 기존 진단 서비스와 관리자 기능의 소스 및 보호된 onedir 빌드는 보존합니다. `AWQM.exe --service --smoke-test`, `AWQM.exe --manager smoke-test`는 import 확인만 수행합니다. 승인된 일반 권한의 1회 진단과 오프라인 파서 등 기존 명령은 유지합니다. 휴대형 ZIP을 서비스 업데이트 후보로 사용하지 마십시오.
+**관리자 권한으로 실행하거나 Windows 서비스로 등록하지 마십시오.** 휴대형 EXE의 서비스/관리자 동작은 import smoke test 등으로 제한됩니다. 실제 서비스에는 기존 보호된 onedir 개발 패키지를 사용해야 하며, 현장 승인과 별도 자격 검증이 필요합니다. 휴대형 ZIP을 서비스 업데이트 후보로 사용하지 않습니다.
 
 ## 실행 (개발 환경)
 ```sh
@@ -41,7 +41,7 @@ Windows EXE에서도 동일하게 `AWQM.exe --validate-cli radio local-output.tx
 
 ## Windows 진단 서비스 (현장 검증 후보 기능)
 
-기존 보호된 onedir 서비스 개발 빌드에는 AWQM_Service.exe 및 AWQM_Manager.exe가 있습니다. 단일 EXE 휴대형 배포판에는 별도 EXE를 포함하지 않습니다. 실제 사용은 사내 승인, 비관리자 전용 서비스 계정과 보호된 NTFS 폴더, 검증된 WLC Host Key 및 DPAPI 자격 증명 준비 이후에만 가능합니다. 운영용 RF 분석이나 실데이터 웹 공유는 아직 활성화하지 않습니다. [서비스 구성 및 검증 절차](docs/WINDOWS_SERVICE.md).
+보호된 onedir 서비스용 빌드 ZIP에만 AWQM_Service.exe 및 AWQM_Manager.exe를 추가합니다. 실제 사용은 사내 승인, 비관리자 전용 서비스 계정과 보호된 NTFS 폴더, 검증된 WLC Host Key 및 DPAPI 자격 증명 준비 이후에만 가능합니다. 운영용 RF 분석이나 실데이터 웹 공유는 아직 활성화하지 않습니다. [서비스 구성 및 검증 절차](docs/WINDOWS_SERVICE.md).
 
 ## 진단 서비스의 HTTPS 웹 조회 (선택)
 
@@ -85,7 +85,7 @@ WLC별 CPU·Peer 상태 및 Active/Standby AP·단말 수를 종합 현황에서
 
 ## 규모 검증 및 업데이트 준비
 
-[검증 안내](docs/VALIDATION.md)와 [오프라인 업데이트 준비](docs/PACKAGE_STAGE.md). 전체 합성 규모의 단회 수집 검증과 72시간 실제 경과시간 검증은 별도 게이트입니다. 패키지 스테이징은 설치나 서비스 변경을 수행하지 않습니다.
+[검증 안내](docs/VALIDATION.md)와 [오프라인 업데이트 준비](docs/PACKAGE_STAGE.md). 전체 합성 규모의 단회 수집 검증은 개발 측에서 수행합니다. 72시간 연속 구동 시험은 사용자 직접 검증 항목(2026-11-25 확정)으로 분리하며, 실제 시험 결과 확인 전에는 통과로 기록하지 않습니다. 패키지 스테이징은 설치나 서비스 변경을 수행하지 않습니다.
 
 ## 선택적 수동 정밀 조사 예약
 
@@ -107,13 +107,61 @@ AP 상세에서 원본 7일, 5분 집계 30일, 1시간 집계 365일 조회 및
 
 승인된 ZIP과 기존 복구 묶음을 검증한 후 중지·시작 비활성화 상태에서 프로그램 폴더만 교체하고, 운영 상태 변경 전 이전 프로그램으로 되돌리는 기능입니다. 실제 설치 검증은 아직 필요하며 운영 데이터 자동 덮어쓰기 및 자동 시작은 제공하지 않습니다. [프로그램 교체 및 제한](docs/PROGRAM_SWITCH.md).
 
+## 실시간 화면 알림
+
+인증된 WSS로 새 게시 상태를 알리고 기존 HTTPS 조회로 갱신합니다. 연결 불가 시 주기 조회로 대체하며 장비 명령은 전송하지 않습니다. [실시간 알림 안내](docs/REALTIME.md).
+
+## 선택적 단말 재시도 상관관계
+
+별도 현장 승인과 개인정보 검증 후 동일 Radio의 시간 정렬된 단말 품질 저하를 비교하여 RF03 간접 후보를 표시합니다. 단말 원인 확정 및 실측 Airtime은 제공하지 않습니다. [비교 기준 및 제한](docs/CLIENT_CORRELATION.md).
+
+## 선택적 RF03 집계 근거 보존
+
+별도 보존 승인 시 Radio 수준의 비교·저하 단말 수 및 관측 시각만 장애 이력에 기록합니다. 개인 단말 식별자 또는 원인 확정은 저장하지 않습니다. [승인 및 제한](docs/CLIENT_CORRELATION.md).
+
+## HTTPS·WSS 동시 조회 검증
+
+가상 사용자 10개 연결, 50회 HTTPS 조회와 알림 전달을 실제 루프백 TLS 연결로 시험하는 `--validate-scale https` 검증 모드를 추가했습니다. 실제 브라우저·AAA·장비 검증과는 별개입니다. [검증 안내](docs/VALIDATION.md).
+
+## 장기 보존 DB 검증
+
+`--validate-scale retained`로 32 Radio의 365일 보존 데이터 조회를 검증합니다. 별도 `retained-full` 모드는 4,000 Radio, 109,920,000행 합성 DB를 생성하므로 전용 테스트 저장소에서만 실행합니다. 실제 수집·집계·72시간 검증과 구분합니다. [검증 안내](docs/VALIDATION.md).
+
+## 선택적 WLC 메모리·Datapath 관측
+
+별도 현장 검증과 승인 후 메모리 요약과 Datapath CPU별 1초·4초 사용률을 조회합니다. CPU 목록·검증 만료·보호 상태를 확인하며 64초 통계는 원인 판단에 사용하지 않습니다. [자원 관측 안내](docs/CONTROLLER_RESOURCES.md).
+
+## 빌드 의존성 보안 검증
+
+Windows ZIP의 실제 설치 패키지 버전을 별도 CI에서 취약점 조회하고 누락·검사 실패·알려진 취약점은 보안 검증 미통과로 처리합니다. [보안 검증 범위](docs/DEPENDENCY_AUDIT.md).
+
+## SSH 의존성 업데이트 및 로컬 검증
+
+`--validate-ssh`로 실제 루프백 SSH의 Host Key 확인·RSA/SHA-2·인증 및 CLI 동작을 확인합니다. Paramiko 5.1.0·cryptography 50.0.2로 버전을 고정하고 이전 취약 버전으로 자동 전환하지 않습니다. 구형 SSH 알고리즘만 지원하는 실제 장비는 현장 호환성 확인이 필요합니다. [보안 검증 안내](docs/DEPENDENCY_AUDIT.md).
+
+## AP Standby / UAC DB 관측
+
+별도 현장 검증 후 AP Standby 및 UAC AP DB의 현재 물리 AP 일치 관측을 제공하며, 단말 UAC 또는 장애 상태로 단정하지 않습니다. [검증 및 제한](docs/AP_ANCHORS.md).
+
+## HTTPS 요청 보호
+
+절대 연결 시간과 헤더 크기를 제한하고 정상 WSS 전환을 보존합니다. [보안 제한](docs/HTTP_BOUNDS.md).
+
+## 업데이트 이후 데이터 복구
+
+설정과 자격 증명이 이전 사본과 동일한 중지·시작 비활성 서비스에 한해, 신규 데이터와 로그를 별도 보존하고 이전 데이터 및 프로그램을 복원합니다. 자동 시작하지 않습니다. [복구 조건 및 제한](docs/DATA_ROLLBACK.md).
+
+## Airtime 현장 검증용 오프라인 검사
+
+`--validate-cli client-info-airtime`와 `--compare-file`로 두 출력의 TID 필드 구조·변화 수를 확인합니다. 실제 Airtime 수치나 원인 확정은 하지 않습니다. [검증 기준](docs/AIRTIME_VALIDATION.md).
+
 ## Windows 빌드
 ```powershell
 python -m pip install -r requirements-build.txt
-python -m PyInstaller --noconfirm --clean --onefile --name AWQM --add-data "awqm/static;awqm/static" launcher.py
-.\dist\AWQM.exe --demo
+python -m PyInstaller --noconfirm --clean --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
+dist\AWQM\AWQM.exe --demo
 ```
-GitHub Actions의 raw EXE artifact와 GitHub Releases에 직접 등록되는 ZIP은 개발 검증용입니다. 정식 운영 릴리스로 간주하지 않습니다. 실제 SCM용 기존 onedir 개발 빌드 절차는 [서비스 안내](docs/WINDOWS_SERVICE.md)를 참조하십시오.
+위 명령은 기존 보호된 onedir 개발 경로입니다. 휴대형 단일 실행 파일은 별도로 `python -m PyInstaller --noconfirm --clean --onefile --name AWQM --add-data "awqm/static;awqm/static" launcher.py`로 빌드합니다. 휴대형 CI의 직접 EXE artifact와 승인된 사전 릴리스의 단일 ZIP은 개발 검증용입니다. 정식 릴리스로 간주하지 않습니다.
 
 - [확정 설계 기준 및 개발 범위](docs/DESIGN.md)
 - [CLI 출력 검증 안내](docs/CLI_VALIDATION.md)

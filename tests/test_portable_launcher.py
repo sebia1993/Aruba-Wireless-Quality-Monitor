@@ -57,6 +57,28 @@ class PortableLauncherTests(unittest.TestCase):
             self.run_args("--demo","--smoke-test")
             demo.assert_called_once_with(8765,True,open_browser=False)
 
+    def test_new_offline_validation_routes_preserved(self):
+        with patch("awqm.ssh_validation.main") as ssh:
+            self.run_args("--validate-ssh")
+            ssh.assert_called_once()
+        with patch("awqm.scale_validation.main") as scale:
+            self.run_args("--validate-scale","retained","--output","fixture")
+            scale.assert_called_once()
+        with patch("launcher.probe_main") as probe:
+            self.run_args("--validate-cli","client-info-airtime","fixture.txt")
+            probe.assert_called_once()
+
+    def test_renamed_onefile_service_and_manager_are_still_blocked(self):
+        for name in ("AWQM_Service.exe","AWQM_Manager.exe"):
+            with self.subTest(name=name), patch.object(sys,"executable",str(self.exe.with_name(name))):
+                with self.assertRaises(SystemExit):
+                    self.run_args()
+        with patch("awqm.manager.main") as manager:
+            for args in (("rollback-data",),("reverse-program",),("switch-program",)):
+                with self.subTest(args=args), self.assertRaises(SystemExit):
+                    self.run_args("--manager",*args)
+            manager.assert_not_called()
+
     def test_version(self):
         with patch("sys.stdout",new_callable=io.StringIO) as out:
             self.run_args("--version")

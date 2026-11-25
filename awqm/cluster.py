@@ -6,6 +6,7 @@ Load tables are verified against their own totals and exact member mapping.
 """
 import ipaddress,re
 from .aos8 import cleaned,norm,ParseError
+from .controller_resources import observations as resource_observations
 
 MEMBERSHIP="show lc-cluster group-membership"
 AP_LOAD="show lc-cluster load distribution ap"
@@ -160,7 +161,8 @@ class ClusterMonitor:
             else:status="unknown"
             nodes.append({"controller":target,"cpu":cpu_rows[target],"state":status,
                           "role":own[1][address]["role"] if own else None,
-                          "self_state":self_state,"peer_observations":len(peers),"observed_at":own[0] if own else None})
+                          "self_state":self_state,"peer_observations":len(peers),"observed_at":own[0] if own else None,
+                          "resources":resource_observations(frames.get(target),now)})
         loads={}
         for kind,cmd in (("ap",AP_LOAD),("client",CLIENT_LOAD)):
             valid=[]

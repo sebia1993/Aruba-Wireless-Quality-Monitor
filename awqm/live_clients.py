@@ -13,6 +13,7 @@ from .client import match_bss
 from .analysis import client_quality
 from .model import number
 from .selection import Selector
+from .client_correlation import ClientCorrelation
 
 CHECKS=frozenset(("client_table_layout","active_association_mapping","bss_radio_mapping",
     "client_health_percent","ack_snr_db","last_phy_rate_mbps","privacy_approval","read_only_permission"))
@@ -57,11 +58,13 @@ def load_client_approvals(cfg,radio_approvals,now=None):
     return out
 
 class LiveClients:
-    def __init__(self,approvals,key=None,max_rows=5000,station_approvals=None):
+    def __init__(self,approvals,key=None,max_rows=5000,station_approvals=None,correlation_approvals=None):
         self.approvals=dict(approvals);self.key=key or secrets.token_bytes(32)
         self.selector=Selector(cooldown=180,allow_attested=True)
         self.max_rows=max_rows;self.rows={};self.views=[];self.last_plan={}
         self.station_approvals=dict(station_approvals or {});self.station={};self.station_plan={}
+        self.correlation=ClientCorrelation(correlation_approvals or {},max_rows)
+        self.aggregate_written={}
     def token(self,kind,value):
         return hmac.new(self.key,(kind+"|"+value).encode(),hashlib.sha256).hexdigest()[:32]
     def eligible(self,r,s,q,now,automatic=False):
@@ -85,14 +88,16 @@ class LiveClients:
         planned=self.selector.plan(rows,now,workers)
         for controller,_ in planned:self.last_plan[controller]=now
         return planned
+    def _forget_station(self,ident):
+        self.station.pop(ident,None);self.correlation.forget(ident)
     def invalidate_ap(self,controller,target):
         removed=[k for k,r in self.rows.items() if r["controller"]==controller and r["ap_name"]==target]
         for ident in removed:
-            self.rows.pop(ident,None);self.station.pop(ident,None)
+            self.rows.pop(ident,None);self._forget_station(ident)
     def ingest(self,reading,controller,snapshot,assoc,bss,radios,quality,clients,now):
         if reading.command=="show ap debug client-stats":
             result=self.ingest_station(reading,controller,snapshot,assoc,bss,radios,quality,clients,now)
-            if not result and reading.target:self.station.pop(self.token("client",reading.target),None)
+            if not result and reading.target:self._forget_station(self.token("client",reading.target))
             return result
         if reading.command!="show ap debug client-table" or not reading.target:return 0
         def invalid():
@@ -129,7 +134,7 @@ class LiveClients:
                 observed_at=reading.observed_at,health=d["health"],snr=d["ack_snr"],last_phy_rate=d["tx_rate"],
                 quality_score=score,quality_status=status,airtime=None,retry=None,candidate=None,
                 scope="locally_attested_client_table",valid_until=min(a.valid_until,snapshot.field_until),
-                context=snapshot.field_connection,association=self.token("association",json.dumps([d["bssid"],d["ssid"]])))))
+                context=snapshot.field_connection,radio_epoch=r.epoch,network=self.token("network",d["ssid"]),association=self.token("association",json.dumps([d["bssid"],d["ssid"]])))))
         # No raw MAC, BSSID or SSID is retained by the client ledger.
         # A new detail observation replaces this AP's previous view. Missing
         # entries are not interpreted as disconnection or proof of recovery.
@@ -137,10 +142,10 @@ class LiveClients:
         self.rows={k:v for k,v in self.rows.items() if k not in previous}
         for ident,row in new:
             old=previous.pop(ident,None)
-            if old and (old["context"],old["association"],old["radio_id"])!=(row["context"],row["association"],row["radio_id"]):
-                self.station.pop(ident,None)
+            if old and (old["context"],old["association"],old["radio_id"],old["radio_epoch"])!=(row["context"],row["association"],row["radio_id"],row["radio_epoch"]):
+                self._forget_station(ident)
             self.rows[ident]=row
-        for ident in previous:self.station.pop(ident,None)
+        for ident in previous:self._forget_station(ident)
         if len(self.rows)>self.max_rows:
             keep=sorted(self.rows,key=lambda k:self.rows[k]["observed_at"],reverse=True)[:self.max_rows]
             self.rows={k:self.rows[k] for k in keep}
@@ -149,30 +154,77 @@ class LiveClients:
         by={s.controller:s for s in snapshots}
         rs={r.radio_id:r for r in radios}
         claims={self.token("client",m):v for m,v in clients.items()}
-        views=[]
+        views=[];comparison={}
         self.rows={k:r for k,r in self.rows.items() if 0<=now-r["observed_at"]<=180 and now<r["valid_until"]}
         for ident,row in self.rows.items():
             s=by.get(row["controller"]);r=rs.get(row["radio_id"]);a=claims.get(ident)
-            if not s or not r or not a or s.field_connection!=row["context"] or not self.eligible(r,s,quality.get(r.radio_id),now):continue
+            if not s or not r or not a or s.field_connection!=row["context"] or r.epoch!=row["radio_epoch"] or not self.eligible(r,s,quality.get(r.radio_id),now):continue
             if a["ap_name"]!=row["ap_name"] or self.token("association",json.dumps([a["bssid"],a["ssid"]]))!=row["association"]:continue
             # API consumers receive only the explicit display allowlist.
             item={k:row[k] for k in ("id","ap_name","controller","band","observed_at","health","snr",
                 "last_phy_rate","quality_score","quality_status","airtime","retry","candidate","scope","valid_until")}
             station=self.station.get(ident);approval=self.station_approvals.get(row["controller"])
             item.update(station_retry=None,station_start=None,station_end=None,station_tx_activity="unknown",station_until=None)
-            if station and approval and 0<=now-station["at"]<=90 and now<station["until"] and station["context"]==row["context"] and station["association"]==row["association"]:
+            if station and approval and 0<=now-station["at"]<=90 and now<station["until"] and station["context"]==row["context"] and station["association"]==row["association"] and station["radio_epoch"]==row["radio_epoch"]:
                 item.update(station_retry=station["ratio"],station_start=station["start"],station_end=station["at"],
                             station_tx_activity=station["activity"],station_until=station["until"])
+                ca=self.correlation.approvals.get(row["controller"])
+                if ca and station["start"] is not None:
+                    comparison[ident]={"controller":row["controller"],"radio_id":row["radio_id"],"radio_epoch":r.epoch,
+                        "network":row["network"],"station_tag":approval.tag,"sequence":station["sequence"],
+                        "start":station["start"],"end":station["at"],"activity":station["activity"],
+                        "retry":station["ratio"],"health":row["health"],"score":row["quality_score"],
+                        "link_at":row["observed_at"],"radio_at":r.observed_at,"persistent":True,
+                        "utilization":r.utilization,"until":min(row["valid_until"],station["until"],s.field_until,ca.valid_until)}
             views.append(item)
         # Remove stale/context-invalid station observations. No raw identifiers or
         # station counters are ever written to disk by this component.
         visible={v["id"] for v in views}
         self.station={k:v for k,v in self.station.items() if k in visible and 0<=now-v["at"]<=180 and now<v["until"]}
         self.station_plan={k:v for k,v in self.station_plan.items() if 0<=now-v<=180}
+        candidates=self.correlation.evaluate(comparison,now)
+        for row in views:
+            row.update(candidates.get(row["id"],{"candidate":None,"confidence":"unavailable",
+                "peer_comparable":None,"peer_degraded":None,"candidate_until":None,"candidate_scope":None}))
         self.views=sorted(views,key=lambda r:(r["quality_score"] is None,r["quality_score"] or 0,r["id"]))
         return self.views
+    def persist_correlations(self,incidents,radios,snapshots,quality,now):
+        """Persist only aggregate RF03 evidence, never a client-level row.
+        The first accepted summary per Radio observation is immutable.
+        Separate consent and the retention policy are mandatory.
+        """
+        if not any(a.persist_aggregate and a.approved_at<=now<a.valid_until for a in self.correlation.approvals.values()):return 0
+        rs={r.radio_id:r for r in radios}
+        by={s.controller:s for s in snapshots}
+        self.aggregate_written={k:v for k,v in self.aggregate_written.items() if k in rs and v[0]==rs[k].observed_at}
+        groups={}
+        for row in self.views:
+            if row.get("candidate")!="RF03" or row.get("confidence")!="low" or now>=(row.get("candidate_until") or 0):continue
+            internal=self.rows.get(row["id"])
+            if not internal:continue
+            r=rs.get(internal["radio_id"]);s=by.get(row["controller"])
+            a=self.correlation.approvals.get(row["controller"]);station=self.station_approvals.get(row["controller"])
+            if not r or not s or not a or not a.persist_aggregate or not station:
+                continue
+            if not a.permits(station.tag,row["station_start"],now) or not self.eligible(r,s,quality.get(r.radio_id),now):
+                continue
+            if self.aggregate_written.get(r.radio_id)==(r.observed_at,s.field_connection,r.epoch):continue
+            groups.setdefault(r.radio_id,[]).append(row)
+        saved=0
+        for rid,rows in groups.items():
+            r=rs[rid];s=by[r.controller];q=quality[rid]
+            # The durable payload contains no individual station identifiers,
+            # SSID/BSSID, link/counter values or reversible pseudonyms.
+            summary={"candidate_count":len(rows),"min_comparable":min(x["peer_comparable"] for x in rows),
+                "min_degraded":min(x["peer_degraded"] for x in rows),
+                "interval_end":max(x["station_end"] for x in rows)}
+            context=s.field_tag+"|"+s.field_connection+"|"+r.epoch
+            if incidents.record_client_summary(r,q,context,now,summary):
+                saved+=1
+            self.aggregate_written[rid]=(r.observed_at,s.field_connection,r.epoch)
+        return saved
     def clear(self):
-        self.rows.clear();self.station.clear();self.station_plan.clear();self.views=[]
+        self.rows.clear();self.station.clear();self.station_plan.clear();self.correlation.clear();self.aggregate_written.clear();self.views=[]
 
     def ingest_station(self,reading,controller,snapshot,assoc,bss,radios,quality,clients,now):
         from .station_validation import continuous,successful_retry
@@ -188,61 +240,80 @@ class LiveClients:
         local=[x for x in assoc.data if x["active"] and x["client_mac"]==reading.target]
         if len(local)!=1 or any(local[0][k]!=claim[k] for k in ("ap_name","bssid","ssid")):return 0
         r=next((x for x in radios if x.radio_id==row["radio_id"] and x.controller==controller),None)
-        if not r or not self.eligible(r,snapshot,quality.get(r.radio_id),now):return 0
+        if not r or r.epoch!=row["radio_epoch"] or not self.eligible(r,snapshot,quality.get(r.radio_id),now):return 0
         if match_bss(claim["bssid"],claim["ssid"],bss.data,[r])!=r.radio_id:return 0
         before,after=reading.data["before"],reading.data["after"]
         association=self.token("association",json.dumps([claim["bssid"],claim["ssid"]]))
         if ((after.ap,after.bssid,after.ssid)!=(claim["ap_name"],claim["bssid"],claim["ssid"]) or
             association!=row["association"] or row["ap_name"]!=after.ap or not continuous(before,after,10)):
-            self.station.pop(ident,None);return 0
+            self._forget_station(ident);return 0
         # Store only a pseudonymized stamp and temporary counters, no BSSID/SSID.
         stamp_token=self.token("station-association",json.dumps([after.ap,after.bssid,after.ssid,after.aid,after.count]))
         current=reading.data["counters"]
         if any(type(current[k]) is not int or not 0<=current[k]<=2**63-1 for k in ("sent","retried")) or current["retried"]>current["sent"]:
-            self.station.pop(ident,None);return 0
-        old=self.station.get(ident);ratio=None;start=None;activity="unknown"
+            self._forget_station(ident);return 0
+        old=self.station.get(ident);ratio=None;start=None;activity="unknown";sequence=secrets.token_hex(16)
         if old and reading.observed_at<=old["at"]:return 0
-        if old and old["context"]==row["context"] and old["stamp"]==stamp_token and old["association"]==association:
+        if old and old["context"]==row["context"] and old["stamp"]==stamp_token and old["association"]==association and old["radio_epoch"]==row["radio_epoch"]:
             dt=reading.observed_at-old["at"]
             if 30<=dt<=180 and after.age>=old["age"] and abs(after.age-old["age"]-dt)<=3:
                 sent=current["sent"]-old["counters"]["sent"]
                 retried=current["retried"]-old["counters"]["retried"]
                 if 0<=retried<=sent:
+                    sequence=old["sequence"]
                     start=old["at"]
                     activity="successful_tx_observed" if sent>0 else "no_successful_tx_increase"
                     ratio=successful_retry(old["counters"],current,stamp_token,stamp_token)
-        self.station[ident]={"at":reading.observed_at,"start":start,"ratio":ratio,"activity":activity,
+        if old and sequence!=old["sequence"]:self.correlation.forget(ident)
+        self.station[ident]={"sequence":sequence,"radio_epoch":row["radio_epoch"],"at":reading.observed_at,"start":start,"ratio":ratio,"activity":activity,
             "until":min(row["valid_until"],approval.valid_until,snapshot.field_until),"context":row["context"],
             "association":association,"stamp":stamp_token,"age":after.age,"counters":{"sent":current["sent"],"retried":current["retried"]}}
         return 1
 
     def plan_station(self,clients,now,workers):
-        # Bounded, per-AP cohort of at most three low-quality observations.
-        # Selection does not label the device as active or a cause. Raw MAC
-        # exists only in the existing transient association/job pipeline.
-        candidates={}
+        # Keep existing 3-target controller cap and 45s cooldown. When the
+        # extra comparison approval exists, prefer a same-Radio/network
+        # cohort (one poor link + two deterministic peers) rather than
+        # selecting only poor links across unrelated APs.
+        candidates={};cohorts={}
         claims={self.token("client",m):m for m in clients}
         for row in self.views:
             ident=row["id"];controller=row["controller"]
             approval=self.station_approvals.get(controller);a=self.approvals.get(controller)
             if not approval or not a or not approval.permits(a.tag,row["observed_at"],now):continue
-            if row["quality_score"] is None or row["quality_score"]>=50 or ident not in claims:continue
-            if now-self.station_plan.get(ident,-1e20)<45:continue
-            candidates.setdefault((controller,row["ap_name"]),[]).append(row)
+            if row["quality_score"] is None or ident not in claims:continue
+            internal=self.rows.get(ident)
+            if internal is None:continue
+            ca=self.correlation.approvals.get(controller)
+            if ca and ca.permits(approval.tag,row["observed_at"],now):
+                group=(controller,internal["radio_id"],internal["radio_epoch"],internal["network"],internal["context"])
+                cohorts.setdefault(group,[]).append(row)
+            if row["quality_score"]<50:candidates.setdefault(controller,[]).append(row)
         planned=[]
-        for (controller,ap),rows in candidates.items():
+        for controller,poor in candidates.items():
             w=workers.get(controller)
             if not w or "show ap debug client-stats" in getattr(w,"detail_disabled",set()):continue
             if hasattr(w.jobs,"purge_station"):w.jobs.purge_station(now)
-            # Existing queued/running station jobs consume the controller cap.
             active=[j for j in w.jobs.list(now) if j.name=="show ap debug client-stats" and j.status in ("queued","deferred","running")]
-            rows=[row for row in rows if claims[row["id"]] not in {j.target for j in active}]
             slots=max(0,3-len(active))
             if not slots:continue
-            for row in sorted(rows,key=lambda x:(x["quality_score"],x["id"]))[:slots]:
+            # Choose a deterministic, bounded same-network cohort if one
+            # exists. Peer selection is independent of its current retry.
+            ranked=sorted(poor,key=lambda x:(x["quality_score"],x["id"]))
+            selected=None
+            for target in ranked:
+                x=self.rows[target["id"]]
+                group=cohorts.get((controller,x["radio_id"],x["radio_epoch"],x["network"],x["context"]),[])
+                peers=sorted((r for r in group if r["id"]!=target["id"]),key=lambda r:r["id"])
+                if len(peers)>=2:
+                    selected=[target,*peers[:2]];break
+            if selected is None:selected=ranked
+            for row in selected:
+                if not slots:break
                 ident=row["id"];target=claims[ident]
+                if now-self.station_plan.get(ident,-1e20)<45 or any(j.target==target for j in active):continue
                 try:
                     j=w.submit_detail("station-"+ident+"-"+str(now//45),"show ap debug client-stats",target,ttl=60)
                 except (RuntimeError,ValueError):continue
-                self.station_plan[ident]=now;planned.append(j.job_id)
+                self.station_plan[ident]=now;planned.append(j.job_id);slots-=1
         return planned

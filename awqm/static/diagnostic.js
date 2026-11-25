@@ -2,12 +2,13 @@
 const $=id=>document.getElementById(id);
 const names={overview:"종합 현황",radios:"AP 품질 관측",clients:"사용자 분석",history:"장애 및 이력",admin:"운영 관리"};
 let view="overview",page=1,snapshot=null,selected=null,busy=false,revision=0,expired=false;
+let updateSocket=null,updateTimer=null,lastSignal=0,lastAutomatic=0,lastPublication=null;
 const kst=t=>t==null?"미확인":new Date(t*1000).toLocaleString("ko-KR",{timeZone:"Asia/Seoul"});
 function el(tag,value,cls){const n=document.createElement(tag);if(value!=null)n.textContent=String(value);if(cls)n.className=cls;return n;}
 function table(headers,rows){const wrap=el("div",null,"table-wrap"),t=el("table"),head=el("thead"),tr=el("tr");for(const h of headers)tr.append(el("th",h));head.append(tr);t.append(head);const b=el("tbody");for(const row of rows){const r=el("tr");for(const value of row){const c=el("td");if(value instanceof Node)c.append(value);else c.textContent=value??"미확인";r.append(c);}b.append(r);}t.append(b);wrap.append(t);return wrap;}
 function metric(n,v){const b=el("div",null,"kpi");b.append(el("span",n),el("strong",v??"미확인"));return b;}
 function notice(s){$("notice").textContent=s;}
-function invalidate(){expired=true;snapshot=null;selected=null;incidentPanel=null;$("content").replaceChildren(el("p","인증 만료. 새로고침 후 다시 로그인하세요."));$("detail").hidden=true;$("detailBody").replaceChildren();notice("인증 세션 만료");}
+function invalidate(){expired=true;closeUpdates();snapshot=null;selected=null;incidentPanel=null;$("content").replaceChildren(el("p","인증 만료. 새로고침 후 다시 로그인하세요."));$("detail").hidden=true;$("detailBody").replaceChildren();notice("인증 세션 만료");}
 async function request(path){const r=await fetch(path,{cache:"no-store"});if(r.status===401){invalidate();throw Error("expired");}if(!r.ok)throw Error("unavailable");return r.json();}
 function neighborPanel(r){
   const panel=el("section");panel.append(el("h3","RF Neighbor 관측"),el("p","논리적 RF 관계 · 물리 위치 또는 실제 간섭 원인 확정 아님"));
@@ -129,6 +130,9 @@ function historyChart(report){
 function openHistory(r){
   incidentPanel=null;selected={id:r.id,name:r.ap_name,band:r.band};$("detail").hidden=false;
   const d=$("detailBody");d.replaceChildren(el("h3",r.ap_name+" · "+r.band),el("p","원본·집계 이력 · 실제 서비스 영향 및 원인 미확인"));
+  d.append(el("p","AP 앵커 관측 (상세 화면을 연 시점의 자료, 현재 상태 보장 아님)"));
+  if(r.ap_anchor?.observations?.length)d.append(table(["관측 WLC","자료 유형","보고 역할","관측 시각"],r.ap_anchor.observations.map(x=>[x.source,x.kind==="standby"?"Standby AP":"UAC AP DB",x.roles.join(", ")||"미확인",kst(x.observed_at)])));
+  else d.append(el("p","현재 검증된 추가 앵커 관측 없음"));
   const end=el("input");end.type="datetime-local";end.setAttribute("aria-label","종료 시각 KST");
   end.value=new Date((Math.ceil(Date.now()/60000)*60+60+32400)*1000).toISOString().slice(0,16);
   const resolution=el("select"),hours=el("select"),button=el("button","이력 조회"),output=el("div");
@@ -173,7 +177,7 @@ function openHistory(r){
 }
 
 const incidentLabels={DETECTED:"최초 위험",PERSISTENT:"지속 위험",RECOVERING:"회복 관측 중",RESOLVED:"RF 정책 정상화",TRANSIENT:"일시 위험",UNCONFIRMED:"현재 확인 불가",CONTEXT_LOST:"관측 조건 변경 · 정상화 아님"};
-const candidateLabels={RF04:"Radio 혼잡 관측",RF05:"동일 채널 경합 후보",RF06:"중첩 채널 경합 후보",UNKNOWN:"원인 미확인"};
+const candidateLabels={RF03:"재시도·동시 저하 후보(과거 근거)",RF04:"Radio 혼잡 관측",RF05:"동일 채널 경합 후보",RF06:"중첩 채널 경합 후보",UNKNOWN:"원인 미확인"};
 const verdictLabels={supported:"근거 지지",not_supported:"근거 불충분/반대",inconclusive:"판단 보류"};
 let incidentPage=1,incidentFilter="all",incidentVersion=0,incidentPanel=null;
 const reviewAttempts=new Map();
@@ -236,7 +240,7 @@ async function openIncident(id){
     if(d.timeline_truncated||d.reviews_truncated)out.append(el("p","최근 이력만 표시합니다. 일부 과거 근거/검증 이력은 조회 상한으로 생략됩니다.","warn"));
     const revision=selectOptions(d.timeline.map(x=>String(x.revision)),Object.fromEntries(d.timeline.map(x=>[String(x.revision),"근거 #"+x.revision+" · "+kst(x.at)+" · "+(incidentLabels[x.state]||x.state)])),String(d.revision));
     const candidate=el("select"),basis=el("p"),verdict=selectOptions(["inconclusive","supported","not_supported"],verdictLabels,"inconclusive"),reason=selectOptions(["insufficient_evidence","radio_evidence","other_evidence","conflicting_evidence"],{insufficient_evidence:"자료 부족",radio_evidence:"Radio 관측 근거",other_evidence:"별도 운영자 확인",conflicting_evidence:"상충 자료"},"insufficient_evidence");
-    function updateCandidates(){const ev=d.timeline.find(x=>String(x.revision)===revision.value);candidate.replaceChildren();for(const c of ev.evidence.candidates){const o=el("option",candidateLabels[c.code]||c.code);o.value=c.code;candidate.append(o);}basis.textContent=ev.evidence.candidates.map(c=>(candidateLabels[c.code]||c.code)+" · "+c.basis.join(", ")+" · "+c.limit).join(" / ")+(ev.evidence.neighbor_evidence?" · 인접 후보 "+ev.evidence.neighbor_evidence.map(n=>(n.ap_name||"미확인")+" "+n.channel+"CH / "+n.overlap_mhz+"MHz").join(", "):"");}
+    function updateCandidates(){const ev=d.timeline.find(x=>String(x.revision)===revision.value);candidate.replaceChildren();for(const c of ev.evidence.candidates){const o=el("option",candidateLabels[c.code]||c.code);o.value=c.code;candidate.append(o);}basis.textContent=ev.evidence.candidates.map(c=>(candidateLabels[c.code]||c.code)+" · "+c.basis.join(", ")+" · "+c.limit).join(" / ")+(ev.evidence.client_correlation?" · RF03 과거 집계 "+kst(ev.evidence.client_correlation.interval_end)+" / 후보 "+ev.evidence.client_correlation.candidate_count+"대 / 비교 최소 "+ev.evidence.client_correlation.min_comparable+"대, 저하 최소 "+ev.evidence.client_correlation.min_degraded+"대":"")+(ev.evidence.neighbor_evidence?" · 인접 후보 "+ev.evidence.neighbor_evidence.map(n=>(n.ap_name||"미확인")+" "+n.channel+"CH / "+n.overlap_mhz+"MHz").join(", "):"");}
     revision.addEventListener("change",updateCandidates);updateCandidates();
     const save=el("button","운영자 검증 기록"),message=el("p");let attempt=null;
     save.addEventListener("click",async()=>{
@@ -268,10 +272,10 @@ async function loadClients(){
     const d=await request("/api/clients?"+q);
     if(rev!==clientVersion||view!=="clients"||expired)return;
     out.replaceChildren(el("p",d.enabled?"현장 승인된 AP 정밀 조회의 임시 단말 관측입니다. MAC·SSID 원문 미표시, DB 미저장.":"단말 상세 수집 비활성 · 별도 현장 검증 필요"),
-      el("p","품질은 Health·ACK SNR 기반 부분 점수입니다. 별도 검증된 Station Stats는 성공 프레임 중 재시도 비율만 표시합니다. Airtime·원인 기여는 미확인."));
+      el("p","품질은 Health·ACK SNR 기반 부분 점수입니다. 별도 검증된 Station Stats는 성공 프레임 중 재시도 비율만 표시합니다. Airtime은 미확인. RF03은 별도 승인된 동시간대 재시도·비교 단말 저하 후보이며 원인 확정이 아닙니다."));
     const refreshBtn=el("button","관측 갱신");refreshBtn.addEventListener("click",loadClients);out.append(refreshBtn);
     if(!d.rows.length)out.append(el("p","현재 조건을 충족하는 상세 관측이 없습니다. 단말이 없거나 정상이라는 의미는 아닙니다."));
-    else out.append(table(["임시 단말 ID","AP","WLC","대역","Health %","ACK SNR dB","최근 PHY Mbps","부분 품질 점수","성공 Tx 관측","성공 프레임 재시도 %","통계 구간","Airtime","관측 시각"],d.rows.map(r=>[r.id.slice(0,16),r.ap_name,r.controller,r.band,r.health,r.snr,r.last_phy_rate,r.quality_score==null?"미확인":r.quality_score+" (부분)",({successful_tx_observed:"증가 관측",no_successful_tx_increase:"성공 Tx 증가 없음"})[r.station_tx_activity]||"미확인",r.station_retry==null?"미확인":r.station_retry.toFixed(1),r.station_start==null?"미확인":kst(r.station_start)+" ~ "+kst(r.station_end),"미확인",kst(r.observed_at)])));
+    else out.append(table(["임시 단말 ID","AP","WLC","대역","Health %","ACK SNR dB","최근 PHY Mbps","부분 품질 점수","성공 Tx 관측","성공 프레임 재시도 %","통계 구간","Airtime","간접 후보","비교 단말 저하","관측 시각"],d.rows.map(r=>[r.id.slice(0,16),r.ap_name,r.controller,r.band,r.health,r.snr,r.last_phy_rate,r.quality_score==null?"미확인":r.quality_score+" (부분)",({successful_tx_observed:"증가 관측",no_successful_tx_increase:"성공 Tx 증가 없음"})[r.station_tx_activity]||"미확인",r.station_retry==null?"미확인":r.station_retry.toFixed(1),r.station_start==null?"미확인":kst(r.station_start)+" ~ "+kst(r.station_end),"미확인",r.candidate==="RF03"?"RF03 · 낮은 신뢰도":"미확인",r.peer_comparable==null?"미확인":r.peer_degraded+" / "+r.peer_comparable,kst(r.observed_at)])));
     const controls=el("div",null,"pager"),prev=el("button","이전"),next=el("button","다음");
     prev.disabled=clientPage<=1;next.disabled=clientPage*d.size>=d.total;
     prev.addEventListener("click",()=>{clientPage--;loadClients();});next.addEventListener("click",()=>{clientPage++;loadClients();});
@@ -286,6 +290,16 @@ function clusterPanel(d){
   const labels={connected_observed:"연결 교차 관측",self_only:"자체 관측",peer_disagreement:"Peer 상태 상충",peer_issue_observed:"Peer 이상 관측",self_issue_observed:"자체 이상 관측",peer_only:"Peer 관측만 있음",unknown:"미확인"};
   const m=Object.fromEntries(["ap","client"].map(k=>[k,new Map(d.load[k].rows.map(r=>[r.controller,r]))]));
   c.append(table(["WLC","CPU %","멤버십","Role","Active AP","Standby AP","Active Client","Standby Client"],d.nodes.map(r=>[r.controller,r.cpu,labels[r.state]||r.state,r.role,m.ap.get(r.controller)?.active,m.ap.get(r.controller)?.standby,m.client.get(r.controller)?.active,m.client.get(r.controller)?.standby])));
+  c.append(el("h3","AP Standby / UAC DB 관측"),el("p","현재 AP와 일치하는 양성 관측 수입니다. 미관측은 장애·Standby 미구성으로 확정하지 않습니다."),table(["WLC","Standby 관측/일치","UAC AP DB 관측/일치","Standby 시각","UAC DB 시각"],d.nodes.map(r=>{const a=r.ap_anchors?.standby,u=r.ap_anchors?.uac_database;const count=x=>x?.status==="observed"?x.total+" / "+x.matched:"미확인";return [r.controller,count(a),count(u),kst(a?.observed_at),kst(u?.observed_at)];})));
+  c.append(el("h3","WLC 자원 관측"),el("p","메모리 보고 사용률과 Datapath CPU별 1초·4초 값은 서로 다른 지표입니다. 장비 장애나 RF 원인으로 확정하지 않습니다."));
+  const resourceLabels={disabled:"비활성",unavailable:"미확인",withheld:"보호/검증 대기",stale:"오래된 관측",attestation_unavailable:"검증 만료/불일치",cpu_inventory_mismatch:"CPU 목록 불일치",parse_error:"출력 형식 불일치",permission_denied:"권한 없음",unsupported:"명령 미지원",transport_error:"통신 오류",observed:"최근 관측"};
+  c.append(table(["WLC","메모리 보고 사용률 %","Free (Kb)","메모리 관측 시각","Datapath CPU 수","1초 최대 %","4초 최대 %","Datapath 관측 시각","수집 상태"],d.nodes.map(r=>{
+    const m=r.resources?.memory,p=r.resources?.datapath;
+    return [r.controller,m?.data?.reported_used_percent,m?.data?.free_kb,kst(m?.observed_at),p?.data?.cpu_count,p?.data?.max_1s_percent,p?.data?.max_4s_percent,kst(p?.observed_at),
+      "Mem "+(resourceLabels[m?.status]||"미확인")+" / DP "+(resourceLabels[p?.status]||"미확인")];
+  })));
+  const cores=d.nodes.flatMap(r=>(r.resources?.datapath?.data?.rows||[]).map(x=>[r.controller,x.id,x.type,x.percent_1s,x.percent_4s]));
+  if(cores.length){const detail=el("details");detail.append(el("summary","Datapath CPU별 상세 (64초 값 제외)"),table(["WLC","CPU ID","유형","1초 %","4초 %"],cores));c.append(detail);}
   for(const [key,title] of [["ap","AP"],["client","Client"]]){
     const l=d.load[key],status={unknown:"미확인",single_source:"단일 출처",crosschecked:"교차 확인",conflicting_observations:"관측값 상충"}[l.status]||l.status;
     c.append(el("p",title+" 전체 Active "+(l.active_total??"미확인")+" / Standby "+(l.standby_total??"미확인")+" · "+status+" · "+(l.source||"—")+" · "+kst(l.observed_at)));
@@ -384,6 +398,49 @@ function render(){
   prev.addEventListener("click",()=>{page--;refresh(true);});next.addEventListener("click",()=>{page++;refresh(true);});
   pager.append(prev,el("span",page+" / "+Math.max(1,Math.ceil(snapshot.total/snapshot.size))+" · "+snapshot.total+"건"),next);c.append(pager);
 }
-async function refresh(force=false){if(expired||busy&&!force)return;const serial=++revision;busy=true;try{const q=new URLSearchParams({q:$("search").value,page:String(page)});const r=await request("/api/radios?"+q);if(serial!==revision||expired)return;snapshot=r;notice(r.available?"진단 관측 · 현장 승인된 Radio 지표만 정책 점수 제공 · 원인/서비스 장애 확정 금지":"수집 또는 저장 상태 확인 불가 · 마지막 관측을 현재 상태로 해석하지 마십시오.");if(view==="overview"||view==="radios")render();}catch(e){if(!expired&&serial===revision){notice("갱신 실패 · 현재 상태 확인 불가");snapshot=null;if(view==="overview"||view==="radios")render();}}finally{if(serial===revision)busy=false;}}
+async function refresh(force=false){if(expired||busy&&!force)return;const serial=++revision;busy=true;try{const q=new URLSearchParams({q:$("search").value,page:String(page)});const r=await request("/api/radios?"+q);if(serial!==revision||expired)return;snapshot=r;notice(r.available?"진단 관측 · 현장 승인된 Radio 지표만 정책 점수 제공 · 원인/서비스 장애 확정 금지":"수집 또는 저장 상태 확인 불가 · 마지막 관측을 현재 상태로 해석하지 마십시오.");if(view==="overview"||view==="radios"){const offsets=force?[]:[...$("content").querySelectorAll(".table-wrap")].map(n=>[n.scrollLeft,n.scrollTop]);render();if(offsets.length)[...$("content").querySelectorAll(".table-wrap")].forEach((n,i)=>{if(offsets[i]){n.scrollLeft=offsets[i][0];n.scrollTop=offsets[i][1];}});}}catch(e){if(!expired&&serial===revision){notice("갱신 실패 · 현재 상태 확인 불가");snapshot=null;if(view==="overview"||view==="radios")render();}}finally{if(serial===revision)busy=false;}}
 $("nav").addEventListener("click",e=>{const v=e.target.dataset.view;if(!v||expired)return;view=v;for(const b of $("nav").querySelectorAll("button"))b.removeAttribute("aria-current");e.target.setAttribute("aria-current","page");render();});
-$("search").addEventListener("input",()=>{page=1;clientPage=1;if(view==="clients")loadClients();else refresh(true);});$("close").addEventListener("click",()=>{selected=null;incidentPanel=null;$("detail").hidden=true;$("detailBody").replaceChildren();});render();refresh();setInterval(()=>{if(view==="clients")loadClients();else refresh();},10000);
+$("search").addEventListener("input",()=>{page=1;clientPage=1;if(view==="clients")loadClients();else refresh(true);});$("close").addEventListener("click",()=>{selected=null;incidentPanel=null;$("detail").hidden=true;$("detailBody").replaceChildren();});render();refresh();
+function closeUpdates(){
+  if(updateTimer!==null){clearTimeout(updateTimer);updateTimer=null;}
+  if(updateSocket){const s=updateSocket;updateSocket=null;try{s.close();}catch(e){}}
+}
+function automaticRefresh(){
+  if(expired||document.hidden||Date.now()-lastAutomatic<4000)return;
+  lastAutomatic=Date.now();
+  if(view==="clients")loadClients();else refresh();
+}
+function connectUpdates(){
+  if(expired||document.hidden||updateSocket||location.protocol!=="https:"||!("WebSocket" in window))return;
+  let s;
+  try{s=new WebSocket("wss://"+location.host+"/ws/updates");}catch(e){return;}
+  updateSocket=s;lastPublication=null;
+  s.addEventListener("message",e=>{
+    if(updateSocket!==s||expired||typeof e.data!=="string"||e.data.length>256)return;
+    try{
+      const d=JSON.parse(e.data);
+      if(d.type!=="publication"||!Number.isSafeInteger(d.revision)||d.revision<0||typeof d.available!=="boolean")return;
+      lastSignal=Date.now();const key=d.revision+":"+d.available;
+      if(key!==lastPublication){lastPublication=key;automaticRefresh();}
+    }catch(e){}
+  });
+  s.addEventListener("close",()=>{
+    if(updateSocket!==s)return;
+    updateSocket=null;lastSignal=0;
+    if(!expired&&!document.hidden)updateTimer=setTimeout(()=>{updateTimer=null;connectUpdates();},8000);
+  });
+  s.addEventListener("error",()=>{try{s.close();}catch(e){}});
+}
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden)closeUpdates();
+  else{lastSignal=0;automaticRefresh();connectUpdates();}
+});
+window.addEventListener("pagehide",closeUpdates);
+connectUpdates();
+// Independent fallback also enforces expiry/staleness during a stalled WS.
+setInterval(()=>{
+  if(expired||document.hidden)return;
+  if(Date.now()-lastSignal>12000)automaticRefresh();
+  if(!updateSocket&&updateTimer===null)connectUpdates();
+},10000);
+
