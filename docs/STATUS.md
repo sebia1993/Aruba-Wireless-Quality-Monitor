@@ -81,3 +81,8 @@ Current launcher defaults to no live access; explicit --demo, --engine-demo, --v
 - v0.37.1 portable Windows build and dependency audit passed (45530631175). v0.39.1 integrates the full v0.39 foundation, including representative real SQLite lifecycle and browser navigation changes, preserving portable restrictions. Portable CI now requires actual Chromium and lifecycle evidence in addition to onefile, HTTPS/WSS, capacity/history and exact dependency audit before opt-in preview publication. No automatic release or main merge. CI pending.
 
 - v0.40.1-dev: merge v0.40.0-dev HTML-only same-origin referrer policy and native form diagnostics, retaining exact Origin/CSRF and existing portable restrictions. Repeat browser and Windows CI required. No publication marker.
+
+
+## v0.49.0 candidate — web-first desktop
+
+The Windows application now opens a browser and registers a notification-area icon (visible-window fallback). The local web device editor and read-only observation pages use a shared current-user profile store and monitor. The capability stays on loopback and requires the exact Origin and session token. Desktop service administration and approved HTTPS policy keep their existing boundaries. The local polling interval is persisted (60–600 seconds); this is not the protected service scheduler. Browser closure does not stop the desktop engine. Candidate build, browser regression, actual packaged loopback SSH test and native Windows 11 field verification must be recorded before release. Local retained history, backup controls, alert configuration and actual Airtime are not implemented by this candidate.

@@ -121,7 +121,7 @@ def validate(entry, application, *, installer=False, repeat=False, progress=lamb
                 print(f"Installed application opened its dashboard: "
                       f"{len(snapshot['radios'])} sample radios, {len(snapshot['clients'])} clients")
             finally:
-                if not user32.PostMessageW(hwnd, 0x0010, 0, 0):  # WM_CLOSE
+                if not user32.PostMessageW(hwnd, 0x0111, 105, 0):  # WM_COMMAND: explicit AWQM exit
                     raise ctypes.WinError(ctypes.get_last_error())
                 if kernel.WaitForSingleObject(process, 20000) != 0:
                     raise RuntimeError("Installed application did not exit when its window closed")

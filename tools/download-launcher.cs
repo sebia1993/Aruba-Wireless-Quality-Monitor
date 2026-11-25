@@ -151,7 +151,7 @@ internal static class DownloadLauncher
                     if (action == 2) return LaunchInstalled(machine);
                     // Do not terminate the user's running collector or overwrite its executable.
                     if (FindWindow("AWQM.Desktop", Title) != IntPtr.Zero)
-                        throw new InvalidOperationException("업데이트하려면 실행 중인 AWQM 창을 닫고 다시 실행하세요.");
+                        throw new InvalidOperationException("업데이트하려면 트레이에서 AWQM 종료를 선택한 뒤 다시 실행하세요.");
                     return RunSetup(new string[0], false);
                 }
                 finally { if (acquired) gate.ReleaseMutex(); }

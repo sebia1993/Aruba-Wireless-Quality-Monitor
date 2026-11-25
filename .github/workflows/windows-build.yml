@@ -185,7 +185,7 @@ jobs:
   installed-app:
     needs: windows
     runs-on: windows-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
@@ -225,6 +225,10 @@ jobs:
           } else {
             Write-Warning 'Elevated runner: download relaunch requires the separate non-elevated Windows 11 validation.'
           }
+          python -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m tools.device_settings_validation "$app" "device-settings-result.json" --wait-for-refresh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $registration = @(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName -like 'Aruba Wireless Quality Monitor*' -and $_.DisplayVersion -eq $version })
           if ($registration.Count -ne 1) { throw 'Current-user uninstall registration missing' }
           python -c "import os, sys; sys.exit(0 if os.path.samefile(sys.argv[1],sys.argv[2]) else 1)" "$($registration[0].InstallLocation)" (Split-Path $app)
@@ -232,6 +236,16 @@ jobs:
           $uninstaller = $registration[0].UninstallString.Trim('"')
           $proc = Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -WindowStyle Hidden -Wait -PassThru
           if ($proc.ExitCode -ne 0 -or (Test-Path -LiteralPath $app) -or (Test-Path -LiteralPath $shortcut)) { throw 'Uninstall did not remove installed app and shortcut' }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AWQM-installed-web-evidence
+          path: |
+            device-settings-result.json
+            device-settings-result.error.txt
+          if-no-files-found: warn
+          retention-days: 3
 
   service-lifecycle:
     needs: windows
@@ -385,6 +399,8 @@ jobs:
         run: python -m playwright install chromium
       - name: Actual synthetic diagnostic browser validation
         run: python -m tools.browser_validation --output browser-validation
+      - name: Actual local device settings browser validation
+        run: python -m tools.browser_device_validation --output browser-device-result.json
       - name: Ten concurrent Chromium sessions on the full synthetic inventory
         run: python -m tools.browser_load_validation --output browser-load-validation
       - uses: actions/upload-artifact@v4
@@ -394,5 +410,6 @@ jobs:
           path: |
             browser-validation/browser-result.json
             browser-load-validation/browser-load-result.json
+            browser-device-result.json
           if-no-files-found: warn
           retention-days: 3

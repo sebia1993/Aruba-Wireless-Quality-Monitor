@@ -54,3 +54,8 @@ python tools/windows11_installer_validation.py .\AWQM.exe --sha256 $expectedHash
 ```
 
 For a desktop device-settings release, add `--device-settings` to that command. Use a test host with TCP port 22 free on loopback and the runtime test requirements installed. Two loopback controllers exercise first-use key registration, username reuse, per-device passwords, AP/Radio/BSS results, refresh, stop and profile relaunch. A replacement SSH key must be rejected before the server receives a login. The fixture redirects the application's per-user storage to a temporary directory and uses synthetic credentials.
+
+
+### Web-first desktop candidate
+
+The full workflow includes an actual Chromium local-settings test (desktop/mobile viewports, registration/test/monitor, account reuse, stop/delete and persisted interval). The installed application is tested against two loopback SSH fixtures using the protected local web API, including no-browser-polling refresh, persistent host-key mismatch rejection before authentication, and no plaintext password persistence. An explicit desktop Quit command replaces WM_CLOSE in validation because window close hides to the tray. This is synthetic CI evidence, not corporate WLC or Windows 11 field qualification.
