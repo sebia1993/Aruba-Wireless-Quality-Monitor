@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.33.0-dev — SSH 의존성 보안 개선 및 검증. 운영 배포 금지.**
+**현재 단계: v0.34.0-dev — SSH 의존성 보안 개선 및 검증. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -136,6 +136,10 @@ Windows ZIP의 실제 설치 패키지 버전을 별도 CI에서 취약점 조�
 ## AP Standby / UAC DB 관측
 
 별도 현장 검증 후 AP Standby 및 UAC AP DB의 현재 물리 AP 일치 관측을 제공하며, 단말 UAC 또는 장애 상태로 단정하지 않습니다. [검증 및 제한](docs/AP_ANCHORS.md).
+
+## HTTPS 요청 보호
+
+절대 연결 시간과 헤더 크기를 제한하고 정상 WSS 전환을 보존합니다. [보안 제한](docs/HTTP_BOUNDS.md).
 
 ## Windows 빌드
 ```powershell

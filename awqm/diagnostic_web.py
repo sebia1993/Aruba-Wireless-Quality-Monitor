@@ -4,7 +4,7 @@ The listener accepts only configured source networks and a fixed Host header.
 Its bounded request pool never starts collection commands. The sole SSH
 operation is coordinated, temporary personal-credential verification.
 """
-import html,hmac,ipaddress,json,ssl,sqlite3,threading,time
+import html,hmac,ipaddress,json,ssl,sqlite3,threading,time,re
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from http.cookies import SimpleCookie,CookieError
 from urllib.parse import urlsplit,parse_qs
@@ -19,6 +19,7 @@ from .manual_jobs import ManualReservations,ReservationRejected
 from .operations import OperationConflict,OperationRejected
 from .notifications import Notifications,Busy as NotificationBusy
 from wsproto.utilities import LocalProtocolError,RemoteProtocolError
+from .http_bounds import ConnectionDeadline,HeaderBudget
 
 COOKIE="__Host-awqm_session"
 
@@ -85,17 +86,39 @@ class RestrictedTLS(ThreadingHTTPServer):
             try:self.shutdown_request(conn if conn is not None else request)
             finally:self.capacity.release()
 
-def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None):
+def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_deadline=30):
     notifications=Notifications(view,auth,cfg,stop)
     class Handler(BaseHTTPRequestHandler):
         protocol_version="HTTP/1.0"
+        def setup(self):
+            super().setup()
+            self.http_deadline=ConnectionDeadline(self.connection,http_deadline)
+        def finish(self):
+            if hasattr(self,"http_deadline"):self.http_deadline.disarm()
+            super().finish()
+        def parse_request(self):
+            # Request line and total header bytes are independently bounded.
+            if len(self.raw_requestline)>8192:
+                self.requestline="";self.request_version="HTTP/1.0";self.command=""
+                self.close_connection=True
+                self.send_error(414,"Request line too long")
+                return False
+            original=self.rfile
+            self.rfile=HeaderBudget(original)
+            try:ok=super().parse_request()
+            finally:self.rfile=original
+            if ok and getattr(self.headers,"defects",()):
+                self.send_error(400,"Malformed headers");return False
+            return ok
         def log_message(self,*a):pass
         def _local(self):
             # No proxy trust or X-Forwarded-For. TLS name and port are fixed.
             return self.headers.get_all("Host")==[cfg.authority] and time.time()<cfg.expires_at
         def _token(self):
             try:
-                jar=SimpleCookie(self.headers.get("Cookie",""))
+                headers=self.headers.get_all("Cookie",[])
+                if len(headers)!=1:return None
+                jar=SimpleCookie(headers[0])
                 return jar[COOKIE].value if COOKIE in jar else None
             except (CookieError,ValueError):return None
         def _send(self,status,body=b"",kind="text/plain; charset=utf-8",headers=()):
@@ -125,10 +148,11 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None):
         def _redirect(self,cookie):
             self._send(303,headers=(("Location","/"),("Set-Cookie",cookie)))
         def _form(self,fields):
-            if self.headers.get("Transfer-Encoding") or self.headers.get("Content-Type","").split(";")[0]!="application/x-www-form-urlencoded":
+            types=self.headers.get_all("Content-Type",[])
+            if self.headers.get_all("Transfer-Encoding") or len(types)!=1 or types[0].split(";")[0]!="application/x-www-form-urlencoded":
                 raise ValueError("invalid form")
             lengths=self.headers.get_all("Content-Length",[])
-            if len(lengths)!=1:raise ValueError("invalid form length")
+            if len(lengths)!=1 or not re.fullmatch(r"[0-9]{1,5}",lengths[0]):raise ValueError("invalid form length")
             n=int(lengths[0])
             if not 1<=n<=8192:raise ValueError("invalid form length")
             raw=self.rfile.read(n)
@@ -151,6 +175,7 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None):
             except (ValueError,LocalProtocolError,RemoteProtocolError):self._send(400);return
             try:
                 with notifications.slot(token):
+                    if not self.http_deadline.disarm():return
                     self.close_connection=True
                     # From here onward only WebSocket bytes may be written.
                     try:notifications.run(self.connection,ws,reply,token)
@@ -158,6 +183,8 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None):
             except NotificationBusy:self._send(503)
         def do_GET(self):
             if not self._local():self._send(403);return
+            if self.headers.get_all("Transfer-Encoding") or self.headers.get_all("Content-Length",[]) not in ([],["0"]):
+                self._send(400);return
             path=urlsplit(self.path)
             if path.path=="/ws/updates":self._notifications();return
             # Only non-sensitive stylesheet may be loaded without a session.

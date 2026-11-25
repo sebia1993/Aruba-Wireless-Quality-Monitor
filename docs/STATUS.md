@@ -43,3 +43,5 @@ Current launcher defaults to no live access; explicit --demo, --engine-demo, --v
 - v0.32.0-dev: remediate exact dependency audit findings by pinning Paramiko 5.1.0 and cryptography 50.0.2, add real loopback SSH and auth/host-pin regression in source and frozen Windows EXE, fail closed on unreadable host keys and incompatible algorithms, and check installed dependency consistency. New CI and advisory results pending; no actual WLC/AAA or 72-hour trial performed by developer. No main merge or release.
 
 - v0.33.0-dev: optional AP standby and UAC AP-database observations, separate local validation, conservative physical AP identity reconciliation and read-time expiry, per-WLC summary and AP detail. Single-line layouts only; real device semantics and readiness remain unverified. v0.32 Windows and exact dependency audit passed. v0.33 CI pending.
+
+- v0.34.0-dev: absolute diagnostic HTTP socket lifetime, bounded request/header envelope and stricter framing, synchronized WSS admission handoff, real loopback regression. Already running operations are not cancelled by a socket deadline. CI pending.
