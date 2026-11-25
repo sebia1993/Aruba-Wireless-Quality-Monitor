@@ -65,22 +65,29 @@ class PinnedSSH:
     def __init__(self, host, known_hosts, port=22):
         self.host,self.known_hosts,self.port=host,known_hosts,port
         self.client=None
+    def _configure_trust(self, client):
+        import paramiko
+        try:
+            client.load_host_keys(self.known_hosts)
+        except (OSError,ValueError,paramiko.SSHException):
+            raise HostKeyUnapproved("approved host key file unavailable or invalid") from None
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        key_name=self.host if self.port==22 else f"[{self.host}]:{self.port}"
+        if client.get_host_keys().lookup(key_name) is None:
+            raise HostKeyUnapproved("no approved host key")
+
+    def _connect_client(self, client, username, password, *, sock=None):
+        client.connect(self.host,port=self.port,username=username,password=password,
+                       timeout=10,auth_timeout=15,banner_timeout=15,channel_timeout=15,
+                       look_for_keys=False,allow_agent=False,sock=sock)
+
     def connect(self, username,password):
         import paramiko
         self.close()
         client=paramiko.SSHClient()
         try:
-            try:
-                client.load_host_keys(self.known_hosts)
-            except (OSError,ValueError,paramiko.SSHException):
-                raise HostKeyUnapproved("approved host key file unavailable or invalid") from None
-            client.set_missing_host_key_policy(paramiko.RejectPolicy())
-            key_name=self.host if self.port==22 else f"[{self.host}]:{self.port}"
-            if client.get_host_keys().lookup(key_name) is None:
-                raise HostKeyUnapproved("no approved host key")
-            client.connect(self.host,port=self.port,username=username,password=password,
-                           timeout=10,auth_timeout=15,banner_timeout=15,channel_timeout=15,
-                           look_for_keys=False,allow_agent=False)
+            self._configure_trust(client)
+            self._connect_client(client,username,password)
             transport=client.get_transport()
             if transport is None or not transport.is_authenticated():
                 raise paramiko.AuthenticationException("SSH authentication incomplete")

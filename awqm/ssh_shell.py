@@ -17,10 +17,13 @@ class ShellSession:
         self.transport=transport; self.clock=clock; self.sleep=sleep
         self.max_bytes=max_bytes; self.channel=None; self.prompt=None
         self.lock=threading.Lock()
+        self._cancel=threading.Event()
     def _receive(self,timeout,idle_timeout):
         start=self.clock(); last=start; size=0; output=""; pages=0
         decoder=codecs.getincrementaldecoder("utf-8")("strict")
         while self.clock()-start<timeout and self.clock()-last<idle_timeout:
+            if self._cancel.is_set():
+                raise ShellError("CLI session stopped")
             if self.channel.recv_ready():
                 data=self.channel.recv(65536)
                 if not data:
@@ -56,6 +59,7 @@ class ShellSession:
     def open(self):
         if self.transport.client is None:
             raise ShellError("SSH connection not established")
+        self._cancel.clear()
         self.channel=self.transport.client.invoke_shell(term="vt100",width=512,height=1000)
         self.prompt=None
         try:
@@ -68,6 +72,8 @@ class ShellSession:
         if not self.lock.acquire(blocking=False):
             raise ShellError("another CLI command is running")
         try:
+            if self._cancel.is_set():
+                raise ShellError("CLI session stopped")
             if self.channel is None:
                 raise ShellError("CLI session not initialized")
             self.channel.sendall(cmd+"\n")
@@ -81,6 +87,9 @@ class ShellSession:
             raise
         finally:
             self.lock.release()
+    def cancel(self):
+        """Signal the reading thread; it owns the channel and closes its transport."""
+        self._cancel.set()
     def close(self):
         if self.channel is not None:
             self.channel.close()

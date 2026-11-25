@@ -1,5 +1,25 @@
 "use strict";
 const $=id=>document.getElementById(id);
+const settingsButton = $("device-settings");
+if (settingsButton) {
+  const token = new URLSearchParams(location.hash.slice(1)).get("settings");
+  settingsButton.addEventListener("click", async () => {
+    const status = $("device-settings-status");
+    if (!token) {
+      status.textContent = "Windows의 Aruba Wireless Quality Monitor 창에서 ‘장비 설정’을 여세요.";
+      return;
+    }
+    try {
+      const response = await fetch("/api/desktop/settings", {
+        method: "POST", headers: {"X-AWQM-Settings": token}, cache: "no-store"
+      });
+      if (!response.ok) throw new Error();
+      status.textContent = "Windows 앱에서 장비 설정 창을 확인하세요.";
+    } catch {
+      status.textContent = "앱에서 ‘장비 설정’을 직접 여세요.";
+    }
+  });
+}
 let snapshot=null, view="overview", selected=null, clientMode="candidate";
 const names={overview:"종합 현황",ap:"AP 품질 분석",client:"사용자 분석",events:"장애 및 이력",admin:"운영 관리"};
 const methods={measured:"모의 실측",estimated:"모의 추정",indirect:"간접"};

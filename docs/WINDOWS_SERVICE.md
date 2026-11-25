@@ -14,7 +14,7 @@ On the Windows 11 x64 service host, an authorized administrator runs the same in
 .\AWQM-Setup.exe /ALLUSERS
 ```
 
-A fresh system installation places `AWQM.exe` and its private runtime in `%ProgramFiles%\AWQM`. The ordinary per-user installation is for viewing dashboards. If an AWQM service or a previous system installation exists, Setup stages a protected candidate under `%ProgramFiles%\AWQM Setup\Candidates\0.45.0` and its service-update ZIP and checksum under `%ProgramFiles%\AWQM Setup\Packages\0.45.0`. Follow the [offline update procedure](PROGRAM_SWITCH.md) to switch the existing installation.
+A fresh system installation places `AWQM.exe` and its private runtime in `%ProgramFiles%\AWQM`. The ordinary per-user installation is for viewing dashboards. If an AWQM service or a previous system installation exists, Setup stages a protected candidate under `%ProgramFiles%\AWQM Setup\Candidates\0.46.0` and its service-update ZIP and checksum under `%ProgramFiles%\AWQM Setup\Packages\0.46.0`. Follow the [offline update procedure](PROGRAM_SWITCH.md) to switch the existing installation.
 
 ## Prerequisites
 

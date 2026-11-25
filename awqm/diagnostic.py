@@ -42,10 +42,16 @@ class Result:
     snapshot:ControllerSnapshot | None
     bsses:list | None=None
 
-def collect_controller(controller,session,clock=time.monotonic,wall=time.time,budget=30):
+def collect_readings(session,clock=time.monotonic,wall=time.time,budget=30,*,
+                     commands=COMMANDS,continue_on_denied=False,stopped=None):
+    """One CPU-gated, bounded round. Each successful command is independent evidence."""
+    if not commands or commands[0] != COMMANDS[0] or any(cmd not in COMMANDS for cmd in commands):
+        raise ValueError("CPU must precede supported read-only commands")
     start=clock()
     results={};at={};out=[]
-    for name,parse,maximum in COMMANDS:
+    for name,parse,maximum in commands:
+        if stopped is not None and stopped.is_set():
+            break
         remaining=budget-(clock()-start)
         if remaining<1:
             out.append({"command":name,"status":"budget_deferred"})
@@ -58,7 +64,8 @@ def collect_controller(controller,session,clock=time.monotonic,wall=time.time,bu
         try:
             if DENIED.search(raw):
                 out.append({"command":name,"status":"permission_denied"})
-                break
+                if name=="show cpuload" or not continue_on_denied:break
+                continue
             if UNSUPPORTED.search(raw):
                 out.append({"command":name,"status":"unsupported"})
                 if name=="show cpuload":break
@@ -73,6 +80,10 @@ def collect_controller(controller,session,clock=time.monotonic,wall=time.time,bu
         if name=="show cpuload" and (value is None or value>=70):
             out.append({"command":"remaining","status":"cpu_protection"})
             break
+    return results,at,out
+
+def collect_controller(controller,session,clock=time.monotonic,wall=time.time,budget=30):
+    results,at,out=collect_readings(session,clock,wall,budget)
     required=("show ap database long","show ap active details","show ap radio-summary")
     if any(k not in results for k in required) or max(at[k] for k in required)-min(at[k] for k in required)>45:
         return Result(controller,out,None)

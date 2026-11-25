@@ -47,7 +47,7 @@ def run_on_desktop(name, command, directory, timeout):
         process.Close()
 
 
-def verify(installer, expected_digest, output):
+def verify(installer, expected_digest, output, device_settings=False):
     system = sys.getwindowsversion()
     if system.product_type != 1 or system.build < 22000 or ctypes.windll.shell32.IsUserAnAdmin():
         raise RuntimeError("Run on Windows 11 under a non-elevated account")
@@ -82,6 +82,10 @@ def verify(installer, expected_digest, output):
             if json.loads(receipt.read_text(encoding="utf-8")).get("passed") is not True:
                 raise RuntimeError("Default dashboard launch was not observed")
             run_on_desktop(name, [sys.executable, helper, shortcut, app], output, 85)
+            if device_settings:
+                trial = Path(__file__).with_name("device_settings_validation.py").resolve(strict=True)
+                run_on_desktop(name, [sys.executable, trial, app, output / "device-settings.json",
+                                     "--wait-for-refresh"], output, 210)
         finally:
             record = registration()
             if record:
@@ -101,6 +105,8 @@ def verify(installer, expected_digest, output):
     result = {"status": "pass", "windows_build": system.build, "installer_sha256": expected_digest,
               "no_argument_install": True, "dashboard_data": True, "start_menu_relaunch": True,
               "uninstall_verified": True}
+    if device_settings:
+        result["device_settings"] = json.loads((output / "device-settings.json").read_text(encoding="utf-8"))
     (output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result))
 
@@ -110,5 +116,6 @@ if __name__ == "__main__":
     parser.add_argument("installer", type=Path)
     parser.add_argument("--sha256", required=True)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--device-settings", action="store_true", help="Also exercise in-app setup against loopback SSH")
     args = parser.parse_args()
-    verify(args.installer.resolve(strict=True), args.sha256, args.output.resolve())
+    verify(args.installer.resolve(strict=True), args.sha256, args.output.resolve(), args.device_settings)

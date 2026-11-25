@@ -9,7 +9,7 @@ from urllib.parse import urlsplit,parse_qs
 from .reporting import history_report,csv_report,html_report
 
 STATIC=Path(__file__).resolve().parent/"static"
-def handler_for(store,engine=None):
+def handler_for(store,engine=None, *, settings_token=None, request_settings=None):
     token=secrets.token_urlsafe(32) if engine else None
     class Handler(BaseHTTPRequestHandler):
         def _local(self):
@@ -76,6 +76,19 @@ def handler_for(store,engine=None):
             self.end_headers()
             self.wfile.write(body)
         def do_POST(self):
+            if self.path == "/api/desktop/settings":
+                origin = "http://" + self.headers.get("Host", "")
+                supplied = self.headers.get("X-AWQM-Settings", "")
+                if (not self._local() or not settings_token or request_settings is None
+                        or self.headers.get("Origin") != origin or not supplied.isascii()
+                        or not hmac.compare_digest(supplied, settings_token)
+                        or self.headers.get("Content-Length", "0") != "0"
+                        or self.headers.get("Transfer-Encoding") is not None):
+                    self.send_error(403)
+                    return
+                request_settings()
+                self._json(200, {"opened": True})
+                return
             if engine is None or not self._local():
                 self.send_error(403);return
             origin=self.headers.get("Origin","")
@@ -112,12 +125,13 @@ def handler_for(store,engine=None):
     return Handler
 
 @contextmanager
-def demo_server(port):
+def demo_server(port, *, settings_token=None, request_settings=None):
     """Own an isolated synthetic store and its refresh worker for one listener."""
     with tempfile.TemporaryDirectory(prefix="awqm-demo-") as root:
         store=Store(root)
         seed(store)
-        server=ThreadingHTTPServer(("127.0.0.1",port),handler_for(store))
+        server=ThreadingHTTPServer(("127.0.0.1",port),handler_for(
+            store, settings_token=settings_token, request_settings=request_settings))
         stopped=threading.Event()
         def refresh():
             while not stopped.wait(60):

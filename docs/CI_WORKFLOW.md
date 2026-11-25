@@ -52,3 +52,5 @@ Run the following from a verification environment with Python 3.12+ and pywin32 
 ```powershell
 python tools/windows11_installer_validation.py .\AWQM-Setup.exe --sha256 $expectedHash --output .\first-launch-result
 ```
+
+For a desktop device-settings release, add `--device-settings` to that command. Use a test host with TCP port 22 free on loopback and the runtime test requirements installed. A synthetic SSH controller exercises the installed application's dashboard and native entry points, login, AP/Radio/BSS results, stop and profile relaunch. The fixture redirects only the child application's per-user storage to a temporary directory; no site controller or site credentials are used.

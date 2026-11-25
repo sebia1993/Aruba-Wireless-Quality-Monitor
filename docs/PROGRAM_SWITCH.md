@@ -32,8 +32,8 @@ Run `AWQM-Setup.exe /ALLUSERS` on a host with an existing AWQM system installati
 Use an elevated PowerShell session. Stop the running service and confirm STOPPED before disabling startup. If already stopped, begin with the status check.
 
 ```powershell
-$manager = Join-Path $env:ProgramFiles 'AWQM Setup\Candidates\0.45.0\AWQM.exe'
-$package = Join-Path $env:ProgramFiles 'AWQM Setup\Packages\0.45.0\AWQM_0.45.0_Win11_x64.zip'
+$manager = Join-Path $env:ProgramFiles 'AWQM Setup\Candidates\0.46.0\AWQM.exe'
+$package = Join-Path $env:ProgramFiles 'AWQM Setup\Packages\0.46.0\AWQM_0.46.0_Win11_x64.zip'
 $trustedZipSha256 = Read-Host 'Approved SHA-256 of the service ZIP'
 & $manager --manager stop
 & $manager --manager status
