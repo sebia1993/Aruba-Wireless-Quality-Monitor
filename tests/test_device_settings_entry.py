@@ -41,6 +41,7 @@ class DeviceSettingsEntryTests(unittest.TestCase):
                         body = response.read().decode()
                     self.assertNotIn(token, body)
                     self.assertEqual(len(json.loads(body)["slots"]), 4)
+                    self.assertEqual(json.loads(body)["local_ownership"], "idle")
                     self.assertNotIn('"password":', body)
                     search = {"action":"search","table":"AP","query":"test","page":0}
                     for origin, key in ((base[:-1], "wrong"), ("http://outside.invalid", token)):
@@ -60,7 +61,9 @@ class DeviceSettingsEntryTests(unittest.TestCase):
                         with self.assertRaises(HTTPError) as result:
                             request(base[:-1], token, read)
                         self.assertEqual(result.exception.code, 409)
-                        self.assertNotIn("private detail", result.exception.read().decode())
+                        error = result.exception.read().decode()
+                        self.assertNotIn("private detail", error)
+                        self.assertEqual(json.loads(error)["reason"], "unknown")
                         result.exception.close()
                     with self.assertRaises(HTTPError) as result:
                         request(base[:-1], token, {"action":"interval","seconds":1})

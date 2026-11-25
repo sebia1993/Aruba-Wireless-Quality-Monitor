@@ -16,27 +16,46 @@ _process_guard = Lock()
 class CollectionBusy(RuntimeError):
     """No new live collection is allowed while another owner may exist."""
 
+    def __init__(self, message="collection ownership unavailable", *, reason="unknown"):
+        super().__init__(message)
+        # Fixed categorical reason only. Never return native errors or arbitrary
+        # exception text to the browser.
+        self.reason = reason if reason in {
+            "owner_active", "owner_unavailable", "service_active",
+            "service_unknown", "close_unconfirmed",
+        } else "unknown"
+
 
 @contextmanager
 def _windows_lease(name):
-    import pywintypes
-    import win32api
-    import win32event
-    import winerror
+    import ctypes
+    from ctypes import wintypes
 
+    # Capture the Win32 last-error value at the actual native call boundary.
+    # Python wrapper/handle construction and unrelated calls must not change
+    # the already-exists decision. Explicitly clear the previous thread error.
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateMutexW
+    create.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = (wintypes.HANDLE,)
+    close.restype = wintypes.BOOL
+    ctypes.set_last_error(0)
+    handle = create(None, False, name)
+    error = ctypes.get_last_error()
+    if not handle:
+        # Access denied or object-type collision: no second name or ACL bypass.
+        raise CollectionBusy("collection ownership unavailable", reason="owner_unavailable")
     try:
-        handle = win32event.CreateMutex(None, False, name)
-        already_exists = win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS
-    except pywintypes.error:
-        # Includes access denied across service/user identities or an invalid
-        # object of another type. Do not create a second name as a fallback.
-        raise CollectionBusy("collection ownership unavailable") from None
-    try:
-        if already_exists:
-            raise CollectionBusy("another collection owner is active")
+        if error == 183:  # ERROR_ALREADY_EXISTS
+            raise CollectionBusy("another collection owner is active", reason="owner_active")
+        if error:
+            raise CollectionBusy("unexpected collection ownership result", reason="owner_unavailable")
         yield
     finally:
-        handle.Close()
+        if not close(handle):
+            raise CollectionBusy("collection ownership release unconfirmed", reason="close_unconfirmed")
 
 
 @contextmanager
@@ -47,7 +66,7 @@ def collection_lease():
     else:
         # Non-Windows fixture runtime only. The SCM service is Windows-only.
         if not _process_guard.acquire(blocking=False):
-            raise CollectionBusy("another collection owner is active")
+            raise CollectionBusy("another collection owner is active", reason="owner_active")
         try:
             yield
         finally:
@@ -65,7 +84,8 @@ def local_collection_lease():
             try:
                 state = service_state()
             except Exception:
-                raise CollectionBusy("SCM state unavailable") from None
+                raise CollectionBusy("SCM state unavailable", reason="service_unknown") from None
             if state not in ("missing", "stopped"):
-                raise CollectionBusy("service may be active")
+                reason = "service_unknown" if state == "unknown" else "service_active"
+                raise CollectionBusy("service may be active", reason=reason)
         yield

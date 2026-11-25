@@ -59,13 +59,16 @@ class OwnershipTests(unittest.TestCase):
             return FixtureSession(2)
         monitor = DeviceMonitor(factory, owner_factory=guard.lease)
         self.addCleanup(monitor.close)
+        self.assertEqual(monitor.ownership_state(), "idle")
         try:
             monitor.start(profile(1), "fixture")
+            self.assertEqual(monitor.ownership_state(), "active")
             self.assertTrue(pending.wait(2))
             monitor.start(profile(2), "fixture")
             monitor.stop("WLC-1")
             monitor.stop("WLC-2")
             # A UI stop is not an SSH drain acknowledgement.
+            self.assertEqual(monitor.ownership_state(), "draining")
             with self.assertRaises(CollectionBusy), guard.lease():
                 pass
             release.set()
@@ -77,6 +80,7 @@ class OwnershipTests(unittest.TestCase):
             finish.set()
             monitor.close()
         until(lambda: not guard.lock.locked())
+        self.assertEqual(monitor.ownership_state(), "idle")
         with guard.lease():
             pass
 
@@ -111,6 +115,7 @@ class OwnershipTests(unittest.TestCase):
         monitor.start(profile(1), "fixture", once=True)
         until(lambda: monitor.state("WLC-1")["status"] == "SSH 종료 확인 실패")
         self.assertTrue(guard.lock.locked())
+        self.assertEqual(monitor.ownership_state(), "close_unconfirmed")
         with self.assertRaises(CollectionBusy):
             monitor.start(profile(2), "fixture")
         # The real named object is kept until process exit. This test guard
@@ -157,3 +162,44 @@ class OwnershipTests(unittest.TestCase):
         with _windows_lease(name):
             self.assertEqual(child(), 17)
         self.assertEqual(child(), 0)
+
+    def test_release_error_blocks_handoff_and_new_collection(self):
+        @contextmanager
+        def lease():
+            yield
+            raise OSError("fixture release failure")
+        monitor = DeviceMonitor(lambda *a, **k: FixtureSession(1), owner_factory=lease)
+        self.addCleanup(monitor.close)
+        monitor.start(profile(1), "fixture", once=True)
+        until(lambda: monitor.ownership_state() == "close_unconfirmed")
+        with self.assertRaises(CollectionBusy) as caught:
+            monitor.start(profile(2), "fixture")
+        self.assertEqual(caught.exception.reason, "close_unconfirmed")
+
+    @unittest.skipUnless(sys.platform == "win32", "requires Windows named objects")
+    def test_windows_repeat_release_from_other_thread_ignores_stale_last_error(self):
+        import ctypes
+        from threading import Thread
+        name = "Global\\AWQM.Test." + uuid4().hex
+        for _ in range(4):
+            ctypes.set_last_error(183)
+            lease = _windows_lease(name)
+            lease.__enter__()
+            errors = []
+            try:
+                with self.assertRaises(CollectionBusy) as caught, _windows_lease(name):
+                    pass
+                self.assertEqual(caught.exception.reason, "owner_active")
+            finally:
+                def release():
+                    try:
+                        lease.__exit__(None, None, None)
+                    except Exception as exc:
+                        errors.append(exc)
+                thread = Thread(target=release)
+                thread.start()
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(errors, [])
+        with _windows_lease(name):
+            pass

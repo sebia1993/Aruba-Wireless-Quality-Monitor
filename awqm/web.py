@@ -105,8 +105,8 @@ def handler_for(store,engine=None, *, settings_token=None, devices=None):
                     if len(raw) != length:
                         raise ValueError("요청이 완전하지 않습니다.")
                     value = devices.dispatch(json.loads(raw))
-                except CollectionBusy:
-                    self._json(409, {"error": "다른 AWQM 수집기 또는 SSH 종료 확인 문제가 있습니다. 모든 로컬 조회/운영 서비스를 중지하고 종료를 확인한 뒤 다시 시도하세요. 저장 요청의 등록 정보는 남을 수 있습니다."})
+                except CollectionBusy as exc:
+                    self._json(409, {"reason": exc.reason, "error": "다른 AWQM 수집기 또는 SSH 종료 확인 문제가 있습니다. 모든 로컬 조회/운영 서비스를 중지하고 종료를 확인한 뒤 다시 시도하세요. 저장 요청의 등록 정보는 남을 수 있습니다."})
                     return
                 except (ValueError, TypeError, KeyError) as error:
                     # Only explicitly raised validation errors are presented; never echo JSON or credentials.

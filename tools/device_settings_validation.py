@@ -14,6 +14,7 @@ import threading
 from contextlib import closing, contextmanager
 from urllib.parse import urlsplit, parse_qs
 from urllib.request import ProxyHandler, Request, build_opener
+from urllib.error import HTTPError
 
 import paramiko
 import win32con as wc
@@ -160,8 +161,21 @@ def browser_api(capture, expected_path):
     def call(data):
         req = Request(origin + "/api/desktop/devices", method="POST", data=json.dumps(data).encode(),
                       headers={"Origin": origin, "X-AWQM-Settings": token, "Content-Type":"application/json"})
-        with opener.open(req, timeout=5) as response:
-            raw = response.read().decode()
+        try:
+            with opener.open(req, timeout=5) as response:
+                raw = response.read().decode()
+        except HTTPError as exc:
+            # The API reason is a fixed category; do not print URL, request
+            # body, credentials, token or untrusted error text in CI logs.
+            with exc:
+                try:
+                    reason = json.loads(exc.read(8192)).get("reason")
+                except (ValueError, AttributeError):
+                    reason = None
+            if reason not in ("owner_active", "owner_unavailable", "service_active",
+                              "service_unknown", "close_unconfirmed"):
+                reason = "unknown"
+            raise RuntimeError(f"Browser API HTTP {exc.code}: {reason}") from None
         if PASSWORD in raw or token in raw:
             raise RuntimeError("A secret appeared in a browser API response")
         return json.loads(raw)
@@ -201,6 +215,7 @@ def verify(entry, report, wait_for_refresh=False):
             if not first.disconnected.wait(5):
                 raise RuntimeError("Connection test failed to disconnect")
             wait_for("Test did not finish", lambda: not slot(call)["running"])
+            wait_for("First test owner did not drain", lambda: read(call)["local_ownership"] == "idle")
             edit(call, "save", "WLC-1", FIRST_HOST)
             monitor = collected(sessions, 1, "Monitoring did not reconnect")
             counts = {}
@@ -217,6 +232,7 @@ def verify(entry, report, wait_for_refresh=False):
             call({"action":"stop","id":"WLC-1"})
             if not monitor.disconnected.wait(5):
                 raise RuntimeError("Stopping monitoring did not close SSH")
+            wait_for("Stopped WLC owner did not drain", lambda: read(call)["local_ownership"] == "idle")
             state = read(call)
             if state["default_username"] != USER or slot(call, "WLC-2")["has_password"]:
                 raise RuntimeError("Default username or per-WLC password isolation failed")
@@ -225,6 +241,7 @@ def verify(entry, report, wait_for_refresh=False):
             call({"action":"stop","id":"WLC-2"})
             if not second.disconnected.wait(5):
                 raise RuntimeError("Stopping the second WLC did not close SSH")
+            wait_for("Second WLC owner did not drain", lambda: read(call)["local_ownership"] == "idle")
             call({"action":"interval","seconds":120})
         capture.unlink(missing_ok=True)
         with running(entry, env) as (proc, hwnd):
@@ -269,7 +286,7 @@ def verify(entry, report, wait_for_refresh=False):
                   "default_username_and_profiles_persisted":True, "interval_persisted":True,
                   "session_password_forgotten":True, "password_isolated_by_wlc":True,
                   "changed_key_status":mismatch["status"], "changed_key_authentication_attempts":len(rejected.attempts),
-                  "changed_key_device_commands":len(rejected.commands), "stop_closed_connection":True,
+                  "changed_key_device_commands":len(rejected.commands), "stop_closed_connection":True, "local_owner_drain_verified":True,
                   "periodic_refresh_without_browser_polling":wait_for_refresh,
                   "stored_password_blobs":0}
         if entry.suffix.lower() == ".exe":

@@ -124,7 +124,9 @@ class DeviceWeb:
         else:
             headers, rows = _search_rows(states, table, query)
         start = page * PAGE_SIZE
-        return {"slots": entries, "default_username": self.profiles.default_username(),
+        owner_state = getattr(self.monitor, "ownership_state", None)
+        return {"local_ownership": owner_state() if owner_state else "unknown",
+                "slots": entries, "default_username": self.profiles.default_username(),
                 "interval": self.interval, "alerts_enabled": self.alerts_enabled,
                 "alerts": list(self.alert_history), "table": {"name": table, "headers": headers,
                 "rows": rows[start:start + PAGE_SIZE], "total": len(rows), "page": page,

@@ -42,6 +42,10 @@ function select(id) {
 }
 function render() {
   if(!snapshot)return;
+  const ownershipLabels={idle:"로컬 SSH 종료 확인 · 운영 서비스 상태는 별도 확인",
+    active:"로컬 수집 권한 사용 중",draining:"로컬 SSH 종료 처리 중 · 전환 대기",
+    close_unconfirmed:"SSH/수집 권한 종료 미확인 · AWQM 종료 필요",unknown:"로컬 수집 권한 미확인"};
+  $("local-ownership").textContent=ownershipLabels[snapshot.local_ownership]||ownershipLabels.unknown;
   const cards=$("cards");cards.replaceChildren();
   for(const s of snapshot.slots) {
     const card=el("div");card.className="kpi";

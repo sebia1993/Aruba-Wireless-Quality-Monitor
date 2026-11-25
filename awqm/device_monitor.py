@@ -193,7 +193,7 @@ class DeviceMonitor:
                     (slot.pending and slot.pending[0].host == profile.host) for slot in other):
                 raise ValueError("서로 다른 관리 IP의 장비를 최대 네 대까지 조회할 수 있습니다.")
             if self._owner_failed:
-                raise CollectionBusy("previous SSH close was not confirmed")
+                raise CollectionBusy("previous SSH close was not confirmed", reason="close_unconfirmed")
             slot = self._slots.get(profile.id)
             if self._owner is None:
                 lease = self._owner_factory()
@@ -223,7 +223,23 @@ class DeviceMonitor:
         # have drained. A close failure retains the guard until process exit.
         if not self._slots and self._owner is not None and not self._owner_failed:
             owner, self._owner = self._owner, None
-            owner.__exit__(None, None, None)
+            try:
+                owner.__exit__(None, None, None)
+            except Exception:
+                # Never report a safe handoff after a failed kernel close.
+                self._owner_failed = True
+
+    def ownership_state(self):
+        """Local owner state only; idle is NOT proof that SCM is stopped."""
+        with self._lock:
+            if self._owner_failed:
+                return "close_unconfirmed"
+            if self._owner is None:
+                return "idle"
+            if any(not slot.stopped.is_set() or slot.pending is not None
+                   for slot in self._slots.values()):
+                return "active"
+            return "draining"
 
     def state(self, id):
         with self._lock:
