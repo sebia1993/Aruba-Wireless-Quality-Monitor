@@ -21,6 +21,7 @@ from .manual_jobs import load_manual_policy
 from .operations import configured_ops
 from .diagnostic_web import create_listener
 from .collector import PinnedSSH
+from .collection_owner import collection_lease
 from .ssh_shell import ShellSession
 from .worker import ControllerWorker
 from .storage import Store,disk_level
@@ -144,7 +145,7 @@ def run_service(root,stop,on_ready=None):
     cfg=load_config(root)
     check_identity(cfg.account);check_layout(cfg)
     status_path = safe_path(cfg.root,"logs/service-status.json")
-    with exclusive(cfg.root), service_lifetime(stop, status_path, time.time) as resources:
+    with exclusive(cfg.root), collection_lease(), service_lifetime(stop, status_path, time.time) as resources:
         web=load_web_config(cfg)
         profile=load_profile(cfg)
         manual_enabled=load_manual_policy(cfg)

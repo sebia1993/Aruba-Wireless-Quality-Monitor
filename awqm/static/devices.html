@@ -5,7 +5,7 @@
 <p>이 PC의 Windows 사용자 전용</p></aside>
 <main><header><div><h2 id="heading">종합 현황</h2><p>실제 WLC 조회 · 관측값과 조회 제한 표시</p></div><button type="button" id="refresh">새로 고침</button></header>
 <div class="notice" id="notice" role="status">로컬 관제 연결 확인 중</div>
-<section id="overview"><h3>WLC 상태</h3><div id="cards" class="kpis"></div><p>장비를 등록하고 모니터링을 시작하세요. 브라우저를 닫아도 AWQM 실행 중에는 조회가 유지됩니다.</p></section>
+<section id="overview"><h3>WLC 상태</h3><div id="cards" class="kpis"></div><p>장비를 등록하고 모니터링을 시작하세요. 브라우저를 닫아도 AWQM 실행 중에는 조회가 유지됩니다.</p><p>로컬 조회와 운영 서비스는 동시에 시작할 수 없습니다. 서비스로 전환할 때 모든 WLC 조회를 중지하고 SSH 종료를 기다린 뒤 서비스 관리 창에서 시작하세요. 운영 서비스에서 로컬 조회로 전환할 때는 서비스의 완전한 중지를 먼저 확인하세요.</p></section>
 <section id="settings" hidden><h3>장비 및 계정 설정</h3><div class="device-grid">
 <label>WLC 슬롯<select id="slot"></select></label><label>관리 IP<input id="host" maxlength="128" autocomplete="off" placeholder="IPv4 또는 IPv6"></label>
 <label>조회 계정명<input id="username" maxlength="128" autocomplete="off"></label><label>비밀번호<input id="password" type="password" maxlength="1024" autocomplete="new-password"></label>

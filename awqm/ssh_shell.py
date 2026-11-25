@@ -91,8 +91,12 @@ class ShellSession:
         """Signal the reading thread; it owns the channel and closes its transport."""
         self._cancel.set()
     def close(self):
-        if self.channel is not None:
-            self.channel.close()
+        try:
+            if self.channel is not None:
+                self.channel.close()
+        finally:
             self.channel=None
-        self.transport.close()
-        self.prompt=None
+            try:
+                self.transport.close()
+            finally:
+                self.prompt=None

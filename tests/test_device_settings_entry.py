@@ -55,6 +55,13 @@ class DeviceSettingsEntryTests(unittest.TestCase):
                     with request(base[:-1], token, {"action":"interval","seconds":120}) as response:
                         self.assertEqual(json.load(response), {"ok":True})
                     self.assertEqual(Profiles(root).poll_interval(), 120)
+                    from awqm.collection_owner import CollectionBusy
+                    with patch.object(desktop.devices, "dispatch", side_effect=CollectionBusy("private detail")):
+                        with self.assertRaises(HTTPError) as result:
+                            request(base[:-1], token, read)
+                        self.assertEqual(result.exception.code, 409)
+                        self.assertNotIn("private detail", result.exception.read().decode())
+                        result.exception.close()
                     with self.assertRaises(HTTPError) as result:
                         request(base[:-1], token, {"action":"interval","seconds":1})
                     self.assertEqual(result.exception.code, 400)

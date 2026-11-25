@@ -1,6 +1,7 @@
 """In-memory observations for the local user's native device window."""
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from contextlib import nullcontext
 from datetime import datetime
 from threading import Event, Lock, Thread
 import time
@@ -9,6 +10,7 @@ import paramiko
 
 from .aos8 import merge_association_tables
 from .collector import HostKeyUnapproved
+from .collection_owner import CollectionBusy, local_collection_lease
 from .device_profiles import DeviceShellUnavailable, HostKeyMismatch, open_session
 from .diagnostic import COMMANDS, collect_readings
 
@@ -161,8 +163,14 @@ class _Slot:
 
 class DeviceMonitor:
     """One owner per device. Failed logins and lost transports require an explicit restart."""
-    def __init__(self, session_factory=open_session, interval=60):
+    def __init__(self, session_factory=open_session, interval=60, *, owner_factory=None):
         self._factory = session_factory
+        # Injected sessions are fixtures; the shipped live factory always uses
+        # the shared machine guard unless an explicit test lease is injected.
+        self._owner_factory = owner_factory if owner_factory is not None else (
+            local_collection_lease if session_factory is open_session else nullcontext)
+        self._owner = None
+        self._owner_failed = False
         self._interval = interval
         self._lock = Lock()
         self._slots = {}
@@ -184,15 +192,38 @@ class DeviceMonitor:
             if len(other) >= 4 or any(slot.active_host == profile.host or
                     (slot.pending and slot.pending[0].host == profile.host) for slot in other):
                 raise ValueError("서로 다른 관리 IP의 장비를 최대 네 대까지 조회할 수 있습니다.")
-            self._states[profile.id] = dict(_initial(profile), running=True, status="연결 중", connection="연결 중")
+            if self._owner_failed:
+                raise CollectionBusy("previous SSH close was not confirmed")
             slot = self._slots.get(profile.id)
+            if self._owner is None:
+                lease = self._owner_factory()
+                lease.__enter__()
+                self._owner = lease
+            previous = self._states.get(profile.id)
+            self._states[profile.id] = dict(_initial(profile), running=True, status="연결 중", connection="연결 중")
             if slot is not None:
                 slot.cancel()
                 slot.pending = (profile, password, once)
                 return
             slot = _Slot(pending=(profile, password, once))
             self._slots[profile.id] = slot
-            Thread(target=self._serve, args=(profile.id, slot), daemon=True, name="AWQM-device").start()
+            try:
+                Thread(target=self._serve, args=(profile.id, slot), daemon=True, name="AWQM-device").start()
+            except BaseException:
+                del self._slots[profile.id]
+                if previous is None:
+                    self._states.pop(profile.id, None)
+                else:
+                    self._states[profile.id] = previous
+                self._release_idle_owner()
+                raise
+
+    def _release_idle_owner(self):
+        # Called under _lock, only after all pending logins and session closes
+        # have drained. A close failure retains the guard until process exit.
+        if not self._slots and self._owner is not None and not self._owner_failed:
+            owner, self._owner = self._owner, None
+            owner.__exit__(None, None, None)
 
     def state(self, id):
         with self._lock:
@@ -236,6 +267,7 @@ class DeviceMonitor:
             with self._lock:
                 if slot.pending is None:
                     del self._slots[id]
+                    self._release_idle_owner()
                     return
                 profile, password, once = slot.pending
                 slot.active_host = profile.host
@@ -265,7 +297,16 @@ class DeviceMonitor:
                     try:
                         session.close()
                     except Exception:
-                        pass
+                        with self._lock:
+                            self._owner_failed = True
+                            # Do not dispatch queued replacements or other work
+                            # if a transport has not confirmed closure.
+                            for key in self._slots:
+                                self._stop_locked(key)
+                            if id in self._states:
+                                self._states[id] = dict(self._states[id], running=False,
+                                    status="SSH 종료 확인 실패", cli="수집 차단 · AWQM 종료 필요",
+                                    stale=self._states[id]["observed_at"] is not None)
                 with self._lock:
                     slot.session = None
             self._publish(id, stopped, running=False, **final)

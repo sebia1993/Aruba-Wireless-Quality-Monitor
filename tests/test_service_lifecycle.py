@@ -84,6 +84,7 @@ class ConfiguredRuntimeTests(unittest.TestCase):
         self.identity = self.enterContext(patch.object(service_runtime, "check_identity"))
         self.layout = self.enterContext(patch.object(service_runtime, "check_layout"))
         self.exclusive = self.enterContext(patch.object(service_runtime, "exclusive", return_value=nullcontext()))
+        self.collection = self.enterContext(patch.object(service_runtime, "collection_lease", return_value=nullcontext()))
         self.enterContext(patch("paramiko.HostKeys"))
         self.enterContext(patch.object(service_runtime, "secret"))
 
@@ -98,6 +99,19 @@ class ConfiguredRuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             service_runtime.run_service(self.root, Event())
         self.assertEqual(json.loads(self.status.read_text())["state"], "failed")
+
+    def test_collection_conflict_blocks_service_before_credentials_and_status(self):
+        from awqm.collection_owner import CollectionBusy
+        self.status.write_text('{"state":"stopped"}')
+        self.collection.side_effect = CollectionBusy("owner active")
+        ready, stop = Mock(), Event()
+        with patch.object(service_runtime, "secret") as secret, patch.object(service_runtime, "Engine") as engine:
+            with self.assertRaises(CollectionBusy):
+                service_runtime.run_service(self.root, stop, ready)
+        secret.assert_not_called()
+        engine.assert_not_called()
+        ready.assert_not_called()
+        self.assertEqual(json.loads(self.status.read_text())["state"], "stopped")
 
     def test_failed_setup_closes_constructed_engine_and_rejects_readiness(self):
         engine, ready, stop = Mock(), Mock(), Event()
