@@ -1,4 +1,4 @@
-import json,tempfile,unittest
+import hmac,json,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from dataclasses import replace
@@ -23,9 +23,10 @@ def approvals():
     return {w:HistoryApproval("tag-"+w,900,4000000) for w in ("w1","w2")}
 def frame(t,bssid=BSS,conflict=False,anchor="w1"):
     peer = "w2" if anchor == "w1" else "w1"
-    r=Radio("site:02:ab:00:00:00:01:0","site:02:ab:00:00:00:01","AP1",anchor,"5GHz",44,t,70,10,-95,source="aos8-cli-unvalidated")
+    r=Radio("lab:02:ab:00:00:00:01:0","lab:02:ab:00:00:00:01","AP1",anchor,"5GHz",44,t,70,10,-95,source="aos8-cli-unvalidated")
     row={"client_mac":MAC,"ap_name":"AP1","bssid":bssid,"ssid":SSID,"active":True}
-    snaps=[ControllerSnapshot(w,t,[],[{"name":"AP1","ip":"192.0.2.1","roles":["A"]}] if w==anchor else [],[],[row] if w==anchor else [],
+    inventory=[{"name":"AP1","ip":"192.0.2.1","mac":"02:ab:00:00:00:01"}]
+    snaps=[ControllerSnapshot(w,t,inventory,[{"name":"AP1","ip":"192.0.2.1","roles":["A"]}] if w==anchor else [],[],[row] if w==anchor else [],
             inventory_at=t,anchor_at=t,association_at=t,field_tag="tag-"+w,field_until=4000000,field_connection="session-"+w) for w in (anchor,peer)]
     b=Reading("show ap bss-table","success",t,[{"bssid":bssid,"ssid":SSID,"ap_name":"AP1","ip":"192.0.2.1","band":"5GHz","channel":44,"service":True,"forward_mode":"T"}],generation=1)
     user=dict(row,forward_mode="tunnel")
@@ -34,6 +35,90 @@ def frame(t,bssid=BSS,conflict=False,anchor="w1"):
     return [r],snaps,frames,{MAC:row}
 
 class AssociationTests(unittest.TestCase):
+    def test_old_and_unknown_physical_mapping_records_survive_upgrade_without_claiming_continuity(self):
+        def token(kind, value):
+            return hmac.digest(KEY, ("lab\0" + kind + "\0" + value).encode(), "sha256").hex()[:32]
+
+        bare = token("context", "session-w1|1")
+        ident = token("device", MAC)
+        for context in (bare, "wired-ap-v2:" + bare, "wired-ap-v1:incomplete"):
+            with self.subTest(context=context), tempfile.TemporaryDirectory() as root:
+                store = Store(root, mode="diagnostic")
+                path = store.root / "association.db"
+                radio = frame(1000)[0][0]
+                legacy = (ident, 1000, 1060, token("ap", radio.ap_id), "AP1", token("radio", radio.radio_id),
+                          radio.band, token("bss", BSS), token("network", SSID), "w1", context,
+                          "w2", "w1", "positive_table_observation", "attachment_changed")
+                with store._db(path) as db:
+                    db.execute("""CREATE TABLE association_segments(
+                        id TEXT NOT NULL,first_at INTEGER NOT NULL,last_at INTEGER NOT NULL,
+                        ap_token TEXT NOT NULL,ap_name TEXT NOT NULL,radio_token TEXT NOT NULL,band TEXT NOT NULL,
+                        bss_token TEXT NOT NULL,network_token TEXT NOT NULL,aac TEXT NOT NULL,
+                        context_token TEXT NOT NULL,auac TEXT,suac TEXT,uac_status TEXT NOT NULL,
+                        event TEXT NOT NULL,PRIMARY KEY(id,first_at))""")
+                    db.execute("INSERT INTO association_segments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", legacy)
+                history = AssociationHistory(store, "lab", KEY, approvals())
+                self.assertEqual(history.ingest(*frame(1120), 1120), 1)
+                self.assertEqual(history.ingest(*frame(1180), 1180), 0)
+                reopened = AssociationHistory(store, "lab", KEY, {"w1": approvals()["w1"]})
+                view = DiagnosticView(store, lambda: 1180, association_history=reopened)
+                for query in ("", ident):
+                    page = view.association_page(query, 1)
+                    self.assertEqual(page["total"], 2)
+                    new, old = page["rows"]
+                    self.assertEqual((new["first_at"], new["last_at"], new["event"], new["mapping_status"]),
+                                     (1120, 1180, "first_observation", "wired_inventory_matched"))
+                    self.assertEqual((old["first_at"], old["last_at"], old["event"], old["mapping_status"]),
+                                     (1000, 1060, "physical_mapping_unverified", "unverified"))
+                    self.assertIsNone(old["auac"])
+                    self.assertEqual(old["suac"], "w1")
+                    self.assertNotIn(context, json.dumps(page))
+                with store._db(path) as db:
+                    self.assertEqual(db.execute("SELECT * FROM association_segments WHERE first_at=1000").fetchone(), legacy)
+
+    def test_same_named_aps_must_join_bss_to_its_own_physical_radio(self):
+        cases = (("other AP owns channel", 36, False, False),
+                 ("exact IP binds two cochannel APs", 44, False, True),
+                 ("conflicting inventory at BSS IP", 44, True, False))
+        for label, first_channel, conflict, accepted in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as root:
+                radios, snaps, frames, claims = frame(1000)
+                first = replace(radios[0], channel=first_channel)
+                second_id = "lab:02:ab:00:00:00:02"
+                second = replace(first, ap_id=second_id, radio_id=second_id + ":0", channel=44)
+                owner = snaps[0]
+                other = dict(owner.inventory[0], mac="02:ab:00:00:00:02", ip="192.0.2.2")
+                inventory = [*owner.inventory, other]
+                if conflict:
+                    inventory.append(dict(other, ip=owner.inventory[0]["ip"]))
+                snaps[0] = replace(owner, inventory=inventory,
+                                   active=[*owner.active, dict(owner.active[0], ip=other["ip"])])
+                frames["w1"] = (snaps[0], *frames["w1"][1:])
+                store = Store(root, mode="diagnostic")
+                history = AssociationHistory(store, "lab", KEY, approvals())
+                history.ingest([first, second], snaps, frames, claims, 1000)
+                with store._db(store.root / "association.db") as db:
+                    saved = db.execute("SELECT ap_token,radio_token FROM association_segments").fetchall()
+                expected = [(history.token("ap", first.ap_id), history.token("radio", first.radio_id))]
+                self.assertEqual(saved, expected if accepted else [])
+
+    def test_unmapped_active_claim_blocks_duplicate_bssid_until_refresh(self):
+        radios, snaps, frames, claims = frame(1000)
+        owner, bss, users = frames["w1"]
+        second = dict(owner.active[0], ip="192.0.2.2")
+        snaps[0] = replace(owner, active=[*owner.active, second])
+        duplicate = dict(bss.data[0], ip=second["ip"])
+        frames["w1"] = (snaps[0], replace(bss, data=[*bss.data, duplicate]), users)
+        with tempfile.TemporaryDirectory() as root:
+            history = AssociationHistory(Store(root, mode="diagnostic"), "lab", KEY, approvals())
+            self.assertEqual(history.ingest(radios, snaps, frames, claims, 1000), 0)
+            self.assertEqual(history.page(1000)["total"], 0)
+            # A refreshed AAC table removes the competing claim. The BSS and association still qualify.
+            snaps[0] = replace(owner, anchor_at=1001)
+            frames["w1"] = (snaps[0], frames["w1"][1], users)
+            self.assertEqual(history.ingest(radios, snaps, frames, claims, 1001), 1)
+            self.assertEqual(history.page(1001)["rows"][0]["last_at"], 1000)
+
     def test_revoked_or_expired_aac_is_excluded_before_count_and_pagination(self):
         with tempfile.TemporaryDirectory() as root:
             store = Store(root, mode="diagnostic")

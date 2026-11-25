@@ -3,8 +3,10 @@
 Obtain the ZIP and its expected SHA-256 through an independently trusted release channel. SHA-256 alone does not authenticate the publisher; the development artifact is not a qualified release.
 
 ```powershell
-AWQM.exe --stage-package AWQM_0.20.0-dev_Win11_x64.zip --sha256 <trusted-64-hex-digest> --output C:\AWQM-Updates\v020-staged
+.\AWQM.exe --stage-package .\AWQM_0.42.0-dev_Win11_x64.zip --sha256 $trustedZipSha256 --output C:\AWQM-Updates\v042-staged
 ```
-The parent must already exist and be ACL-protected. The destination must not exist. This command verifies the exact copied archive, checks Windows path collisions and traversal/symlinks, bounds unpacked size, checks required executable/runtime/docs files and writes a staging receipt. It never executes binaries, changes the installed folder, service, registry, config, DB or secrets.
+Set `$trustedZipSha256` to the independently verified 64-character digest of the folder-package ZIP. Use a new destination under an existing protected local parent. The command verifies the copied archive, checks member paths and sizes, and verifies the executable, runtime and documentation layout. Read `STAGE-RECEIPT.json` in the destination and compare its `version` and `sha256` to the expected package. Successful staging returns `status` equal to `verified_staged_not_installed`. The portable single-executable ZIP has a different layout.
 
-Before an actual upgrade, a local authorized administrator must verify an offline, complete rollback copy of the old program and the corresponding configuration/schema-compatible database, credential/key recovery and restore, stop the service safely, and test startup and rollback under the dedicated identity. Actual SCM-based atomic switch and rollback are still outstanding; no automatic installation or rollback is claimed.
+For a service upgrade, an authorized local administrator verifies the stopped service's rollback bundle, switches the program using the external manager, then tests startup under the dedicated identity. The manager also supports restoration of program and data after candidate startup. Follow [rollback preparation](UPDATE_SNAPSHOT.md), [program switch](PROGRAM_SWITCH.md) and [post-start rollback](DATA_ROLLBACK.md).
+
+The [Windows Server SCM trial for v0.42](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45541222743) exercised the frozen folder package, the v0.41 baseline, a candidate start and restoration under a dedicated local account. Record the intended site's own Windows 11 service and reboot results using the [target-PC procedure](WINDOWS_SERVICE.md#windows-11-reboot-qualification).

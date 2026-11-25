@@ -1,4 +1,4 @@
-# Windows diagnostic service (v0.9.0-dev)
+# Windows diagnostic service
 
 The diagnostic service runs on Windows from the folder package. Its default
 profile uses read-only safe-mode collection. A protected web configuration
@@ -85,3 +85,39 @@ and critical disk space pauses new dispatch. No production web access.
 Configuration/ACL verification, actual Windows 11 SCM installation,
 shutdown/reboot/DPAPI identity tests, controlled WLC field checks and
 long-run validation remain required.
+
+## Windows 11 reboot qualification
+
+Use the folder package on the intended Windows 11 x64 test PC, with the dedicated service identity and protected directories described above. Use an isolated controller fixture for this trial. Record the folder-package filename and verified ZIP SHA-256. Schedule the restart in an approved maintenance window outside the 72-hour soak.
+
+1. Before startup, pause collection for all configured fixture controllers using the [local collection controls](OPERATIONS.md). Start the service for the initial identity and DPAPI check. Once the protected heartbeat shows all controllers paused and drained, run `.\AWQM_Manager.exe enable-auto` from the installed program directory in an authorized administrator console. This verifies the recovery policy and sets automatic startup.
+2. Run the observation block below in PowerShell from the installed program directory. Save its output locally as the **before** record. Confirm Windows client build 22000 or later on x64, `startup` equal to `Auto`, `scm` equal to `Running`, `heartbeat` equal to `running` and `fixture_paused` true.
+3. Have the authorized operator restart Windows through the site's normal procedure. After sign-in, leave AWQM under automatic startup. Run the same observation block twice, at least five seconds apart, as the **after** records. If SCM is still starting, wait for the service to reach readiness before collecting the pair. A manual service start makes the automatic-start result inconclusive.
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$os = Get-CimInstance Win32_OperatingSystem
+$service = Get-CimInstance Win32_Service -Filter "Name='AWQM'"
+$statusFile = Join-Path $env:ProgramData 'AWQM\logs\service-status.json'
+$status = Get-Content -LiteralPath $statusFile -Raw | ConvertFrom-Json
+$controllers = @($status.operations.controllers | Where-Object { $_ })
+$active = @($controllers | Where-Object { $_.phase -ne 'paused' -or $_.inflight -ne $false })
+[pscustomobject]@{
+    windows_build = $os.BuildNumber
+    client_os = ($os.ProductType -eq 1)
+    x64 = (@((Get-CimInstance Win32_Processor).Architecture) -contains 9)
+    boot_unix = ([DateTimeOffset]$os.LastBootUpTime).ToUnixTimeSeconds()
+    observed_unix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    service_exe_sha256 = (Get-FileHash -LiteralPath '.\AWQM_Service.exe' -Algorithm SHA256).Hash
+    startup = $service.StartMode
+    scm = $service.State
+    heartbeat = $status.state
+    heartbeat_unix = $status.at
+    fixture_controllers = $controllers.Count
+    fixture_paused = ($controllers.Count -gt 0 -and $active.Count -eq 0)
+} | ConvertTo-Json
+```
+
+Pass when the after records show a newer `boot_unix`, the same service executable hash, automatic startup and SCM running, and the expected number of paused fixture controllers. Both heartbeats must show `running` with `boot_unix <= heartbeat_unix <= observed_unix`. The heartbeat timestamp must advance between the two samples. Startup checks the process identity against the configured account and decrypts every configured controller credential before reporting readiness. This exercises service-account DPAPI without publishing an account name or credential.
+
+Return the package filename and digest, the three observations, whether any manual start occurred, and the outcome. Record missing, stale or failed observations as such. Inspect detailed status and Windows service events locally if diagnosis is needed. The fields above provide the evidence without copying the full protected status, config, event logs or DPAPI blobs.

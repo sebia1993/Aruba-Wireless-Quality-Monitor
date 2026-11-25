@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**v0.42.0-dev 개발 검증판** · 진단 화면에서 AP·단말·장애를 검색할 수 있습니다. 단말의 품질 비교에는 같은 무선망과 물리 Radio에서 얻은 근거를 사용합니다. Windows 서비스는 복구 설정을 확인한 뒤 시작을 허용합니다.
+**v0.43.0-dev 개발 검증판** · 연결 이력은 유선 MAC으로 식별한 AP와 Radio가 일치할 때 기록합니다. 이전 방식으로 수집한 이력에는 물리 AP 미검증 표시가 붙습니다. 실행 파일에서 `--runtime-info`로 Python, SQLite와 두 OpenSSL 버전을 확인할 수 있습니다.
 개발 검증은 합성 관측과 루프백 HTTPS를 사용합니다. 운영 적합성 확인에는 전용 Windows 11 서비스 계정·재부팅 시험, 현장 WLC·AAA·Airtime 검증 및 72시간 시험 결과가 필요합니다.
 
 ## 실행 (개발 환경)
@@ -157,13 +157,23 @@ Windows ZIP의 실제 설치 패키지 버전을 별도 CI에서 취약점 조�
 
 별도 Chromium CI에서 실제 로그인, AP 검색/페이지 이동, 상세 및 이력 내보내기, 메뉴 전환, 권한과 세션 만료, WSS 및 두 화면 크기를 합성 데이터로 검사합니다. 브라우저 테스트 도구는 EXE에 포함하지 않습니다. [검증 안내](docs/VALIDATION.md).
 
-## Windows 빌드
+## Windows 폴더형 빌드
+
+Windows x64 CPython 3.14.10에서 시작합니다. 준비 명령은 지정한 새 경로에 빌드용 Python을 복사하고 공식 SQLite ZIP의 해시를 검증합니다. 아래 명령은 저장소 루트에서 실행합니다.
+
 ```powershell
-python -m pip install -r requirements-build.txt
-python -m PyInstaller --noconfirm --clean --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
-dist\AWQM\AWQM.exe --demo
+$runtime = Join-Path $env:TEMP ('awqm-build-' + [guid]::NewGuid().ToString('N'))
+python tools/windows_runtime.py prepare $runtime
+if ($LASTEXITCODE -ne 0) { throw '빌드용 Python 준비 실패' }
+$env:PYTHONNOUSERSITE = '1'
+$builder = Join-Path $runtime 'python.exe'
+& $builder -m pip install -r requirements-build.txt
+if ($LASTEXITCODE -ne 0) { throw '빌드 의존성 설치 실패' }
+& $builder -m PyInstaller --noconfirm --clean --hidden-import win32timezone --onedir --name AWQM --add-data "awqm/static;awqm/static" launcher.py
+if ($LASTEXITCODE -ne 0) { throw 'EXE 빌드 실패' }
+& $builder tools/windows_runtime.py verify dist/AWQM/AWQM.exe dist/native-runtime.json
 ```
-GitHub Actions의 Windows ZIP artifact는 개발용입니다. 정식 릴리스로 간주하지 않습니다.
+서비스·관리자 실행 파일과 운영 문서를 포함하는 개발 ZIP의 제작 절차는 [Windows 빌드 워크플로](.github/workflows/windows-build.yml)에 있습니다.
 
 - [확정 설계 기준 및 개발 범위](docs/DESIGN.md)
 - [CLI 출력 검증 안내](docs/CLI_VALIDATION.md)
