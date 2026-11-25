@@ -1,5 +1,6 @@
-# Runtime dependencies for the SSH foundation (demo uses Python stdlib only).
-paramiko>=3.5,<5
+# Runtime security-sensitive versions deliberately pinned; audited in CI.
+# Paramiko 5 removes legacy RSA/SHA-1 and SHA-1 key exchange. No downgrade.
+paramiko==5.1.0
 pywin32>=308,<400; sys_platform == 'win32'
-cryptography>=42,<50
+cryptography==50.0.2
 wsproto>=1.3.2,<2

@@ -29,6 +29,9 @@ def main():
         sys.argv.pop(1)
         probe_main()
         return
+    if sys.argv[1:]==["--validate-ssh"]:
+        from awqm.ssh_validation import main as ssh_main
+        ssh_main();return
     if sys.argv[1:]==["--dpapi-smoke-test"]:
         dpapi_smoke()
         return

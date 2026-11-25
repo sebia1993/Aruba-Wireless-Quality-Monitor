@@ -39,3 +39,14 @@ CI runs 32 Radios (879,360 historical rows) over the full date windows. It is ex
 AWQM.exe --validate-scale retained-full --output D:\AWQM-Validation\retained-full-01
 ```
 Use a dedicated fixed local test drive, a nonexistent output directory, and at least 150 GB free. Actual storage can be tens of GB or more; reserve checks may stop generation. The harness does not remove or overwrite any existing data, and leaves its own synthetic data for inspection. Remove it manually only after reviewing the result. The result contains row counts, data bytes, generation time and measured per-query timing. It is not a cold-cache claim, concurrent writer stress, full ingestion/aggregation or backup/retention validation. A representative pass does not satisfy the full-scale read gate. Windows service lifecycle, browser rendering, security and 72-hour soak remain separate.
+
+
+## SSH dependency regression (v0.32)
+
+Run AWQM.exe --validate-ssh. Generates temporary in-memory 2048-bit
+fixture RSA keys, starts ephemeral 127.0.0.1 servers, and performs actual
+SSH handshake/authentication, a single read-only fixture CLI, auth-only
+verification, wrong-password rejection and changed/missing key rejection.
+No production SSH or AAA, no external network and no actual site data.
+Both the unit suite and frozen executable run this test in Windows CI.
+No real-controller compatibility claim. 72-hour execution remains user-owned.
