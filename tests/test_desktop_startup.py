@@ -23,7 +23,7 @@ class DesktopStartupTests(unittest.TestCase):
             dll.write_bytes(b"test runtime")
             def check(path, *, trust_current_owner):
                 self.assertFalse(trust_current_owner)
-                if path == dll:
+                if path.samefile(dll):
                     raise ValueError("untrusted DLL ACL")
             with patch("awqm.desktop_app.installed_program", return_value=app), patch("awqm.windows_security.check_program_acl", side_effect=check):
                 with self.assertRaisesRegex(ValueError, "untrusted DLL"):

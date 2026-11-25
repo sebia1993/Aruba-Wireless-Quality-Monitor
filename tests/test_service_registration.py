@@ -52,7 +52,7 @@ class ServiceRegistrationTests(unittest.TestCase):
 
     def test_install_registers_only_quoted_unified_binary_with_service_argument(self):
         manager.install(self.cfg)
-        self.assertEqual(self.api["CreateService"].call_args.args[7], f'"{sys.executable}" --service')
+        self.assertEqual(self.api["CreateService"].call_args.args[7], f'"{Path(sys.executable).resolve(strict=True)}" --service')
         self.publish_endpoint.assert_called_once_with(self.cfg)
 
     def test_endpoint_configuration_failure_removes_disabled_registration(self):
