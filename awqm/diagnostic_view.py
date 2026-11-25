@@ -78,7 +78,7 @@ class DiagnosticView:
             meta=dict(self.meta);meta.pop("operations",None);now=int(self.clock())
             stale=not meta.get("available") or not 0<=now-meta.get("published_at",0)<=20
             if token is None:
-                rows=[r for r in self.rows if any(query in str(r[k]).casefold() for k in ("ap_name","controller","band","channel"))]
+                rows=[r for r in self.rows if any(query in str(r[k]).casefold() for k in ("ap_name","controller","band","channel","id"))]
             else:
                 rows=[r for r in self.rows if r["id"]==token]
             data=[]
@@ -183,10 +183,12 @@ class DiagnosticView:
             return {r["incident_id"] for r in self.rows if r.get("incident_id") and r["freshness"]=="observed"
                     and (r.get("approval_until") or 0)>now and r.get("risk_status")!="UNKNOWN"}
 
-    def incident_list(self,page,status,start,end):
+    def incident_list(self,page,status,start,end,query="",size=50):
+        if not isinstance(query,str) or len(query)>128 or not 1<=size<=100:
+            raise ValueError("invalid incident search")
         if self.incidents is None:
-            return {"rows":[],"total":0,"page":page,"size":50,"scope":"no_current_attestation","service_impact":"unverified"}
-        return self.incidents.list(page,status,start,end,current=self.current_incidents())
+            return {"rows":[],"total":0,"page":page,"size":size,"scope":"no_current_attestation","service_impact":"unverified"}
+        return self.incidents.list(page,status,start,end,size=size,current=self.current_incidents(),query=query)
 
     def incident_detail(self,ident):
         if self.incidents is None:raise ValueError("incident ledger unavailable")
@@ -199,25 +201,38 @@ class DiagnosticView:
         if self.incidents is None:raise ValueError("incident ledger unavailable")
         return self.incidents.review(ident,revision,request_id,user,verdict,reason,candidate)
 
-    def clients_page(self,query="",page=1,size=100):
+    def clients_page(self,query="",page=1,size=100,*,token=None):
         if not isinstance(query,str) or len(query)>128 or type(page) is not int or not 1<=page<=10000 or not 1<=size<=100:
             raise ValueError("invalid client page")
         with self.lock:
             now=int(self.clock())
             fresh=bool(self.meta.get("available") and 0<=now-self.meta.get("published_at",0)<=20)
             fields=("id","ap_name","controller","band","observed_at","health","snr","last_phy_rate","quality_score","quality_status","airtime","retry","candidate","scope","station_retry","station_start","station_end","station_tx_activity","confidence","peer_comparable","peer_degraded","candidate_scope")
-            rows=[{k:r.get(k) for k in fields} for r in self.client_rows
-                if fresh and 0<=now-r["observed_at"]<=180 and now<r.get("valid_until",0) and any(query.casefold() in str(r[k]).casefold() for k in ("ap_name","id","controller","band"))]
+            needle = query.casefold()
+            matched = [r for r in self.client_rows if self.client_enabled and fresh
+                       and 0 <= now-r["observed_at"] <= 180 and now < r.get("valid_until", 0)
+                       and (token is None or r["id"] == token)
+                       and (not needle or any(needle in str(r[k]).casefold() for k in ("ap_name","id","controller","band")))]
+            if token is not None and len(matched) != 1:
+                matched = []
             # Apply the separate station attestation expiry at read time as
             # well, even between coordinator publications.
-            expiries={r["id"]:r.get("station_until") for r in self.client_rows}
-            candidate_expiry={r["id"]:r.get("candidate_until") for r in self.client_rows}
-            for item in rows:
-                if now>=(candidate_expiry.get(item["id"]) or 0):
+            rows = []
+            expires = self.meta.get("published_at", now) + 21
+            for row in matched[(page-1)*size:page*size]:
+                item = {k:row.get(k) for k in fields}
+                expires = min(expires, row["valid_until"], row["observed_at"] + 181)
+                if now >= (row.get("candidate_until") or 0):
                     item.update(candidate=None,confidence="unavailable",peer_comparable=None,peer_degraded=None,candidate_scope=None)
-                if item.get("station_end") is None or not 0<=now-item["station_end"]<=90 or now>=(expiries.get(item["id"]) or 0):
+                if item.get("station_end") is None or not 0<=now-item["station_end"]<=90 or now >= (row.get("station_until") or 0):
                     item.update(station_retry=None,station_start=None,station_end=None,station_tx_activity="unknown",candidate=None,confidence="unavailable",peer_comparable=None,peer_degraded=None,candidate_scope=None)
-            return {"rows":rows[(page-1)*size:page*size],"total":len(rows),"page":page,"size":size,
+                else:
+                    expires = min(expires, row["station_until"], item["station_end"] + 91)
+                    if item.get("candidate"):
+                        expires = min(expires, row["candidate_until"])
+                rows.append(item)
+            return {"rows":rows,"total":len(matched),"page":page,"size":size,
+                "refresh_after":max(0,expires-now) if rows else 0,
                 "enabled":self.client_enabled,"available":fresh,"scope":"local_operator_attested_ephemeral_detail",
                 "persistent_storage":False,"airtime_validated":False,"cause_confirmed":False}
 

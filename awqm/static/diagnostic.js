@@ -1,15 +1,15 @@
 "use strict";
 const $=id=>document.getElementById(id);
-const names={overview:"종합 현황",radios:"AP 품질 관측",clients:"사용자 분석",history:"장애 및 이력",admin:"운영 관리"};
+const names={overview:"종합 현황",radios:"AP 품질 관측",clients:"사용자 분석",history:"장애 및 이력",admin:"운영 관리",results:"통합 검색 결과"};
 let view="overview",page=1,snapshot=null,selected=null,busy=false,revision=0,expired=false;
 let updateSocket=null,updateTimer=null,lastSignal=0,lastAutomatic=0,lastPublication=null;
-const detailRoute=/^#(radio|incident)\/([0-9a-f]{32})$/.exec(location.hash);
+const detailRoute=/^#(radio|incident|client)\/([0-9a-f]{32})$/.exec(location.hash);
 const kst=t=>t==null?"미확인":new Date(t*1000).toLocaleString("ko-KR",{timeZone:"Asia/Seoul"});
 function el(tag,value,cls){const n=document.createElement(tag);if(value!=null)n.textContent=String(value);if(cls)n.className=cls;return n;}
 function table(headers,rows){const wrap=el("div",null,"table-wrap"),t=el("table"),head=el("thead"),tr=el("tr");for(const h of headers)tr.append(el("th",h));head.append(tr);t.append(head);const b=el("tbody");for(const row of rows){const r=el("tr");for(const value of row){const c=el("td");if(value instanceof Node)c.append(value);else c.textContent=value??"미확인";r.append(c);}b.append(r);}t.append(b);wrap.append(t);return wrap;}
 function metric(n,v){const b=el("div",null,"kpi");b.append(el("span",n),el("strong",v??"미확인"));return b;}
 function notice(s){$("notice").textContent=s;}
-function invalidate(){expired=true;closeUpdates();snapshot=null;selected=null;incidentPanel=null;document.body.classList.remove("detail-page");$("content").replaceChildren(el("p","인증 만료. 새로고침 후 다시 로그인하세요."));$("detail").hidden=true;$("detailBody").replaceChildren();notice("인증 세션 만료");}
+function invalidate(){expired=true;closeUpdates();snapshot=null;selected=null;incidentPanel=null;submittedSearch="";refreshSearchClients=null;for(const id of ["search","global-query"]){$(id).value="";$(id).disabled=true;}document.body.classList.remove("detail-page");$("content").replaceChildren(el("p","인증 만료. 새로고침 후 다시 로그인하세요."));$("detail").hidden=true;$("detailBody").replaceChildren();notice("인증 세션 만료");}
 async function request(path){const r=await fetch(path,{cache:"no-store"});if(r.status===401){invalidate();throw Error("expired");}if(!r.ok)throw Error("unavailable");return r.json();}
 function neighborPanel(r){
   const panel=el("section");panel.append(el("h3","RF Neighbor 관측"),el("p","논리적 RF 관계 · 물리 위치 또는 실제 간섭 원인 확정 아님"));
@@ -133,6 +133,17 @@ function detailLink(kind,id){
   link.href=detailRoute?"/":"/#"+kind+"/"+id;
   if(!detailRoute){link.target="_blank";link.rel="noopener";}
   return link;
+}
+async function openRadio(id){
+  const ticket={kind:"radio",id},out=$("detailBody");
+  selected=ticket;incidentPanel=null;$("detail").hidden=false;
+  out.replaceChildren(el("p","Radio 관측 조회 중"));
+  try{
+    const row=await request("/api/radio?"+new URLSearchParams({id}));
+    if(!expired&&selected===ticket)openHistory(row);
+  }catch(e){
+    if(!expired&&selected===ticket)out.replaceChildren(el("p","Radio 정보를 찾을 수 없습니다. 목록에서 다시 선택하세요."));
+  }
 }
 function openHistory(r){
   incidentPanel=null;selected={id:r.id,name:r.ap_name,band:r.band};$("detail").hidden=false;
@@ -275,6 +286,40 @@ async function openIncident(id){
 }
 
 let clientPage=1,clientVersion=0;
+function clientButton(row){
+  const button=el("button",row.id.slice(0,16));
+  button.addEventListener("click",()=>{openClient(row.id);$("detail").scrollIntoView({block:"start"});});
+  return button;
+}
+async function openClient(id){
+  const ticket={kind:"client",id};
+  selected=ticket;incidentPanel=null;$("detail").hidden=false;
+  const out=$("detailBody");
+  out.replaceChildren(el("p","단말 관측 조회 중"));
+  const reload=el("button","상세 다시 조회");
+  reload.addEventListener("click",()=>openClient(id));
+  try{
+    const row=await request("/api/client?"+new URLSearchParams({id}));
+    if(expired||selected!==ticket)return;
+    const withUnit=(value,unit)=>value==null?"미확인":value+unit;
+    const activity={successful_tx_observed:"성공 프레임 증가 관측",no_successful_tx_increase:"성공 프레임 증가 없음"};
+    const fields=[
+      ["AP",row.ap_name],["WLC",row.controller],["대역",row.band],["관측 시각 KST",kst(row.observed_at)],
+      ["Health",withUnit(row.health,"%")],["ACK SNR",withUnit(row.snr," dB")],
+      ["최근 PHY 속도",withUnit(row.last_phy_rate," Mbps")],["부분 품질 점수",row.quality_score],
+      ["성공 프레임 재시도율",withUnit(row.station_retry,"%")],["성공 Tx 관측",activity[row.station_tx_activity]],
+      ["Station Stats 구간 KST",row.station_start==null?"미확인":kst(row.station_start)+" ~ "+kst(row.station_end)],
+      ["Airtime","미확인"],["원인 후보",candidateLabels[row.candidate]||"미확인"],
+      ["비교 단말 중 저하",row.peer_comparable==null?"미확인":row.peer_degraded+" / "+row.peer_comparable]
+    ];
+    out.replaceChildren(el("h3","임시 단말 "+row.id),detailLink("client",id),reload,
+      el("p","Health와 ACK SNR로 계산한 부분 점수입니다. 성공 프레임 재시도율은 승인된 Station Stats 구간의 관측값입니다."),
+      table(["항목","관측값"],fields));
+    setTimeout(()=>{if(!expired&&selected===ticket)openClient(id);},row.refresh_after*1000);
+  }catch(e){
+    if(!expired&&selected===ticket)out.replaceChildren(el("p","현재 승인된 단말 관측을 조회할 수 없습니다."),reload,detailLink("client",id));
+  }
+}
 async function loadClients(){
   if(view!=="clients"||expired)return;
   const rev=++clientVersion,out=$("content");
@@ -287,7 +332,8 @@ async function loadClients(){
       el("p","품질은 Health·ACK SNR 기반 부분 점수입니다. 별도 검증된 Station Stats는 성공 프레임 중 재시도 비율만 표시합니다. Airtime은 미확인. RF03은 별도 승인된 동시간대 재시도·비교 단말 저하 후보이며 원인 확정이 아닙니다."));
     const refreshBtn=el("button","관측 갱신");refreshBtn.addEventListener("click",loadClients);out.append(refreshBtn);
     if(!d.rows.length)out.append(el("p","현재 조건을 충족하는 상세 관측이 없습니다. 단말이 없거나 정상이라는 의미는 아닙니다."));
-    else out.append(table(["임시 단말 ID","AP","WLC","대역","Health %","ACK SNR dB","최근 PHY Mbps","부분 품질 점수","성공 Tx 관측","성공 프레임 재시도 %","통계 구간","Airtime","간접 후보","비교 단말 저하","관측 시각"],d.rows.map(r=>[r.id.slice(0,16),r.ap_name,r.controller,r.band,r.health,r.snr,r.last_phy_rate,r.quality_score==null?"미확인":r.quality_score+" (부분)",({successful_tx_observed:"증가 관측",no_successful_tx_increase:"성공 Tx 증가 없음"})[r.station_tx_activity]||"미확인",r.station_retry==null?"미확인":r.station_retry.toFixed(1),r.station_start==null?"미확인":kst(r.station_start)+" ~ "+kst(r.station_end),"미확인",r.candidate==="RF03"?"RF03 · 낮은 신뢰도":"미확인",r.peer_comparable==null?"미확인":r.peer_degraded+" / "+r.peer_comparable,kst(r.observed_at)])));
+    else out.append(table(["임시 단말 ID","AP","WLC","대역","Health %","ACK SNR dB","최근 PHY Mbps","부분 품질 점수","성공 Tx 관측","성공 프레임 재시도 %","통계 구간","Airtime","간접 후보","비교 단말 저하","관측 시각"],d.rows.map(r=>[clientButton(r),r.ap_name,r.controller,r.band,r.health,r.snr,r.last_phy_rate,r.quality_score==null?"미확인":r.quality_score+" (부분)",({successful_tx_observed:"증가 관측",no_successful_tx_increase:"성공 Tx 증가 없음"})[r.station_tx_activity]||"미확인",r.station_retry==null?"미확인":r.station_retry.toFixed(1),r.station_start==null?"미확인":kst(r.station_start)+" ~ "+kst(r.station_end),"미확인",r.candidate==="RF03"?"RF03 · 낮은 신뢰도":"미확인",r.peer_comparable==null?"미확인":r.peer_degraded+" / "+r.peer_comparable,kst(r.observed_at)])));
+    if(d.refresh_after>0)setTimeout(()=>{if(view==="clients"&&!expired&&clientVersion===rev)loadClients();},d.refresh_after*1000);
     const controls=el("div",null,"pager"),prev=el("button","이전"),next=el("button","다음");
     prev.disabled=clientPage<=1;next.disabled=clientPage*d.size>=d.total;
     prev.addEventListener("click",()=>{clientPage--;loadClients();});next.addEventListener("click",()=>{clientPage++;loadClients();});
@@ -395,9 +441,73 @@ function operationsPanel(){
   return panel;
 }
 
+let submittedSearch="",refreshSearchClients=null;
+function searchGroup(parent,kind,title,query,end){
+  const panel=el("section",null,"search-group"),body=el("div");
+  panel.setAttribute("aria-label",title);
+  panel.append(el("h3",title),body);parent.append(panel);
+  let serial=0,currentPage=1;
+  if(kind==="clients")refreshSearchClients=()=>{if(panel.isConnected)load(currentPage);};
+  async function load(number){
+    currentPage=number;
+    const attempt=++serial,params=new URLSearchParams({q:query,page:String(number),size:"8"});
+    if(kind==="incidents"){
+      params.set("start",String(Math.max(0,end-365*86400)));params.set("end",String(end));params.set("status","all");
+    }
+    body.replaceChildren(el("p","조회 중"));
+    try{
+      const result=await request("/api/"+kind+"?"+params);
+      if(expired||!panel.isConnected||attempt!==serial)return;
+      body.replaceChildren();
+      if(!result.rows.length){
+        const message=kind==="clients"&&!result.enabled?"단말 상세 수집 비활성":
+          kind==="clients"&&!result.available?"현재 단말 관측을 확인할 수 없습니다.":"검색 결과 없음";
+        body.append(el("p",message));
+      }else{
+        body.append(table(["AP","WLC","대역",kind==="clients"?"임시 단말 ID":kind==="incidents"?"최근 관측 KST":"관측 시각 KST","상세"],
+          result.rows.map(row=>{
+            const open=el("button","상세 보기");
+            const identifier=kind==="clients"?row.id.slice(0,16):kind==="incidents"?row.incident_id.slice(0,12):row.band;
+            open.setAttribute("aria-label",row.ap_name+" "+identifier+" 상세 보기");
+            open.addEventListener("click",()=>{
+              if(kind==="clients")openClient(row.id);
+              else if(kind==="incidents")openIncident(row.incident_id);
+              else openRadio(row.id);
+              $("detail").scrollIntoView({block:"start"});
+            });
+            return [row.ap_name,row.controller,row.band,kind==="clients"?row.id.slice(0,16):
+              kst(kind==="incidents"?row.last_at:row.observed_at),open];
+          })));
+      }
+      const pages=Math.max(1,Math.ceil(result.total/result.size));
+      if(pages>1||number>1){
+        const controls=el("div",null,"pager"),prev=el("button","이전"),next=el("button","다음");
+        prev.disabled=number===1;next.disabled=number>=pages;
+        prev.onclick=()=>load(number-1);next.onclick=()=>load(number+1);
+        controls.append(prev,el("span",number+" / "+pages+" · "+result.total+"건"),next);body.append(controls);
+      }
+      if(kind==="clients"&&result.refresh_after>0)setTimeout(()=>{
+        if(!expired&&panel.isConnected&&attempt===serial)load(number);
+      },result.refresh_after*1000);
+    }catch(e){
+      if(expired||!panel.isConnected||attempt!==serial)return;
+      const retry=el("button","다시 조회");retry.onclick=()=>load(number);
+      body.replaceChildren(el("p","조회할 수 없습니다."),retry);
+    }
+  }
+  load(1);
+}
 function render(){
   if(expired)return;
   const c=$("content");c.replaceChildren();$("heading").textContent=names[view];
+  if(view==="results"){
+    c.append(el("p","검색어 “"+submittedSearch+"” · 장애 이력은 최근 365일 기준"));
+    const end=Math.floor(Date.now()/1000)+1;
+    for(const [kind,title] of [["radios","AP / Radio"],["clients","사용자 단말"],["incidents","장애 이력"]]){
+      searchGroup(c,kind,title,submittedSearch,end);
+    }
+    return;
+  }
   if(view==="clients"){loadClients();return;}
   if(view==="history"){loadIncidents();return;}
   if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out,operationsPanel(),jobsPanel(),associationPanel());return;}
@@ -419,17 +529,27 @@ function navigate(v){
   // Invalidate in-flight callbacks before switching screens. Never display
   // the previous AP/incident detail or a page from another search context.
   revision++;clientVersion++;incidentVersion++;busy=false;clearDetail();
+  refreshSearchClients=null;
   view=v;page=1;clientPage=1;incidentPage=1;
   for(const b of $("nav").querySelectorAll("button")){
     if(b.dataset.view===v)b.setAttribute("aria-current","page");
     else b.removeAttribute("aria-current");
   }
-  $("search").disabled=v==="history"||v==="admin";
+  $("search").disabled=v==="history"||v==="admin"||v==="results";
+  $("list-filter").hidden=$("search").disabled;
   if(v==="overview"||v==="radios"){
     snapshot=null;render();refresh(true);
   }else render();
 }
 $("nav").addEventListener("click",e=>{const v=e.target.dataset.view;if(v)navigate(v);});
+$("global-search").addEventListener("submit",event=>{
+  event.preventDefault();
+  const query=$("global-query").value.trim();
+  if(!query||expired)return;
+  submittedSearch=query;
+  if(view==="results"){clearDetail();render();}
+  else navigate("results");
+});
 $("search").addEventListener("input",()=>{
   if(expired||$("search").disabled)return;
   clearDetail();page=1;clientPage=1;
@@ -440,7 +560,7 @@ $("close").addEventListener("click",clearDetail);
 async function showDetailPage(kind,id){
   view="detail";
   document.body.classList.add("detail-page");
-  const title=kind==="radio"?"Radio 관측 상세":"위험 이력 상세";
+  const title={radio:"Radio 관측 상세",client:"단말 관측 상세",incident:"위험 이력 상세"}[kind];
   $("heading").textContent=title;
   document.title=title+" · AWQM";
   $("detail").hidden=false;
@@ -448,9 +568,10 @@ async function showDetailPage(kind,id){
   out.replaceChildren(el("p","상세 정보 조회 중"));
   if(kind==="incident"){
     await openIncident(id);
+  }else if(kind==="client"){
+    await openClient(id);
   }else{
-    try{openHistory(await request("/api/radio?"+new URLSearchParams({id})));}
-    catch(e){if(!expired)out.replaceChildren(el("p","Radio 정보를 찾을 수 없습니다. 목록에서 다시 선택하세요."));}
+    await openRadio(id);
   }
   if(!expired&&!out.querySelector('a[href="/"]'))out.append(detailLink(kind,id));
 }
@@ -464,11 +585,15 @@ function closeUpdates(){
 function automaticRefresh(){
   if(expired||document.hidden||Date.now()-lastAutomatic<4000)return;
   lastAutomatic=Date.now();
+  if(selected?.kind==="client")openClient(selected.id);
   if(detailRoute){
+    if(detailRoute[1]==="client")return;
     request("/api/publication").then(state=>{
       if(!expired)notice(state.available?"저장된 상세 정보 · 조회 시점 기준":"현재 수집 상태 확인 불가 · 저장된 상세 정보");
     }).catch(()=>{if(!expired)notice("현재 수집 상태 확인 불가");});
-  }else if(view==="clients")loadClients();else refresh();
+  }else if(view==="clients")loadClients();
+  else if(view==="results"){if(refreshSearchClients)refreshSearchClients();}
+  else refresh();
 }
 function connectUpdates(){
   // A session has one WSS slot. Detail tabs retain the HTTPS fallback.

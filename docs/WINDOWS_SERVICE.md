@@ -59,8 +59,10 @@ same designated Windows identity that runs the service.
 - Under the designated service identity, in an interactive console:
   AWQM_Manager.exe provision WLC-1 (repeat for configured devices; explicit
   --replace for rotation). Password is prompted, not passed in argv.
-- As authorized administrator: AWQM_Manager.exe install. Initial
-  registration is manual startup for safe verification; no start occurs.
+- As an authorized administrator, run `AWQM_Manager.exe install`. The manager
+  creates a disabled service, configures its recovery actions and reads them
+  back from SCM. After verification it selects manual startup, or automatic
+  startup if requested with `--auto-start`. Service start is a separate step.
 - AWQM_Manager.exe start; AWQM_Manager.exe status; inspect protected
   logs/service-status.json and diagnostic DB. SCM RUNNING follows the local
   identity, configuration, database and optional listener startup checks.
@@ -73,9 +75,23 @@ same designated Windows identity that runs the service.
   fresh installation).
 - AWQM_Manager.exe remove only when stopped; no data deletion.
 
-Service and manager entry points share the bundled runtime. Windows CI
-smoke checks import/packaging only, not installation, boot, SCM recovery,
-or actual account profile. Recovery policy is configured for 30s, 60s,
+Installation verifies a 24-hour failure-count reset, restart delays of
+30, 60 and 300 seconds followed by no action, and recovery on a reported
+error stop. The manager also checks this policy before starting the service
+or enabling manual or automatic startup. Status, stop, disable and removal
+remain available if the policy needs repair. A failed install requests
+removal only for the registration created by that invocation. If the
+manager was terminated or reports a cleanup failure, inspect the service’s
+binary path, account, state and startup setting in Windows Services. Once
+you confirm a stopped, incomplete AWQM registration, remove it before a
+fresh install. The manager preserves an existing registration on a name
+collision.
+
+Service and manager entry points share the bundled runtime. The full folder
+workflow includes a separate [hosted SCM trial](CI_WORKFLOW.md#windows-service-lifecycle)
+with a dedicated local user, fixture credentials and paused collection.
+The actual target system and reboot require Windows 11 qualification.
+Recovery policy is configured for 30s, 60s,
 300s then no action; host key/credential rejection does not trigger
 unbounded retries. One collection worker per configured WLC, serialized
 new authentication, shared-account rejection blocks further attempts,

@@ -100,7 +100,11 @@ def fixture(root):
     view=DiagnosticView(store,lambda:now+1,incidents=ledger.incidents)
     meta={"coherent_controllers":1,"expected_controllers":4,"mapped_radios":len(rows),
           "active_clients":204}
-    view.publish(meta,[(r.radio_id,r.observed_at) for r in rows],quality=quality)
+    client = dict(id="c"*32, ap_name=risk.ap_name, controller=risk.controller, band=risk.band,
+                  valid_until=now+300, observed_at=now, health=72, snr=19, last_phy_rate=144,
+                  quality_score=63, quality_status="degraded", private_marker="internal-client-fixture")
+    view.publish(meta,[(r.radio_id,r.observed_at) for r in rows],quality=quality,
+                 client_views=[client],client_enabled=True)
     return view
 
 
@@ -127,6 +131,44 @@ def login(page,url,role,fragment=""):
     submit_form(page,url,"/auth/login",page.get_by_role("button",name="로그인",exact=True))
     expect(page.locator("#role")).to_have_text("권한: "+role)
     if not fragment:expect(page.locator("#nav")).to_be_visible()
+
+
+def cross_menu_search(page):
+    page.locator('[data-view="admin"]').click()
+    search = page.get_by_role("search", name="통합 검색")
+    search.get_by_role("searchbox").fill("DEMO-BROWSER-0102")
+    search.get_by_role("button", name="검색", exact=True).click()
+    for heading in ("AP / Radio", "사용자 단말", "장애 이력"):
+        expect(page.get_by_role("region", name=heading).get_by_role("button", name="상세 보기")).to_be_visible()
+    page.get_by_role("region", name="AP / Radio").get_by_role("button", name="상세 보기").click()
+    expect(page.locator("#detailBody").get_by_role("button", name="이력 조회", exact=True)).to_be_visible()
+    page.get_by_role("region", name="장애 이력").get_by_role("button", name="상세 보기").click()
+    expect(page.locator("#detailBody").get_by_role("link", name="CSV 보고서")).to_be_visible()
+    clients = page.get_by_role("region", name="사용자 단말")
+    clients.get_by_role("button", name="상세 보기").click()
+    expect(page.locator("#detailBody").get_by_text("72%")).to_be_visible()
+    with page.expect_popup() as popup:
+        page.locator("#detailBody").get_by_role("link", name="전체 페이지에서 열기").click()
+    detail = popup.value
+    try:
+        expect(detail.get_by_role("heading", name="단말 관측 상세", exact=True).first).to_be_visible()
+        detail.reload()
+        expect(detail.locator("#detailBody").get_by_text("72%")).to_be_visible()
+        expect(detail.locator("body")).not_to_contain_text("internal-client-fixture")
+    finally:
+        detail.close()
+    search.get_by_role("searchbox").fill("DEMO-BROWSER")
+    search.get_by_role("searchbox").press("Enter")
+    radios = page.get_by_role("region", name="AP / Radio")
+    expect(radios.get_by_text("1 / 13 · 102건")).to_be_visible()
+    radios.get_by_role("button", name="다음").click()
+    expect(radios.get_by_text("2 / 13 · 102건")).to_be_visible()
+    expect(radios.get_by_text("DEMO-BROWSER-0009",exact=True)).to_be_visible()
+    search.get_by_role("searchbox").fill("MISSING-FIXTURE-ONLY")
+    search.get_by_role("searchbox").press("Enter")
+    for heading in ("AP / Radio", "사용자 단말", "장애 이력"):
+        expect(page.get_by_role("region", name=heading).get_by_text("검색 결과 없음")).to_be_visible()
+    expect(page.locator("#detail")).to_be_hidden()
 
 
 def browser_test(output):
@@ -236,7 +278,7 @@ def browser_test(output):
                             page.locator('[data-view="clients"]').click()
                             expect(page.locator("#detail")).to_be_hidden()
                             expect(page.locator("#detailBody")).to_be_empty()
-                            expect(page.get_by_text("단말 상세 수집 비활성",exact=False)).to_be_visible()
+                            expect(page.get_by_text("현장 승인된 AP 정밀 조회의 임시 단말 관측",exact=False)).to_be_visible()
                             page.locator("#search").fill("DEMO-BROWSER-0102")
                             page.locator('[data-view="radios"]').click()
                             expect(table).to_have_count(1)
@@ -257,6 +299,8 @@ def browser_test(output):
                             finally:
                                 incident_page.close()
                             result["scenarios"][f"{width}x{height}-{theme}-detail-pages"]="pass"
+                            cross_menu_search(page)
+                            result["scenarios"][f"{width}x{height}-{theme}-global-search-client-detail"]="pass"
                             page.locator('[data-view="admin"]').click()
                             expect(page.locator("#search")).to_be_disabled()
                             require(verified_get(context,url,"/api/admin/status",cert)[0]==403,
@@ -306,6 +350,21 @@ def browser_test(output):
                         submit_form(page,url,"/auth/logout",page.get_by_role("button",name="로그아웃",exact=True))
                         expect(page.locator('input[name="username"]')).to_be_visible()
                         result["scenarios"]["admin_login_status_logout"]="pass"
+                        client_id="c"*32
+                        require(verified_get(context,url,"/api/client?id="+client_id,cert)[0]==401,
+                                "client detail exposed without session")
+                        page=context.new_page()
+                        login(page,url,"operator","#client/"+client_id)
+                        expect(page.locator("#detailBody").get_by_text("72%")).to_be_visible()
+                        require(verified_get(context,url,"/api/association-history?id=&page=1",cert)[0]==403,
+                                "operator may not consult protected client history")
+                        view.publish({},client_views=[],client_enabled=False)
+                        page.get_by_role("button",name="상세 다시 조회").click()
+                        expect(page.locator("#detailBody")).to_contain_text("현재 승인된 단말 관측을 조회할 수 없습니다.")
+                        expect(page.locator("#detailBody")).not_to_contain_text("72%")
+                        require(verified_get(context,url,"/api/client?id="+client_id,cert)[0]==404,
+                                "withdrawn client observation exposed")
+                        result["scenarios"]["client_deep_link_role_and_withdrawal"]="pass"
                     finally:
                         context.close()
                 finally:

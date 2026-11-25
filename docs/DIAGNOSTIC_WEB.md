@@ -2,9 +2,9 @@
 
 This is not an approved production release. The Windows service keeps
 read-only diagnostic collection and optional HTTPS read-only display in
-one process. Radio scores are disabled by default; an explicit local field attestation may enable current Radio policy evaluation (see FIELD_VALIDATION.md). No root-cause attribution, client MAC, SSID or user detail is exposed. Browser polling reads published observations
-and does not start CLI commands. No WebSocket or production device-control
-API is enabled.
+one process. An explicit local field attestation enables Radio policy scores.
+Browser reads use published observations. WebSocket notifications tell the
+dashboard when a publication changes. See [Radio validation](FIELD_VALIDATION.md).
 
 The service's protected ProgramData/AWQM/config/web.json is optional.
 Absent or exactly {"version":1,"enabled":false} disables the listener.
@@ -41,8 +41,7 @@ CSRF and role checks. Session role mapping changes require a service restart.
 Central AAA revocation is not instant.
 
 The service displays stored Radio observations, source validity warning,
-current merge coverage and stale/unconfirmed status. Search uses asset
-name, logical WLC, band and channel, not raw internal radio MAC identifiers.
+current merge coverage and stale/unconfirmed status.
 Raw history limited to seven days and 2,000 rows; missing data stays unknown.
 CSV/HTML export is field-unvalidated and contains no internal Radio MAC.
 An existing authorized user may read old observations when collection fails.
@@ -50,6 +49,25 @@ Reports and login/logout/admin status access are recorded in protected
 logs/web-audit.db, not including credentials or tokens. Audit retention and
 comprehensive backup remain pending. Access to audit records is local
 administrative only; the admin endpoint returns counts, not identities.
+
+## Global search and client detail
+
+Use **통합 검색** in any of the five menus and submit with Enter or **검색**.
+Results are grouped into Radios, currently approved client observations, and
+incidents from the past 365 days. Each group has independent pagination.
+Search by AP name, WLC or band across groups. You can also use a Radio channel
+or a displayed Radio, temporary client or incident ID. **현재 목록 필터** filters
+only the active Radio or client table.
+
+Select **상세 보기** to inspect a result in its detail panel. Selecting the
+temporary client ID in the client table opens the same panel. **전체 페이지에서
+열기** opens a separate tab with the observation time, AP, WLC, band, link
+metrics and any currently approved Station Stats or correlation fields.
+The client ID is a process-local pseudonym. A new tab, refresh, or direct link
+checks the active session and revalidates the current publication and metric
+approvals. The dashboard clears client values when the observation expires or
+is withdrawn. Both operator and admin roles can view eligible ephemeral client
+observations. Stored association history remains a separate admin-only query.
 
 Actual network sharing, certificate chain/client trust, Windows firewall,
 service ACL, WLC account/CPU and 72-hour field operation are not verified

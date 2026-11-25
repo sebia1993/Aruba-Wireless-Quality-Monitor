@@ -1,4 +1,6 @@
-# Development status — v0.41.1-dev portable integration
+# Development status (v0.42.1-dev portable integration)
+
+The [v0.41 folder package](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45536314896) and [single executable](https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/actions/runs/45536519893) passed full candidate CI. On Windows 11, 10 synthetic operators completed 50 browser searches and dashboard reads with a render P95 of 0.482 seconds. The v0.42 candidate extends search across authorized diagnostic views, validates the comparison group used for client quality, and checks the SCM recovery policy before enabling startup. The 109,920,000-row trial remains deferred by the owner.
 
 The v0.40 quick and Chromium retries passed (runs 45532402766 and 45532402678). v0.41 isolates controllers under sustained CPU pressure, groups daily aggregates a Radio at a time, and requires operator reviews to be backed up before raw retirement. The service reports ready after startup checks and records runtime/cleanup failures separately from a clean stop. Radio and incident detail pages now support separate tabs; incident timelines distinguish the actual measurement from its evidence revision time. Production release and the 4,000-Radio retained-history trial remain pending. Earlier increment notes below are historical.
 

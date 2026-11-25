@@ -213,8 +213,8 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
                 elif self.path=="/api/publication":
                     self._json(200,view.notification())
                 elif path.path=="/api/radios":
-                    q=self._query(path,{"q","page"})
-                    self._json(200,view.page(q["q"],int(q["page"])))
+                    q=self._query(path,{"q","page"},optional=("size",))
+                    self._json(200,view.page(q["q"],int(q["page"]),int(q.get("size",100))))
                 elif path.path=="/api/radio":
                     q=self._query(path,{"id"})
                     if not re.fullmatch(r"[0-9a-f]{32}",q["id"]):
@@ -246,13 +246,22 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
                     audit.record(s.username,"association_history")
                     self._json(200,view.association_page(q["id"],int(q["page"])))
                 elif path.path=="/api/clients":
-                    q=self._query(path,{"q","page"})
+                    q=self._query(path,{"q","page"},optional=("size",))
                     # Log detailed-client view access without raw client identifiers.
                     audit.record(s.username,"client_view")
-                    self._json(200,view.clients_page(q["q"],int(q["page"])))
+                    self._json(200,view.clients_page(q["q"],int(q["page"]),int(q.get("size",100))))
+                elif path.path=="/api/client":
+                    q=self._query(path,{"id"})
+                    if not re.fullmatch(r"[0-9a-f]{32}",q["id"]):
+                        raise ValueError("invalid client ID")
+                    audit.record(s.username,"client_view")
+                    result=view.clients_page(size=1,token=q["id"])
+                    if result["rows"]:self._json(200,{**result["rows"][0],"refresh_after":result["refresh_after"]})
+                    else:self._json(404,{"error":"client_unavailable"})
                 elif path.path=="/api/incidents":
-                    q=self._query(path,{"page","status","start","end"})
-                    self._json(200,view.incident_list(int(q["page"]),q["status"],int(q["start"]),int(q["end"])))
+                    q=self._query(path,{"page","status","start","end"},optional=("q","size"))
+                    self._json(200,view.incident_list(int(q["page"]),q["status"],int(q["start"]),int(q["end"]),
+                                                     query=q.get("q",""),size=int(q.get("size",50))))
                 elif path.path in ("/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html"):
                     q=self._query(path,{"id"})
                     detail=view.incident_detail(q["id"])

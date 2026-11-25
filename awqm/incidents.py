@@ -196,22 +196,29 @@ class Incidents:
         row=c.execute("""SELECT incident_id FROM rf_incidents WHERE radio_id=? AND context=? AND ended_at IS NULL""",
             (radio_id,context)).fetchone()
         return row[0] if row else None
-    def list(self,page=1,status="all",start=None,end=None,size=50,current=()):
+    def list(self,page=1,status="all",start=None,end=None,size=50,current=(),query=""):
         if type(page) is not int or not 1<=page<=10000 or not 1<=size<=100 or status not in ("all","open","closed"):
             raise ValueError("invalid incident filter")
         end=int(self.clock())+1 if end is None else end
         if start is None:start=max(0,end-365*86400)
         if type(start) is not int or type(end) is not int or not 0<=start<end or end-start>366*86400:
             raise ValueError("invalid incident time range")
+        if not isinstance(query, str) or len(query) > 128:
+            raise ValueError("invalid incident search")
         clause="last_at>=? AND first_at<?"
+        params = [start, end]
+        if query:
+            fields = ("ap_name", "controller", "band", "incident_id")
+            clause += " AND (" + " OR ".join(f"instr(lower({field}),lower(?))>0" for field in fields) + ")"
+            params.extend([query] * len(fields))
         if status=="open":clause+=" AND ended_at IS NULL"
         if status=="closed":clause+=" AND ended_at IS NOT NULL"
         # No internal MAC or context values leave this method.
         with self.transaction() as c:
-            total=c.execute("SELECT COUNT(*) FROM rf_incidents WHERE "+clause,(start,end)).fetchone()[0]
+            total=c.execute("SELECT COUNT(*) FROM rf_incidents WHERE "+clause,params).fetchone()[0]
             rows=c.execute("""SELECT incident_id,ap_name,controller,band,first_at,last_at,persistent_at,ended_at,state,evidence_rev,evidence
                 FROM rf_incidents WHERE """+clause+" ORDER BY last_at DESC,incident_id LIMIT ? OFFSET ?",
-                (start,end,size,(page-1)*size)).fetchall()
+                (*params,size,(page-1)*size)).fetchall()
             result=[]
             for row in rows:
                 item=dict(zip(("incident_id","ap_name","controller","band","first_at","last_at","persistent_at","ended_at","state","revision","evidence"),row))

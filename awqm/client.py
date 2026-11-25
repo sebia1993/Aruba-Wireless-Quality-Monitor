@@ -134,7 +134,7 @@ class Airtime:
 
 def estimate_payload(groups,duration,validated=False):
     """Byte distribution by rate, not last PHY rate. No overhead included."""
-    if not validated or number(duration,0.001,3600) is None or not groups:return None
+    if validated is not True or number(duration,0.001,3600) is None or not groups:return None
     seconds=0
     for size,rate in groups:
         if isinstance(size,bool) or not isinstance(size,int) or size<0 or number(rate,0.001,100000) is None:return None
@@ -181,16 +181,17 @@ def analyze(previous,current,radio,persistent,baseline=(),airtime=None):
         abs(radio.observed_at-current.at)>30):
         result["evidence"].append("radio_alignment_unavailable")
         return result
-    if (airtime and airtime.validated and airtime.method in ("measured","estimated") and
+    if (airtime and airtime.validated is True and airtime.method in ("measured","estimated") and
         airtime.epoch==current.epoch and overlap(w["start"],w["end"],airtime.start,airtime.end)>=.8 and
         number(airtime.value,0,100) is not None and airtime.scope in ("tx","rx","whole_interval")):
         result.update(airtime=airtime.value,airtime_method=airtime.method,airtime_scope=airtime.scope)
     seen=set();degraded=0
     for old,p,c in baseline:
-        if c.client_mac==current.client_mac or c.client_mac in seen or c.radio_id!=current.radio_id:continue
+        if c.client_mac==current.client_mac or c.client_mac in seen:continue
+        if (c.radio_id,c.ssid,c.epoch)!=(current.radio_id,current.ssid,current.epoch):continue
         pw=interval(p,c);bw=interval(old,p)
         if not pw or not bw or not pw["active"] or not bw["active"]:continue
-        if overlap(w["start"],w["end"],pw["start"],pw["end"])<.8:continue
+        if abs(c.at-current.at)>30 or overlap(w["start"],w["end"],pw["start"],pw["end"])<.8:continue
         if number(p.health,0,100) is None or number(c.health,0,100) is None:continue
         seen.add(c.client_mac)
         if p.health-c.health>=20 or (pw["retry"] is not None and bw["retry"] is not None and pw["retry"]-bw["retry"]>=15):

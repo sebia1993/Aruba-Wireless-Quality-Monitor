@@ -18,6 +18,17 @@ from .client_correlation import ClientCorrelation
 CHECKS=frozenset(("client_table_layout","active_association_mapping","bss_radio_mapping",
     "client_health_percent","ack_snr_db","last_phy_rate_mbps","privacy_approval","read_only_permission"))
 
+def unambiguous_radios(radios):
+    """A BSS observation identifies an AP name, band and channel, not a physical radio ID."""
+    owners={}
+    channels=Counter()
+    for radio in radios:
+        ap=(radio.controller,radio.ap_name)
+        owners.setdefault(ap,set()).add(radio.ap_id)
+        channels[(*ap,radio.band,radio.channel)]+=1
+    return {r.radio_id:r for r in radios if len(owners[r.controller,r.ap_name])==1
+            and channels[r.controller,r.ap_name,r.band,r.channel]==1}
+
 @dataclass(frozen=True)
 class ClientApproval:
     radio_tag:str
@@ -111,8 +122,8 @@ class LiveClients:
         a=self.approvals.get(controller)
         if not a or not snapshot.field_tag or now>=(snapshot.field_until or 0) or not a.permits(snapshot.field_tag,reading.observed_at,now):return invalid()
         relevant=[r for r in radios if r.controller==controller and r.ap_name==reading.target]
-        if not relevant or len({r.ap_id for r in relevant})!=1:return invalid()
-        current={r.radio_id:r for r in relevant}
+        current=unambiguous_radios(relevant)
+        if not current:return invalid()
         local={}
         for d in assoc.data:
             if d["active"]:local.setdefault(d["client_mac"],[]).append(d)
@@ -138,21 +149,23 @@ class LiveClients:
         # No raw MAC, BSSID or SSID is retained by the client ledger.
         # A new detail observation replaces this AP's previous view. Missing
         # entries are not interpreted as disconnection or proof of recovery.
-        previous={k:v for k,v in self.rows.items() if v["controller"]==controller and v["ap_name"]==reading.target}
-        self.rows={k:v for k,v in self.rows.items() if k not in previous}
+        previous={k for k,v in self.rows.items() if v["controller"]==controller and v["ap_name"]==reading.target}
         for ident,row in new:
-            old=previous.pop(ident,None)
-            if old and (old["context"],old["association"],old["radio_id"],old["radio_epoch"])!=(row["context"],row["association"],row["radio_id"],row["radio_epoch"]):
+            previous.discard(ident)
+            old=self.rows.get(ident)
+            if not old or (old["context"],old["association"],old["radio_id"],old["radio_epoch"])!=(row["context"],row["association"],row["radio_id"],row["radio_epoch"]):
                 self._forget_station(ident)
             self.rows[ident]=row
-        for ident in previous:self._forget_station(ident)
+        for ident in previous:
+            self.rows.pop(ident)
+            self._forget_station(ident)
         if len(self.rows)>self.max_rows:
             keep=sorted(self.rows,key=lambda k:self.rows[k]["observed_at"],reverse=True)[:self.max_rows]
             self.rows={k:self.rows[k] for k in keep}
         return len(new)
     def publish(self,radios,snapshots,quality,clients,now):
         by={s.controller:s for s in snapshots}
-        rs={r.radio_id:r for r in radios}
+        rs=unambiguous_radios(radios)
         claims={self.token("client",m):v for m,v in clients.items()}
         views=[];comparison={}
         self.rows={k:r for k,r in self.rows.items() if 0<=now-r["observed_at"]<=180 and now<r["valid_until"]}
@@ -165,7 +178,7 @@ class LiveClients:
                 "last_phy_rate","quality_score","quality_status","airtime","retry","candidate","scope","valid_until")}
             station=self.station.get(ident);approval=self.station_approvals.get(row["controller"])
             item.update(station_retry=None,station_start=None,station_end=None,station_tx_activity="unknown",station_until=None)
-            if station and approval and 0<=now-station["at"]<=90 and now<station["until"] and station["context"]==row["context"] and station["association"]==row["association"] and station["radio_epoch"]==row["radio_epoch"]:
+            if station and approval and 0<=now-station["at"]<=90 and now<station["until"] and station["context"]==row["context"] and station["association"]==row["association"] and station["radio_epoch"]==row["radio_epoch"] and station["radio_id"]==r.radio_id:
                 item.update(station_retry=station["ratio"],station_start=station["start"],station_end=station["at"],
                             station_tx_activity=station["activity"],station_until=station["until"])
                 ca=self.correlation.approvals.get(row["controller"])
@@ -180,6 +193,7 @@ class LiveClients:
         # Remove stale/context-invalid station observations. No raw identifiers or
         # station counters are ever written to disk by this component.
         visible={v["id"] for v in views}
+        self.rows={k:v for k,v in self.rows.items() if k in visible}
         self.station={k:v for k,v in self.station.items() if k in visible and 0<=now-v["at"]<=180 and now<v["until"]}
         self.station_plan={k:v for k,v in self.station_plan.items() if 0<=now-v<=180}
         candidates=self.correlation.evaluate(comparison,now)
@@ -239,9 +253,10 @@ class LiveClients:
         if not row or not claim or row["controller"]!=controller or row["context"]!=snapshot.field_connection:return 0
         local=[x for x in assoc.data if x["active"] and x["client_mac"]==reading.target]
         if len(local)!=1 or any(local[0][k]!=claim[k] for k in ("ap_name","bssid","ssid")):return 0
-        r=next((x for x in radios if x.radio_id==row["radio_id"] and x.controller==controller),None)
+        relevant=[x for x in radios if x.controller==controller and x.ap_name==claim["ap_name"]]
+        r=unambiguous_radios(relevant).get(row["radio_id"])
         if not r or r.epoch!=row["radio_epoch"] or not self.eligible(r,snapshot,quality.get(r.radio_id),now):return 0
-        if match_bss(claim["bssid"],claim["ssid"],bss.data,[r])!=r.radio_id:return 0
+        if match_bss(claim["bssid"],claim["ssid"],bss.data,relevant)!=r.radio_id:return 0
         before,after=reading.data["before"],reading.data["after"]
         association=self.token("association",json.dumps([claim["bssid"],claim["ssid"]]))
         if ((after.ap,after.bssid,after.ssid)!=(claim["ap_name"],claim["bssid"],claim["ssid"]) or
@@ -254,7 +269,7 @@ class LiveClients:
             self._forget_station(ident);return 0
         old=self.station.get(ident);ratio=None;start=None;activity="unknown";sequence=secrets.token_hex(16)
         if old and reading.observed_at<=old["at"]:return 0
-        if old and old["context"]==row["context"] and old["stamp"]==stamp_token and old["association"]==association and old["radio_epoch"]==row["radio_epoch"]:
+        if old and old["radio_id"]==r.radio_id and old["context"]==row["context"] and old["stamp"]==stamp_token and old["association"]==association and old["radio_epoch"]==row["radio_epoch"]:
             dt=reading.observed_at-old["at"]
             if 30<=dt<=180 and after.age>=old["age"] and abs(after.age-old["age"]-dt)<=3:
                 sent=current["sent"]-old["counters"]["sent"]
@@ -265,7 +280,7 @@ class LiveClients:
                     activity="successful_tx_observed" if sent>0 else "no_successful_tx_increase"
                     ratio=successful_retry(old["counters"],current,stamp_token,stamp_token)
         if old and sequence!=old["sequence"]:self.correlation.forget(ident)
-        self.station[ident]={"sequence":sequence,"radio_epoch":row["radio_epoch"],"at":reading.observed_at,"start":start,"ratio":ratio,"activity":activity,
+        self.station[ident]={"sequence":sequence,"radio_id":r.radio_id,"radio_epoch":row["radio_epoch"],"at":reading.observed_at,"start":start,"ratio":ratio,"activity":activity,
             "until":min(row["valid_until"],approval.valid_until,snapshot.field_until),"context":row["context"],
             "association":association,"stamp":stamp_token,"age":after.age,"counters":{"sent":current["sent"],"retried":current["retried"]}}
         return 1
