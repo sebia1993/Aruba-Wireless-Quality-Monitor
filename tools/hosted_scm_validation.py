@@ -108,8 +108,8 @@ def provision_fixture(root, principal, sid, password):
     username = principal.split("\\")[-1]
     # LoadUserProfile requires the runner's backup/restore privileges to be
     # present. It handles enabling them. PyHANDLE uses explicit Close().
-    token = security.LogonUser(username, ".", win32con.LOGON32_LOGON_SERVICE,
-                               win32con.LOGON32_PROVIDER_DEFAULT, password)
+    token = security.LogonUser(username, ".", password, win32con.LOGON32_LOGON_SERVICE,
+                               win32con.LOGON32_PROVIDER_DEFAULT)
     try:
         profile = win32profile.LoadUserProfile(token, {"UserName": username, "Flags": 1})
         try:
@@ -193,7 +193,26 @@ def run(args, report):
         report["phase"] = "offline upgrade"
         bundle = ["--id", "fixture-upgrade"]
         archive = ["--archive", str(args.archive), "--sha256", args.sha256]
-        manager_run("prepare-update", *bundle, *archive, outside=True)
+        try:
+            manager_run("prepare-update", *bundle, *archive, outside=True)
+        except subprocess.CalledProcessError:
+            # Collect a traceback on a second synthetic snapshot; the frozen
+            # manager's result remains the acceptance result for this trial.
+            from types import SimpleNamespace
+            import traceback
+            from awqm.windows_update import manage_update
+            probe = SimpleNamespace(action="prepare-update", id="diagnostic-snapshot",
+                                    archive=args.archive, sha256=args.sha256,
+                                    include_association_history=False)
+            try:
+                manage_update(load_config(root), probe)
+            except Exception as exc:
+                report["snapshot_diagnostic"] = {
+                    "exception": type(exc).__name__, "winerror": getattr(exc, "winerror", None),
+                    "api": getattr(exc, "funcname", None),
+                    "stack": [Path(f.filename).name + "/" + f.name + "/" + str(f.lineno)
+                              for f in traceback.extract_tb(exc.__traceback__)]}
+            raise
         manager_run("verify-update", *bundle, outside=True)
         manager_run("switch-program", *bundle, *archive, outside=True)
         require((installed / "VERSION.txt").read_text(encoding="utf-8").strip() == receipt["version"],
@@ -250,6 +269,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     report = {"result": "incomplete", "phase": "preflight", "verified": [],
+              "build_sha": os.environ.get("AWQM_BUILD_SHA"), "build_run": os.environ.get("AWQM_BUILD_RUN"),
+              "harness_sha": os.environ.get("GITHUB_SHA"),
               "host_reboot": False, "field_equipment": False, "scope": "disposable Windows Server SCM"}
     try:
         run(args, report)

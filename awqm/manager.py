@@ -226,4 +226,7 @@ def main():
         elif a.action=="install":install(load_config(default_root()),a.auto_start)
         else:control(a.action)
     except ServiceRegistrationError as exc:p.exit(2,str(exc)+"\n")
-    except Exception as exc:p.exit(2,"AWQM manager operation failed: "+type(exc).__name__+"\n")
+    except Exception as exc:
+        code = getattr(exc, "winerror", None)
+        detail = f"Windows error {code}" if type(code) is int else type(exc).__name__
+        p.exit(2, f"AWQM manager operation failed: {detail}\n")

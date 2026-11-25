@@ -3,9 +3,27 @@ import sys,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from awqm.windows_security import account_sid
 from awqm.windows_update import scm_stopped
 
 class SCMGuardTests(unittest.TestCase):
+    def test_scm_local_account_resolves_to_machine_sid(self):
+        local = "S-1-5-21-1-2-3-1001"
+        domain = "S-1-5-21-4-5-6-1001"
+        accounts = {r"HOST\service": local, r"DOMAIN\service": domain}
+
+        def lookup(system, name):
+            self.assertIsNone(system)
+            self.assertIn(name, accounts)
+            return accounts[name], name.split("\\")[0], 1
+
+        api = SimpleNamespace(GetComputerName=lambda: "HOST")
+        security = SimpleNamespace(LookupAccountName=lookup, ConvertSidToStringSid=str)
+        with patch.dict(sys.modules, {"win32api": api, "win32security": security}):
+            self.assertEqual(account_sid(r".\service"), local)
+            self.assertEqual(account_sid(r"HOST\service"), local)
+            self.assertEqual(account_sid(r"DOMAIN\service"), domain)
+
     def test_stopped_disabled_identity_and_path(self):
         with tempfile.TemporaryDirectory() as root:
             installed=Path(root)/"AWQM"

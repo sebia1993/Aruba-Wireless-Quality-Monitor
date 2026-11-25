@@ -5,6 +5,11 @@ must provision a dedicated non-admin account and protected directories.
 """
 def account_sid(name):
     import win32security
+    if name.startswith(".\\"):
+        # SCM can return a local service identity as .\user. LookupAccountName
+        # requires the local computer name in place of the dot.
+        import win32api
+        name = win32api.GetComputerName() + name[1:]
     sid,_,kind=win32security.LookupAccountName(None,name)
     # SID type User = 1; reject group and built-in service accounts.
     value=win32security.ConvertSidToStringSid(sid)
