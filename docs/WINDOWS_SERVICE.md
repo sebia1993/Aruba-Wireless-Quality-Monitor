@@ -8,7 +8,7 @@ the corresponding quality metrics and detail collection. See
 
 ## Portable distribution restriction
 
-The single-executable portable preview is **not** a qualified Windows service host. Do not elevate it or register it with SCM. Its manager/service switches support import smoke tests only. Onefile extraction and the bootloader process model require separate security and lifecycle qualification. The existing protected onedir development path remains available from source:
+Run the portable executable as an ordinary user. Its service and manager entry points support import smoke tests only. For Windows service trials, use the complete folder ZIP in an administrator-protected directory. Developers can also build the folder executables from source.
 
 ```powershell
 python -m pip install -r requirements-build.txt

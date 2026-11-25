@@ -29,7 +29,7 @@ def portable_runtime():
     return unpacked not in (exe_dir,(exe_dir/"_internal").resolve())
 
 def interactive_mode():
-    print("AWQM "+__version__+" - portable development preview")
+    print("AWQM "+__version__+" - Windows portable")
     print("1. Synthetic dashboard (no SSH)")
     print("2. Fixture collection engine (no SSH)")
     print("0. Exit")

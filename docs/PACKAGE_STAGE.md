@@ -1,11 +1,11 @@
 # Offline update preparation
 
-The single-EXE portable ZIP is not a service-installation candidate. Its GitHub release provides a SHA-256 checksum separately. The existing staging and rollback verifier deliberately accepts only the legacy complete onedir service package, not the portable ZIP. This prevents treating a portable preview as a qualified service update.
+Use the complete folder ZIP for service staging and rollback. The portable ZIP contains only the standalone executable.
 
-Obtain the ZIP and its expected SHA-256 through an independently trusted release channel. SHA-256 alone does not authenticate the publisher; the development artifact is not a qualified release.
+Obtain the folder ZIP and confirm its expected SHA-256 through an independently trusted channel. Service operation also requires the Windows 11 and site qualification recorded in the release notes.
 
 ```powershell
-.\AWQM.exe --stage-package .\AWQM_0.42.0-dev_Win11_x64.zip --sha256 $trustedZipSha256 --output C:\AWQM-Updates\v042-staged
+.\AWQM.exe --stage-package .\AWQM_0.44.0_Win11_x64.zip --sha256 $trustedZipSha256 --output C:\AWQM-Updates\v044-staged
 ```
 Set `$trustedZipSha256` to the independently verified 64-character digest of the folder-package ZIP. Use a new destination under an existing protected local parent. The command verifies the copied archive, checks member paths and sizes, and verifies the executable, runtime and documentation layout. Read `STAGE-RECEIPT.json` in the destination and compare its `version` and `sha256` to the expected package. Successful staging returns `status` equal to `verified_staged_not_installed`. The portable single-executable ZIP has a different layout.
 

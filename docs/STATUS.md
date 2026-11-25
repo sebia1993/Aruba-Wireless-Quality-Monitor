@@ -1,4 +1,4 @@
-# Development status (v0.44.1-dev portable candidate)
+# Development and qualification status (v0.44.0)
 
 The v0.43.0-dev frozen Windows 11 soak missed one coverage check at 240.134 seconds. The standard Radio poll runs every 60 seconds and the association poll every 120 seconds. v0.44 counts fresh association inventories independently while retaining the time-alignment requirement for RF attribution. A separate measured daily rebuild of 5,760,000 observations occupied the foreground store lock for over 130 seconds. The new coordinator runs maintenance in the background and validates the day revision before publishing aggregates. A new candidate requires its own uninterrupted 72-hour qualification.
 
