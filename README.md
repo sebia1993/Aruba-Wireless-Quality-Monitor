@@ -2,12 +2,12 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.40.1-dev — 브라우저 로그인·로그아웃 호환성 수정 및 단일 EXE 통합 검증. 운영 배포 금지.**
-실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
+**v0.41.1-dev 휴대형 개발 검증판** · AP·장애 이력 전체 페이지, 관측·이벤트 시각 구분, 일별 DB 집계와 Windows 서비스 수명주기 개선을 포함합니다.
+개발 검증은 합성 관측과 루프백 HTTPS를 사용합니다. 운영 적합성 확인에는 전용 Windows 11 서비스 계정·재부팅 시험, 현장 WLC·AAA·Airtime 검증 및 72시간 시험 결과가 필요합니다.
 
 ## Windows 11 x64 단일 EXE 개발 검증판
 
-휴대형 ZIP은 한 번 압축 해제하면 `AWQM.exe` 하나만 나오는 구조를 목표로 합니다. 더블클릭 후 모의 화면(1), 합성 수집 엔진(2) 또는 종료(0)를 선택합니다. `AWQM.exe --version`으로 내장 버전을 확인합니다. 통합 v0.40.1-dev는 검증 대상으로, 기존 공개 v0.25.1-dev와 구분합니다.
+휴대형 ZIP은 한 번 압축 해제하면 `AWQM.exe` 하나만 나오는 구조를 목표로 합니다. 더블클릭 후 모의 화면(1), 합성 수집 엔진(2) 또는 종료(0)를 선택합니다. `AWQM.exe --version`으로 내장 버전을 확인합니다. 통합 v0.41.1-dev는 검증 대상으로, 기존 공개 v0.25.1-dev와 구분합니다.
 
 **관리자 권한으로 실행하거나 Windows 서비스로 등록하지 마십시오.** 실제 서비스에는 기존 보호된 onedir 개발 패키지와 현장 승인, 별도 자격 검증이 필요합니다. 휴대형 ZIP을 서비스 업데이트 후보로 사용하지 않습니다.
 
@@ -41,7 +41,7 @@ Windows EXE에서도 동일하게 `AWQM.exe --validate-cli radio local-output.tx
 
 ## Windows 진단 서비스 (현장 검증 후보 기능)
 
-보호된 onedir 서비스용 빌드 ZIP에만 AWQM_Service.exe 및 AWQM_Manager.exe를 추가합니다. 실제 사용은 사내 승인, 비관리자 전용 서비스 계정과 보호된 NTFS 폴더, 검증된 WLC Host Key 및 DPAPI 자격 증명 준비 이후에만 가능합니다. 운영용 RF 분석이나 실데이터 웹 공유는 아직 활성화하지 않습니다. [서비스 구성 및 검증 절차](docs/WINDOWS_SERVICE.md).
+보호된 onedir 서비스용 폴더 ZIP에만 `AWQM_Service.exe`와 `AWQM_Manager.exe`가 들어 있습니다. 사내 승인, 비관리자 전용 서비스 계정, 보호된 NTFS 폴더, 검증된 WLC Host Key 및 DPAPI 자격 증명을 준비한 뒤 설치합니다. 관리자는 등록 전에 설치 폴더와 런타임 파일의 쓰기 권한을 확인합니다. [서비스 구성 및 검증 절차](docs/WINDOWS_SERVICE.md).
 
 ## 진단 서비스의 HTTPS 웹 조회 (선택)
 

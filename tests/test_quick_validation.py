@@ -25,4 +25,4 @@ class QuickValidationTests(unittest.TestCase):
     def test_invalid_range_falls_back(self):
         self.assertIsNone(changed_paths("0"*40,"not-a-sha","refs/heads/develop/awqm-foundation"))
         with patch("tools.quick_validation.git",side_effect=OSError()):
-            self.assertIsNone(changed_paths("a"*40,"b"*40","refs/heads/develop/awqm-foundation"))
+            self.assertIsNone(changed_paths("a"*40,"b"*40,"refs/heads/develop/awqm-foundation"))

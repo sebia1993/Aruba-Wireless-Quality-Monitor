@@ -147,7 +147,8 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
                 "<p>"+html.escape(message)+"</p><form action='/auth/login' method='post'>"
                 "<label>Aruba ID<input name='username' required maxlength='128' autocomplete='username'></label>"
                 "<label>비밀번호<input name='password' type='password' required maxlength='1024' autocomplete='current-password'></label>"
-                "<button type='submit'>로그인</button></form></main></body></html>")
+                "<button type='submit'>로그인</button></form></main>"
+                "<script src='/login-detail.js' defer></script></body></html>")
             self._send(status,page.encode("utf-8"),"text/html; charset=utf-8")
         def _redirect(self,cookie):
             self._send(303,headers=(("Location","/"),("Set-Cookie",cookie)))
@@ -191,9 +192,11 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
                 self._send(400);return
             path=urlsplit(self.path)
             if path.path=="/ws/updates":self._notifications();return
-            # Only non-sensitive stylesheet may be loaded without a session.
+            # Public login assets contain no telemetry or session data.
             if path.path=="/diagnostic.css" and not path.query:
                 self._send(200,(STATIC/"diagnostic.css").read_bytes(),"text/css; charset=utf-8");return
+            if self.path=="/login-detail.js":
+                self._send(200,(STATIC/"login-detail.js").read_bytes(),"text/javascript; charset=utf-8");return
             try:
                 s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html","/api/neighbors","/api/association-history","/api/admin/collection"))
             except AuthDenied:
@@ -207,9 +210,18 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
                     self._send(200,page.encode("utf-8"),"text/html; charset=utf-8")
                 elif self.path=="/diagnostic.js":
                     self._send(200,(STATIC/"diagnostic.js").read_bytes(),"text/javascript; charset=utf-8")
+                elif self.path=="/api/publication":
+                    self._json(200,view.notification())
                 elif path.path=="/api/radios":
                     q=self._query(path,{"q","page"})
                     self._json(200,view.page(q["q"],int(q["page"])))
+                elif path.path=="/api/radio":
+                    q=self._query(path,{"id"})
+                    if not re.fullmatch(r"[0-9a-f]{32}",q["id"]):
+                        raise ValueError("invalid Radio")
+                    rows=view.page(size=1,token=q["id"])["rows"]
+                    if rows:self._json(200,rows[0])
+                    else:self._json(404,{"error":"unknown_radio"})
                 elif path.path in ("/api/history","/api/history.csv","/api/history.html"):
                     q=self._query(path,{"id","start","end"},optional=("resolution",))
                     report=view.history(q["id"],int(q["start"]),int(q["end"]),q.get("resolution","raw"))

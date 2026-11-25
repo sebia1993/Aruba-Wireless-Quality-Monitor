@@ -13,17 +13,32 @@ def service_class():
         _svc_display_name_=DISPLAY_NAME
         _svc_description_="Read-only, field-unvalidated Aruba diagnostic collection"
         def __init__(self,args):
-            super().__init__(args)
             self.stop_event=threading.Event()
+            self.status_lock=threading.Lock()
+            super().__init__(args)
         def SvcStop(self):
-            self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING,waitHint=120000)
-            self.stop_event.set()
+            with self.status_lock:
+                self.stop_event.set()
+                self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING,waitHint=120000)
         def SvcShutdown(self):self.SvcStop()
+        def SvcInterrogate(self):
+            # SCM already has the last transition. The framework default sends RUNNING.
+            return 0
+        def SvcRun(self):
+            # pywin32's default SvcRun publishes RUNNING before SvcDoRun.
+            self.ReportServiceStatus(win32service.SERVICE_START_PENDING,waitHint=120000)
+            self.SvcDoRun()
+            # The native host reports the final STOPPED status and error code.
+            self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+        def report_ready(self):
+            with self.status_lock:
+                if not self.stop_event.is_set():
+                    self.ReportServiceStatus(win32service.SERVICE_RUNNING)
         def SvcDoRun(self):
             # No device details, credential strings or untrusted exception text
             # are sent to the Windows Event Log.
             try:
-                run_service(default_root(),self.stop_event)
+                run_service(default_root(),self.stop_event,self.report_ready)
             except Exception as exc:
                 servicemanager.LogErrorMsg("AWQM diagnostic service stopped: "+type(exc).__name__)
                 raise RuntimeError("AWQM diagnostic service failed") from None

@@ -1,4 +1,8 @@
-# AWQM development progress (v0.40.1-dev portable integration)
+# AWQM development progress (v0.41.1-dev portable integration)
+
+The previous 78.9% estimate below is historical. The v0.40 CSV blocker closed in Chromium run 45532402678. The v0.41 candidate adds separate Radio and incident pages, correct measurement and event timestamps, controller CPU recovery guards, bounded per-Radio aggregation, backup review checks and Windows service readiness/shutdown handling. The full retained-history trial was deferred by the owner pending local storage. Real Windows 11 service lifecycle, field attestation and the 72-hour run still require their own evidence.
+
+The portable full qualification runs the single EXE checks and measures ten concurrent Chromium sessions against the synthetic inventory. The portable menu and service/manager restrictions remain in effect.
 
 Planning is approved and complete. This is a provisional engineering estimate,
 not a measured test-pass percentage or field readiness claim. Each of the ten
@@ -46,6 +50,10 @@ v0.39 fixes stale detail/search after menu navigation, isolates in-flight callba
 v0.37.1 portable build and exact dependency audit passed (45530631175). v0.39.1 portable integration incorporates v0.39, including lifecycle and browser UI gates. Progress remains provisional 78.9%; no new production release or field qualification.
 
 
+v0.40.0-dev: both v0.39 browser jobs failed at native login; fix HTML referrer policy while preserving strict Origin and CSRF; add observed POST status/Origin and negative HTTP regression. Repeat CI pending; estimate 78.9% unchanged.
+
 v0.40.1-dev: include the complete v0.40.0-dev native browser form fix and strict Origin regression, preserving single EXE restrictions. Both v0.39 browser jobs failed at login. Repeat CI pending; 78.9% unchanged.
 
 CI lane separation: change-aware source checks and independent browser checks for ordinary development; full frozen qualification only on explicit candidate requests. No gate removed, no progress credit before verification. CSV download browser regression remains open.
+
+Quick CI test syntax corrected. Browser fixture now separates verified HTTPS export from native Chromium attachment download, with ephemeral key-scoped trust and exact byte checks. Repeat independent CI pending; no new feature-completion credit.

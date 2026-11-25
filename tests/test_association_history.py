@@ -21,18 +21,100 @@ def table():
     return "\n".join(["Users","-----",line(fields),line(["-"*n for n in sizes]),line(["192.0.2.99",MAC,"fictional-user","fictional-role","00:00:45","802.1X","","AP1","Associated",SSID+"/"+BSS+"/a-HT","default","tunnel",""]),"User Entries: 1/1","Curr/Cum Alloc:1/1 Free:0/0 Dyn:1 AllocErr:0 FreeErr:0"])
 def approvals():
     return {w:HistoryApproval("tag-"+w,900,4000000) for w in ("w1","w2")}
-def frame(t,bssid=BSS,conflict=False):
-    r=Radio("site:02:ab:00:00:00:01:0","site:02:ab:00:00:00:01","AP1","w1","5GHz",44,t,70,10,-95,source="aos8-cli-unvalidated")
+def frame(t,bssid=BSS,conflict=False,anchor="w1"):
+    peer = "w2" if anchor == "w1" else "w1"
+    r=Radio("site:02:ab:00:00:00:01:0","site:02:ab:00:00:00:01","AP1",anchor,"5GHz",44,t,70,10,-95,source="aos8-cli-unvalidated")
     row={"client_mac":MAC,"ap_name":"AP1","bssid":bssid,"ssid":SSID,"active":True}
-    snaps=[ControllerSnapshot(w,t,[],[{"name":"AP1","ip":"192.0.2.1","roles":["A"]}] if w=="w1" else [],[],[row] if w=="w1" else [],
-            inventory_at=t,anchor_at=t,association_at=t,field_tag="tag-"+w,field_until=4000000,field_connection="session-"+w) for w in ("w1","w2")]
+    snaps=[ControllerSnapshot(w,t,[],[{"name":"AP1","ip":"192.0.2.1","roles":["A"]}] if w==anchor else [],[],[row] if w==anchor else [],
+            inventory_at=t,anchor_at=t,association_at=t,field_tag="tag-"+w,field_until=4000000,field_connection="session-"+w) for w in (anchor,peer)]
     b=Reading("show ap bss-table","success",t,[{"bssid":bssid,"ssid":SSID,"ap_name":"AP1","ip":"192.0.2.1","band":"5GHz","channel":44,"service":True,"forward_mode":"T"}],generation=1)
     user=dict(row,forward_mode="tunnel")
     reading=lambda cmd:Reading(cmd,"success",t,[user],generation=1)
-    frames={"w1":(snaps[0],b,{COMMANDS[1]:reading(COMMANDS[1]),**({COMMANDS[0]:reading(COMMANDS[0])} if conflict else {})}),"w2":(snaps[1],None,{COMMANDS[0]:reading(COMMANDS[0])})}
+    frames={anchor:(snaps[0],b,{COMMANDS[1]:reading(COMMANDS[1]),**({COMMANDS[0]:reading(COMMANDS[0])} if conflict else {})}),peer:(snaps[1],None,{COMMANDS[0]:reading(COMMANDS[0])})}
     return [r],snaps,frames,{MAC:row}
 
 class AssociationTests(unittest.TestCase):
+    def test_revoked_or_expired_aac_is_excluded_before_count_and_pagination(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = Store(root, mode="diagnostic")
+            history = AssociationHistory(store, "lab", KEY, approvals())
+            history.ingest(*frame(1000), 1000)
+            for i in range(55):
+                at = 1060 + i * 5
+                history.ingest(*frame(at, BSS2 if i % 2 else BSS, anchor="w2"), at)
+            ident = history.token("device", MAC)
+            self.assertEqual(history.page(1400, ident)["total"], 56)
+            for permission in (None, replace(approvals()["w2"], valid_until=1400)):
+                allowed = {"w1": approvals()["w1"]}
+                if permission:
+                    allowed["w2"] = permission
+                view = AssociationHistory(store, "lab", KEY, allowed)
+                for query in ("", ident):
+                    result = view.page(1400, query)
+                    self.assertEqual(result["total"], 1)
+                    self.assertEqual([r["first_at"] for r in result["rows"]], [1000])
+                    row = result["rows"][0]
+                    self.assertEqual((row["aac"], row["auac"], row["suac"]), ("w1", None, "w1"))
+                    self.assertEqual(row["uac_status"], "positive_table_observation")
+                    self.assertNotIn("w2", json.dumps(result))
+                    self.assertFalse(view.page(1400, query, 2)["rows"])
+
+    def test_revoked_standby_and_only_positive_source_are_masked(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = Store(root, mode="diagnostic")
+            history = AssociationHistory(store, "lab", KEY, approvals())
+            for at, keep_active in ((1000, True), (1060, False)):
+                radios, snaps, frames, claims = frame(at)
+                for ctrl, command in (("w1", COMMANDS[0]), ("w2", COMMANDS[1])):
+                    snapshot, bss, readings = frames[ctrl]
+                    source = next(iter(readings.values()))
+                    frames[ctrl] = (snapshot, bss, {command: source} if keep_active or ctrl == "w2" else {})
+                history.ingest(radios, snaps, frames, claims, at)
+            current = AssociationHistory(store, "lab", KEY, {"w1": approvals()["w1"]})
+            only_revoked, partial = current.page(1080)["rows"]
+            self.assertEqual((partial["auac"], partial["suac"], partial["uac_status"]),
+                             ("w1", None, "positive_table_observation"))
+            self.assertEqual((only_revoked["auac"], only_revoked["suac"], only_revoked["uac_status"]),
+                             (None, None, "unknown"))
+
+    def test_renewed_grant_begins_with_next_positive_observation(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = Store(root, mode="diagnostic")
+            history = AssociationHistory(store, "lab", KEY, approvals())
+            history.ingest(*frame(1000), 1000)
+            history.ingest(*frame(1060), 1060)
+            renewed = approvals()
+            renewed["w1"] = replace(renewed["w1"], approved_at=1050)
+            current = AssociationHistory(store, "lab", KEY, renewed)
+            self.assertEqual(current.page(1070)["total"], 0)
+            self.assertEqual(current.ingest(*frame(1080), 1080), 1)
+            self.assertEqual([(r["first_at"], r["event"]) for r in current.page(1090)["rows"]],
+                             [(1080, "first_observation")])
+
+    def test_renewed_peer_grant_does_not_reveal_older_uac_evidence(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = Store(root, mode="diagnostic")
+            history = AssociationHistory(store, "lab", KEY, approvals())
+            history.ingest(*frame(1000), 1000)
+            renewed = approvals()
+            renewed["w2"] = replace(renewed["w2"], approved_at=1050)
+            current = AssociationHistory(store, "lab", KEY, renewed)
+            current.ingest(*frame(1060), 1060)
+            new, old = current.page(1070)["rows"]
+            self.assertEqual((old["first_at"], old["auac"], old["suac"]), (1000, None, "w1"))
+            self.assertEqual((new["first_at"], new["auac"], new["suac"]), (1060, "w2", "w1"))
+
+    def test_physical_radio_only_move_is_an_observed_attachment_change(self):
+        with tempfile.TemporaryDirectory() as root:
+            history = AssociationHistory(Store(root, mode="diagnostic"), "lab", KEY, approvals())
+            history.ingest(*frame(1000), 1000)
+            radios, snaps, frames, claims = frame(1060)
+            moved = replace(radios[0], radio_id=radios[0].ap_id + ":1")
+            self.assertEqual(history.ingest([moved], snaps, frames, claims, 1060), 1)
+            new, old = history.page(1060)["rows"]
+            self.assertEqual(new["event"], "attachment_changed")
+            self.assertEqual((old["last_at"], new["first_at"]), (1000, 1060))
+
     def test_user_table_minimization(self):
         rows=user_table(table())
         self.assertEqual(rows,[{"client_mac":MAC,"ap_name":"AP1","ssid":SSID,"bssid":BSS,"forward_mode":"tunnel"}])

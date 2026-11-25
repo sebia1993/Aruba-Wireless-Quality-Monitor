@@ -1,12 +1,13 @@
 """Bounded maintenance and verified non-destructive restore.
 
-The scope is Radio/core SQLite data only. Job/client history and privacy/evidence
-lifecycle are not complete; no automatic deletion or overwrite is permitted.
+The scope is Radio/core SQLite data. Data and archive expiration each require
+their own protected local policy.
 Run from the single collection coordinator, not from an HTTP request.
 """
 import hashlib,json,os,shutil,sqlite3,time
 from pathlib import Path
 from uuid import uuid4
+from .archive_retention import ArchiveRetention
 from .storage import DAY,MONTH,day_for,day_start,disk_level,Store
 
 def digest(path):
@@ -114,11 +115,13 @@ def restore_new(source,destination):
     return dst
 
 class Maintenance:
-    def __init__(self,store,backup_root,clock=time.time,usage=shutil.disk_usage,retention=None,audit_path=None):
+    def __init__(self,store,backup_root,clock=time.time,usage=shutil.disk_usage,retention=None,audit_path=None,
+                 archive_days=None):
         self.store=store;self.backup_root=Path(backup_root).resolve()
         if self.backup_root==store.root.resolve() or store.root.resolve() in self.backup_root.parents:
             raise ValueError("backup root must be outside data root")
         self.backup_root.mkdir(parents=True,exist_ok=True)
+        self.archive_retention = ArchiveRetention(store, backup_root, archive_days) if archive_days is not None else None
         self.path=store.root/"maintenance.json"
         self.clock=clock;self.usage=usage;self.retention=retention;self.audit_path=audit_path
         self.state=json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
@@ -126,8 +129,8 @@ class Maintenance:
     def tick(self,force=False):
         """One closed-day rebuild per run; daily core / weekly aggregate backup.
 
-        No automatic pruning: full evidence and privacy lifecycle remain pending.
-        No unbounded retry loop. Failures are visible and retried after cooldown.
+        Authorized data and archive expiration run at most once a day.
+        Failures are visible and retried after cooldown.
         """
         now=int(self.clock())
         if not force and now<self.next_at:return dict(self.state)
@@ -156,12 +159,20 @@ class Maintenance:
                 dst=verified_backup(self.store,self.backup_root/name,include_aggregates=weekly,audit_path=self.audit_path)
                 self.state.update(last_core_backup=now,last_backup=dst.name)
                 if weekly:self.state.update(last_aggregate_backup=now,last_aggregate_backup_name=dst.name)
+                if self.archive_retention is not None:
+                    self.archive_retention.register(dst.name)
             self.state["status"]="backup_deferred_disk" if (weekly or daily) and backup_level in ("limited","critical") else "ok"
             if self.retention is None:
                 self.state["retention"]="disabled_pending_local_authorization"
             elif now-self.state.get("last_retention_attempt",-10**12)>=86400:
                 self.state["last_retention_attempt"]=now
                 self.state["retention"]=self.retention.run(now,self.state.get("last_aggregate_backup_name"))
+            if self.archive_retention is None:
+                self.state["archive_retention"] = "disabled"
+            elif now - self.state.get("last_archive_retention_attempt", -10**12) >= 86400:
+                self.state["last_archive_retention_attempt"] = now
+                protected = (self.state.get("last_backup"), self.state.get("last_aggregate_backup_name"))
+                self.state["archive_retention"] = self.archive_retention.run(now, protected)
         except (OSError,ValueError,RuntimeError,sqlite3.Error,TypeError) as exc:
             self.state.update(status="failed",error=type(exc).__name__)
         finally:

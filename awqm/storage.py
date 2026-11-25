@@ -250,51 +250,63 @@ class Store:
                 rev=core.execute("SELECT revision FROM aggregate_manifest WHERE day=?",(day,)).fetchone()[0]
                 # A failure after one monthly file commits must never authorize pruning.
                 core.execute("UPDATE aggregate_manifest SET completed_revision=NULL WHERE day=?",(day,))
-            counts={}
-            for step,label in ((300,"5m"),(3600,"1h")):
-                agg=self.root/f"radio_{label}_{day[:6]}.db"
-                with self._db(path) as raw,self._db(agg) as out:
-                    n=raw.execute("SELECT COUNT(*) FROM radio_raw").fetchone()[0]
-                    if raw.execute("SELECT COUNT(*) FROM radio_raw WHERE observed_at<? OR observed_at>=?",(start,start+86400)).fetchone()[0]:
-                        raise ValueError("raw partition contains out-of-day records")
-                    out.execute(AGG_SCHEMA)
-                    out.execute("CREATE INDEX IF NOT EXISTS idx_aggregate_radio_time ON radio_aggregate(radio_id,bucket)")
-                    out.execute("DELETE FROM radio_aggregate WHERE bucket>=? AND bucket<?",(start,start+86400))
-                    # Preserve valid counts and extrema; invalid observations are not
-                    # zeroes, and separate configuration epochs are not mixed.
-                    q="""WITH samples AS (
-                      SELECT (observed_at / ?) * ? AS bucket,radio_id,
-                        json_extract(payload,'$.epoch') epoch,json_extract(payload,'$.band') band,
-                        json_extract(payload,'$.channel') channel,json_extract(payload,'$.source') source,
-                        json_extract(payload,'$.utilization') u,json_extract(payload,'$.interference') i,
-                        json_extract(payload,'$.noise') nf,json_extract(payload,'$.clients') clients,
-                        CASE WHEN json_extract(payload,'$.complete')=1
-                          AND json_type(payload,'$.utilization') IN ('integer','real')
-                          AND json_type(payload,'$.interference') IN ('integer','real')
-                          AND json_type(payload,'$.noise') IN ('integer','real')
-                          AND json_extract(payload,'$.utilization') BETWEEN 0 AND 100
-                          AND json_extract(payload,'$.interference') BETWEEN 0 AND 100
-                          AND json_extract(payload,'$.noise') BETWEEN -130 AND 0 THEN 1 ELSE 0 END ok
-                      FROM radio_raw)
-                      SELECT bucket,radio_id,epoch,band,channel,source,COUNT(*),SUM(ok),
-                        SUM(CASE WHEN ok=1 AND (u>=75 OR i>=30 OR nf>-80) THEN 1 ELSE 0 END),
-                        SUM(CASE WHEN ok=1 THEN u END),MIN(CASE WHEN ok=1 THEN u END),MAX(CASE WHEN ok=1 THEN u END),
-                        SUM(CASE WHEN ok=1 THEN i END),MIN(CASE WHEN ok=1 THEN i END),MAX(CASE WHEN ok=1 THEN i END),
-                        SUM(CASE WHEN ok=1 THEN nf END),MIN(CASE WHEN ok=1 THEN nf END),MAX(CASE WHEN ok=1 THEN nf END),
-                        MAX(CASE WHEN ok=1 AND clients>=0 THEN clients END)
-                      FROM samples GROUP BY bucket,radio_id,epoch,band,channel,source"""
-                    cursor=raw.execute(q,(step,step))
-                    total=0
-                    insert="INSERT INTO radio_aggregate VALUES("+",".join("?" for _ in AGG_COLUMNS)+")"
-                    while chunk:=cursor.fetchmany(1000):
-                        out.executemany(insert,chunk)
-                        total+=sum(r[6] for r in chunk)
-                    if total!=n:raise RuntimeError("aggregate coverage mismatch")
-                    counts[label]=total
+            counts = {}
+            with self._db(path) as raw:
+                raw.execute("BEGIN")
+                expected, outside_day = raw.execute(
+                    """SELECT COUNT(*), COUNT(CASE WHEN observed_at < ? OR observed_at >= ? THEN 1 END)
+                       FROM radio_raw""", (start, start + 86400)
+                ).fetchone()
+                if outside_day:
+                    raise ValueError("raw partition contains out-of-day records")
+                for step, label in ((300, "5m"), (3600, "1h")):
+                    destination = self.root / f"radio_{label}_{day[:6]}.db"
+                    counts[label] = self._aggregate_resolution(raw, destination, start, step, expected)
             if counts["5m"]!=counts["1h"]:raise RuntimeError("aggregate counts differ")
             with self._db(self.root/"core.db") as c:
                 c.execute("UPDATE aggregate_manifest SET completed_revision=?,raw_count=? WHERE day=?",(rev,counts["5m"],day))
             return counts
+
+    def _aggregate_resolution(self, raw, destination, start, step, expected):
+        with self._db(destination) as out:
+            out.execute(AGG_SCHEMA)
+            out.execute("CREATE INDEX IF NOT EXISTS idx_aggregate_radio_time ON radio_aggregate(radio_id,bucket)")
+            out.execute("DELETE FROM radio_aggregate WHERE bucket>=? AND bucket<?",(start,start+86400))
+            # Materialization evaluates the JSON fields and validity once per sample.
+            # Raw row order preserves the accumulation order for late observations.
+            query = """WITH samples AS MATERIALIZED (
+              SELECT (observed_at / ?) * ? AS bucket,radio_id,
+                json_extract(payload,'$.epoch') epoch,json_extract(payload,'$.band') band,
+                json_extract(payload,'$.channel') channel,json_extract(payload,'$.source') source,
+                json_extract(payload,'$.utilization') u,json_extract(payload,'$.interference') i,
+                json_extract(payload,'$.noise') nf,json_extract(payload,'$.clients') clients,
+                CASE WHEN json_extract(payload,'$.complete')=1
+                  AND json_type(payload,'$.utilization') IN ('integer','real')
+                  AND json_type(payload,'$.interference') IN ('integer','real')
+                  AND json_type(payload,'$.noise') IN ('integer','real')
+                  AND json_extract(payload,'$.utilization') BETWEEN 0 AND 100
+                  AND json_extract(payload,'$.interference') BETWEEN 0 AND 100
+                  AND json_extract(payload,'$.noise') BETWEEN -130 AND 0 THEN 1 ELSE 0 END ok
+              FROM radio_raw WHERE radio_id=? ORDER BY rowid)
+              SELECT bucket,radio_id,epoch,band,channel,source,COUNT(*),SUM(ok),
+                SUM(CASE WHEN ok=1 AND (u>=75 OR i>=30 OR nf>-80) THEN 1 ELSE 0 END),
+                SUM(CASE WHEN ok=1 THEN u END),MIN(CASE WHEN ok=1 THEN u END),MAX(CASE WHEN ok=1 THEN u END),
+                SUM(CASE WHEN ok=1 THEN i END),MIN(CASE WHEN ok=1 THEN i END),MAX(CASE WHEN ok=1 THEN i END),
+                SUM(CASE WHEN ok=1 THEN nf END),MIN(CASE WHEN ok=1 THEN nf END),MAX(CASE WHEN ok=1 THEN nf END),
+                MAX(CASE WHEN ok=1 AND clients>=0 THEN clients END)
+              FROM samples GROUP BY bucket,radio_id,epoch,band,channel,source"""
+            total = 0
+            insert = "INSERT INTO radio_aggregate VALUES(" + ",".join("?" for _ in AGG_COLUMNS) + ")"
+            # The raw primary key streams distinct radios in index order.
+            # Limit SQLite's temporary grouping and JSON extraction to one radio.
+            for (radio_id,) in raw.execute("SELECT DISTINCT radio_id FROM radio_raw"):
+                cursor = raw.execute(query, (step, step, radio_id))
+                while chunk := cursor.fetchmany(1000):
+                    out.executemany(insert, chunk)
+                    total += sum(row[6] for row in chunk)
+            if total != expected:
+                raise RuntimeError("aggregate coverage mismatch")
+            return total
 
     def history(self,radio_id,start,end,resolution="raw",limit=1000):
         if not 1<=limit<=10000 or end<=start or end-start>366*86400:
