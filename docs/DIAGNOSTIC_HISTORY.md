@@ -1,0 +1,7 @@
+# Diagnostic Radio history and aggregate view (v0.22)
+
+AP detail reads raw (maximum 7 days), 5-minute (30 days), or hourly (365 days) records. UTC epoch and KST time are both included. Aggregates are visible only for completed, non-invalidated closed KST days; late raw data invalidates its day until rebuilt. No raw row is silently filled from aggregates. Count of observations and valid observations are distinct. Risk count is threshold-matching raw samples, not incident count, time duration or verified service impact.
+
+Monthly aggregate queries use the existing Radio/time index and group contiguous completed day ranges, rather than reopening the same monthly SQLite file for every day. Reads remain bounded and serialized with the existing writer safety policy. The raw response is capped at 2,000 rows, aggregate response at 9,000 rows. Multiple Radio configuration epochs can increase row count; the UI and export flag truncation. The table shows at most the latest 300 returned rows, but HTML and CSV include every returned row. Query narrower intervals for omitted rows.
+
+The local SVG chart shows utilization and interference, without external JavaScript/CDN. It breaks connections at missing observations, stale gaps or changed configuration context. No missing data is converted to 0. Context IDs are opaque process-local tokens; raw internal Radio MAC identity is not exported. Long range and full retained production-scale latency still require separate benchmarks. No live WLC access performed.

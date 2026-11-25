@@ -1,0 +1,386 @@
+"""Actual headless Chromium UI test against isolated loopback diagnostic HTTPS.
+
+Run only in the separate browser-test environment. Browser dependencies are
+not shipped in AWQM. All identities, measurements and certificates invented.
+"""
+import argparse
+import base64
+import csv
+import hashlib
+import io
+import json
+import ssl
+import tempfile
+import threading
+import time
+from http.client import HTTPSConnection
+from ipaddress import IPv4Network
+from pathlib import Path
+from dataclasses import replace
+from types import SimpleNamespace
+from urllib.parse import urlsplit, urljoin
+from cryptography import x509
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+from playwright.sync_api import sync_playwright, expect
+from awqm import __version__
+from awqm.audit import AuditLog
+from awqm.aos8 import ControllerSnapshot
+from awqm.auth import Auth
+from awqm.diagnostic_view import DiagnosticView
+from awqm.diagnostic_web import RestrictedTLS, handler_for
+from awqm.https_validation import certificate
+from awqm.maintenance import write_json
+from awqm.model import Radio
+from awqm.quality_ledger import QualityLedger
+from awqm.secure_preview import tls_context
+from awqm.storage import Store
+from awqm.web_config import WebConfig, cert_expiry
+
+PASSWORD="synthetic-browser-only"
+ROLES={"fixture-operator":"operator","fixture-admin":"admin"}
+
+
+def require(condition,message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def fixture_spki(cert):
+    # Chromium's download path may not honor a page-level TLS exception.
+    # Scope the exception to this ephemeral fixture key, never all hosts.
+    key=x509.load_pem_x509_certificate(cert.read_bytes()).public_key()
+    der=key.public_bytes(Encoding.DER,PublicFormat.SubjectPublicKeyInfo)
+    return base64.b64encode(hashlib.sha256(der).digest()).decode("ascii")
+
+
+def verified_get(context,url,path,cert):
+    """Independent HTTPS response check using the exact fixture trust anchor."""
+    u=urlsplit(urljoin(url,path))
+    require(u.scheme=="https" and u.netloc==urlsplit(url).netloc,
+            "fixture request escaped the approved authority")
+    cookies=context.cookies(url)
+    headers={"Cookie":"; ".join(c["name"]+"="+c["value"] for c in cookies)}
+    trust=ssl.create_default_context(cafile=str(cert))
+    connection=HTTPSConnection(u.hostname,u.port,context=trust,timeout=5)
+    try:
+        connection.request("GET",u.path+("?"+u.query if u.query else ""),headers=headers)
+        response=connection.getresponse()
+        data=response.read(2*1024*1024+1)
+        require(len(data)<=2*1024*1024,"unexpected fixture response size")
+        return response.status,dict(response.getheaders()),data
+    finally:
+        connection.close()
+
+
+def validate_csv(data):
+    require(b"browser-fixture-" not in data,"raw Radio identity leaked to export")
+    rows=list(csv.DictReader(io.StringIO(data.decode("utf-8-sig"))))
+    require(len(rows)==1 and rows[0]["mode"]=="diagnostic" and
+            rows[0]["ap_name"]=="DEMO-BROWSER-0001" and rows[0]["source"]=="aos8-cli-unvalidated",
+            "downloaded CSV row or provenance mismatch")
+
+
+def fixture(root):
+    now=int(time.time())
+    store=Store(root/"data",mode="diagnostic")
+    rows=[]
+    for n in range(1,103):
+        ident=f"browser-fixture-{n:04d}"
+        rows.append(Radio(ident,ident,f"DEMO-BROWSER-{n:04d}","WLC-1","5GHz",44,
+                          now,40,5,-94,2,source="aos8-cli-unvalidated",epoch="fixture-1"))
+    store.save_batch(rows)
+    ledger=QualityLedger(store)
+    risk=replace(rows[-1],utilization=85,observed_at=now+1)
+    store.save(risk)
+    rows[-1]=risk
+    snap=ControllerSnapshot(risk.controller,risk.observed_at,[],[],[],field_tag="fixture",
+                            field_until=now+3600,field_connection="fixture",field_profile="safe")
+    quality=ledger.evaluate([risk],[snap],now+1,{risk.radio_id:risk.observed_at})
+    view=DiagnosticView(store,lambda:now+1,incidents=ledger.incidents)
+    meta={"coherent_controllers":1,"expected_controllers":4,"mapped_radios":len(rows),
+          "active_clients":204}
+    client = dict(id="c"*32, ap_name=risk.ap_name, controller=risk.controller, band=risk.band,
+                  valid_until=now+300, observed_at=now, health=72, snr=19, last_phy_rate=144,
+                  quality_score=63, quality_status="degraded", private_marker="internal-client-fixture")
+    view.publish(meta,[(r.radio_id,r.observed_at) for r in rows],quality=quality,
+                 client_views=[client],client_enabled=True)
+    return view
+
+
+def submit_form(page,url,action,button):
+    # Observe, never inject, the native browser's Origin. Log only status
+    # and the origin classification, not request headers/bodies/cookies.
+    with page.expect_response(lambda r:r.url==url+action and r.request.method=="POST") as pending:
+        button.click()
+    response=pending.value
+    origin=response.request.header_value("origin")
+    classification="same-origin" if origin==url else "null" if origin=="null" else "missing" if origin is None else "unexpected"
+    print(f"Native form {action}: status={response.status}, origin={classification}",flush=True)
+    require(classification=="same-origin" and response.status==303,
+            f"native form rejected: {action}, status={response.status}, origin={classification}")
+
+
+def login(page,url,role,fragment=""):
+    response=page.goto(url+fragment,wait_until="domcontentloaded")
+    require(response is not None and response.header_value("referrer-policy")=="same-origin",
+            "login document referrer policy mismatch")
+    expect(page.locator('input[name="username"]')).to_be_visible()
+    page.locator('input[name="username"]').fill("fixture-"+role)
+    page.locator('input[name="password"]').fill(PASSWORD)
+    submit_form(page,url,"/auth/login",page.get_by_role("button",name="로그인",exact=True))
+    expect(page.locator("#role")).to_have_text("권한: "+role)
+    if not fragment:expect(page.locator("#nav")).to_be_visible()
+
+
+def cross_menu_search(page):
+    page.locator('[data-view="admin"]').click()
+    search = page.get_by_role("search", name="통합 검색")
+    search.get_by_role("searchbox").fill("DEMO-BROWSER-0102")
+    search.get_by_role("button", name="검색", exact=True).click()
+    for heading in ("AP / Radio", "사용자 단말", "장애 이력"):
+        expect(page.get_by_role("region", name=heading).get_by_role("button", name="상세 보기")).to_be_visible()
+    page.get_by_role("region", name="AP / Radio").get_by_role("button", name="상세 보기").click()
+    expect(page.locator("#detailBody").get_by_role("button", name="이력 조회", exact=True)).to_be_visible()
+    page.get_by_role("region", name="장애 이력").get_by_role("button", name="상세 보기").click()
+    expect(page.locator("#detailBody").get_by_role("link", name="CSV 보고서")).to_be_visible()
+    clients = page.get_by_role("region", name="사용자 단말")
+    clients.get_by_role("button", name="상세 보기").click()
+    expect(page.locator("#detailBody").get_by_text("72%")).to_be_visible()
+    with page.expect_popup() as popup:
+        page.locator("#detailBody").get_by_role("link", name="전체 페이지에서 열기").click()
+    detail = popup.value
+    try:
+        expect(detail.get_by_role("heading", name="단말 관측 상세", exact=True).first).to_be_visible()
+        detail.reload()
+        expect(detail.locator("#detailBody").get_by_text("72%")).to_be_visible()
+        expect(detail.locator("body")).not_to_contain_text("internal-client-fixture")
+    finally:
+        detail.close()
+    search.get_by_role("searchbox").fill("DEMO-BROWSER")
+    search.get_by_role("searchbox").press("Enter")
+    radios = page.get_by_role("region", name="AP / Radio")
+    expect(radios.get_by_text("1 / 13 · 102건")).to_be_visible()
+    radios.get_by_role("button", name="다음").click()
+    expect(radios.get_by_text("2 / 13 · 102건")).to_be_visible()
+    expect(radios.get_by_text("DEMO-BROWSER-0009",exact=True)).to_be_visible()
+    search.get_by_role("searchbox").fill("MISSING-FIXTURE-ONLY")
+    search.get_by_role("searchbox").press("Enter")
+    for heading in ("AP / Radio", "사용자 단말", "장애 이력"):
+        expect(page.get_by_role("region", name=heading).get_by_text("검색 결과 없음")).to_be_visible()
+    expect(page.locator("#detail")).to_be_hidden()
+
+
+def browser_test(output):
+    output=Path(output).absolute()
+    output.mkdir(parents=True,exist_ok=False)
+    result_path=output/"browser-result.json"
+    result={"kind":"synthetic_actual_chromium_ui","version":__version__,"result":"incomplete",
+            "real_device_validated":False,"real_aaa_validated":False,
+            "windows_11_browser_validated":False,"full_capacity_browser_load_validated":False,
+            "scm_validated":False,"soak_validated":False,"scenarios":{}}
+    write_json(result_path,result)
+    with tempfile.TemporaryDirectory(prefix="awqm-browser-") as tmp:
+        root=Path(tmp)
+        view=fixture(root)
+        audit=AuditLog(root/"audit.db")
+        auth=Auth(ROLES,lambda u,p:p==PASSWORD,audit_sink=audit.auth_event)
+        cert,key=certificate(root)
+        cfg=SimpleNamespace(**vars(WebConfig("127.0.0.1","127.0.0.1:0",0,
+            (IPv4Network("127.0.0.1/32"),),"fixture",cert,key,ROLES,
+            cert_expiry(cert,"127.0.0.1"))))
+        stop=threading.Event()
+        server=RestrictedTLS(cfg,handler_for(view,auth,audit,cfg,stop=stop),tls_context(cert,key))
+        cfg.authority=f"127.0.0.1:{server.server_port}"
+        url="https://"+cfg.authority
+        thread=threading.Thread(target=server.serve_forever,daemon=True)
+        thread.start()
+        try:
+            with sync_playwright() as p:
+                browser=p.chromium.launch(headless=True,args=[
+                    "--ignore-certificate-errors-spki-list="+fixture_spki(cert)])
+                try:
+                    result["browser_version"]=browser.version
+                    # Only the ephemeral fixture certificate's SPKI is accepted
+                    # by the test Chromium process. Independent HTTPS checks
+                    # verify the exact certificate and host; no product TLS
+                    # setting or operating-system trust store is changed.
+                    for width,height,theme in ((1440,900,"light"),(390,844,"dark")):
+                        context=browser.new_context(viewport={"width":width,"height":height},
+                            color_scheme=theme,accept_downloads=True)
+                        try:
+                            external=[]
+                            def outside_fixture(target_url):
+                                target=urlsplit(target_url)
+                                return target.scheme in ("http","https") and (
+                                    target.scheme!="https" or target.netloc!=cfg.authority)
+                            def reject_external(route):
+                                external.append(True);route.abort()
+                            # Do not intercept approved native downloads; route
+                            # interception itself can alter download behavior.
+                            context.route(outside_fixture,reject_external)
+                            page=context.new_page()
+                            page.set_default_timeout(12000)
+                            errors=[];frames=[]
+                            page.on("pageerror",lambda error:errors.append(True))
+                            def observe_ws(ws):
+                                if ws.url=="wss://"+cfg.authority+"/ws/updates":
+                                    ws.on("framereceived",lambda frame:frames.append(frame))
+                            page.on("websocket",observe_ws)
+                            login(page,url,"operator")
+                            expect(page.locator("#content .kpis")).to_be_visible()
+                            page.locator('[data-view="radios"]').click()
+                            table=page.locator("#content > .table-wrap tbody tr")
+                            expect(table).to_have_count(100)
+                            page.get_by_role("button",name="다음",exact=True).click()
+                            expect(table).to_have_count(2)
+                            page.locator("#search").fill("DEMO-BROWSER-0001")
+                            expect(table).to_have_count(1)
+                            page.get_by_role("button",name="DEMO-BROWSER-0001",exact=True).click()
+                            expect(page.locator("#detail")).to_be_visible()
+                            with page.expect_popup() as popup:
+                                page.get_by_role("link", name="전체 페이지에서 열기").click()
+                            detail_page = popup.value
+                            try:
+                                expect(detail_page.locator("#detailBody h3").first).to_contain_text("DEMO-BROWSER-0001")
+                                expect(detail_page.locator("#content")).to_be_hidden()
+                                detail_page.reload()
+                                detail_page.get_by_role("button", name="이력 조회", exact=True).click()
+                                expect(detail_page.get_by_role("link", name="CSV 다운로드")).to_be_visible()
+                                detail_page.get_by_role("link", name="목록으로 돌아가기").click()
+                                expect(detail_page.locator("#content .kpis")).to_be_visible()
+                            finally:
+                                detail_page.close()
+                            page.get_by_role("button",name="이력 조회",exact=True).click()
+                            expect(page.get_by_role("link",name="CSV 다운로드")).to_be_visible()
+                            link=page.get_by_role("link",name="CSV 다운로드")
+                            href=link.get_attribute("href")
+                            require(href is not None,"missing CSV export link")
+                            status,headers,expected_csv=verified_get(context,url,href,cert)
+                            print(f"Verified CSV endpoint: status={status}, bytes={len(expected_csv)}",flush=True)
+                            require(status==200 and headers.get("Content-Type","").startswith("text/csv")
+                                    and "attachment" in headers.get("Content-Disposition","")
+                                    and int(headers.get("Content-Length","-1"))==len(expected_csv),
+                                    "invalid CSV response headers")
+                            validate_csv(expected_csv)
+                            with page.expect_download() as pending:
+                                link.click()
+                            download=pending.value
+                            require(download.suggested_filename=="awqm-diagnostic-history.csv",
+                                    "wrong export filename")
+                            failure=download.failure()
+                            print("Native CSV download: "+("complete" if failure is None else "failed"),flush=True)
+                            require(failure is None,"native CSV download failed after verified server response")
+                            actual_csv=Path(download.path()).read_bytes()
+                            validate_csv(actual_csv)
+                            require(actual_csv==expected_csv,"native CSV bytes differ from HTTPS response")
+                            result["scenarios"][f"{width}x{height}-{theme}-csv"]="pass"
+                            page.locator('[data-view="clients"]').click()
+                            expect(page.locator("#detail")).to_be_hidden()
+                            expect(page.locator("#detailBody")).to_be_empty()
+                            expect(page.get_by_text("현장 승인된 AP 정밀 조회의 임시 단말 관측",exact=False)).to_be_visible()
+                            page.locator("#search").fill("DEMO-BROWSER-0102")
+                            page.locator('[data-view="radios"]').click()
+                            expect(table).to_have_count(1)
+                            expect(page.get_by_role("button",name="DEMO-BROWSER-0102",exact=True)).to_be_visible()
+                            page.locator('[data-view="history"]').click()
+                            expect(page.locator("#search")).to_be_disabled()
+                            page.locator("#content").get_by_role("button",name="DEMO-BROWSER-0102").click()
+                            with page.expect_popup() as popup:
+                                page.get_by_role("link",name="전체 페이지에서 열기").click()
+                            incident_page=popup.value
+                            try:
+                                expect(incident_page.get_by_role("heading",name="위험 이력 상세")).to_be_visible()
+                                expect(incident_page.get_by_text("조회 당시 상태",exact=False)).to_be_visible()
+                                with incident_page.expect_response(lambda reply: "/api/incident?" in reply.url):
+                                    incident_page.get_by_role("button",name="상세 다시 조회").click()
+                                expect(incident_page.get_by_role("link",name="CSV 보고서")).to_be_visible()
+                                expect(incident_page.get_by_text("Radio 혼잡 관측",exact=True).first).to_be_visible()
+                            finally:
+                                incident_page.close()
+                            result["scenarios"][f"{width}x{height}-{theme}-detail-pages"]="pass"
+                            cross_menu_search(page)
+                            result["scenarios"][f"{width}x{height}-{theme}-global-search-client-detail"]="pass"
+                            page.locator('[data-view="admin"]').click()
+                            expect(page.locator("#search")).to_be_disabled()
+                            require(verified_get(context,url,"/api/admin/status",cert)[0]==403,
+                                    "operator admin endpoint not denied")
+                            page.locator('[data-view="radios"]').click()
+                            expect(page.locator("#search")).to_be_enabled()
+                            expect(table).to_have_count(1)
+                            # The table has its own intentional horizontal scroll;
+                            # the page itself must fit the selected viewport.
+                            require(page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"),
+                                    "page overflows viewport")
+                            until=time.monotonic()+5
+                            while not frames and time.monotonic()<until:
+                                page.wait_for_timeout(100)
+                            require(bool(frames),"no actual browser WebSocket frame")
+                            require(any(json.loads(frame).get("type")=="publication" for frame in frames
+                                        if isinstance(frame,str) and frame.startswith("{")),
+                                    "missing publication frame")
+                            if theme=="light":
+                                # Server-side session revocation while UI is open.
+                                with auth.lock:
+                                    auth.sessions.clear()
+                                page.locator("#search").fill("DEMO-BROWSER-0002")
+                                expect(page.get_by_text("인증 만료. 새로고침 후 다시 로그인하세요.",exact=True)).to_be_visible()
+                                expect(page.locator("#detail")).to_be_hidden()
+                            else:
+                                submit_form(page,url,"/auth/logout",page.get_by_role("button",name="로그아웃",exact=True))
+                                expect(page.locator('input[name="username"]')).to_be_visible()
+                                require(verified_get(context,url,"/api/radios?q=&page=1",cert)[0]==401,
+                                        "logout did not revoke API access")
+                            require(not errors and not external,"browser script error or external request")
+                            result["scenarios"][f"{width}x{height}-{theme}"]="pass"
+                        finally:
+                            context.close()
+                    context=browser.new_context()
+                    try:
+                        page=context.new_page()
+                        fragment="#radio/"+view.token("browser-fixture-0001")
+                        login(page,url,"admin",fragment)
+                        expect(page.locator("#detailBody h3").first).to_contain_text("DEMO-BROWSER-0001")
+                        page.get_by_role("link",name="목록으로 돌아가기").click()
+                        page.locator('[data-view="admin"]').click()
+                        page.get_by_role("button",name="관리자 상태 조회",exact=True).click()
+                        expect(page.get_by_text("감사 기록",exact=False)).to_be_visible()
+                        require(verified_get(context,url,"/api/admin/status",cert)[0]==200,
+                                "admin endpoint unavailable")
+                        submit_form(page,url,"/auth/logout",page.get_by_role("button",name="로그아웃",exact=True))
+                        expect(page.locator('input[name="username"]')).to_be_visible()
+                        result["scenarios"]["admin_login_status_logout"]="pass"
+                        client_id="c"*32
+                        require(verified_get(context,url,"/api/client?id="+client_id,cert)[0]==401,
+                                "client detail exposed without session")
+                        page=context.new_page()
+                        login(page,url,"operator","#client/"+client_id)
+                        expect(page.locator("#detailBody").get_by_text("72%")).to_be_visible()
+                        require(verified_get(context,url,"/api/association-history?id=&page=1",cert)[0]==403,
+                                "operator may not consult protected client history")
+                        view.publish({},client_views=[],client_enabled=False)
+                        page.get_by_role("button",name="상세 다시 조회").click()
+                        expect(page.locator("#detailBody")).to_contain_text("현재 승인된 단말 관측을 조회할 수 없습니다.")
+                        expect(page.locator("#detailBody")).not_to_contain_text("72%")
+                        require(verified_get(context,url,"/api/client?id="+client_id,cert)[0]==404,
+                                "withdrawn client observation exposed")
+                        result["scenarios"]["client_deep_link_role_and_withdrawal"]="pass"
+                    finally:
+                        context.close()
+                finally:
+                    browser.close()
+            result["result"]="pass"
+            write_json(result_path,result)
+            return result
+        except BaseException:
+            write_json(result_path,result)
+            raise
+        finally:
+            stop.set();server.shutdown();server.server_close();thread.join(5)
+
+
+if __name__=="__main__":
+    parser=argparse.ArgumentParser()
+    parser.add_argument("--output",type=Path,required=True)
+    args=parser.parse_args()
+    print(json.dumps(browser_test(args.output),ensure_ascii=False))
