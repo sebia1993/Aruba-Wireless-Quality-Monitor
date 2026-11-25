@@ -13,6 +13,7 @@ from .durable_jobs import DurableJobs
 from .selection import Selector
 from .client_history import ClientHistory,map_samples
 from .live_neighbors import COMMAND as NEIGHBOR
+from .ap_anchors import reconcile as reconcile_anchors
 import json
 
 class Engine:
@@ -41,7 +42,7 @@ class Engine:
         self.live_clients=live_clients
         if simulation and live_clients:raise ValueError("live client path is separate from demo")
         self.live_details={};self.live_client_views=[]
-        self.cluster_monitor=cluster_monitor;self.cluster_frames={};self.cluster_view=None
+        self.cluster_monitor=cluster_monitor;self.cluster_frames={};self.cluster_view=None;self.anchor_views={}
         if simulation and live_neighbors:raise ValueError("live neighbor path is separate from demo")
         self.live_neighbors=live_neighbors;self.neighbor_frames={};self.neighbor_pending={};self.neighbor_views={};self.neighbor_refresh_at=None
         if simulation and association_history:raise ValueError("live history requires diagnostic mode")
@@ -293,6 +294,8 @@ class Engine:
             if self.cluster_monitor:
                 self.cluster_monitor.choose(self.cluster_frames,int(self.wall()),self.inflight)
                 self.cluster_view=self.cluster_monitor.report(self.cluster_frames,int(self.wall()))
+                self.anchor_views,summaries=reconcile_anchors(radios,self.cluster_frames,int(self.wall())) if not self.error and not self.paused else ({},{})
+                for node in self.cluster_view['nodes']:node['ap_anchors']=summaries.get(node['controller'],{})
             self.published_radios=tuple((r.radio_id,r.observed_at) for r in radios if not self.error and self.accepted.get(r.radio_id)==r.observed_at)
             self.last_result={"mode":"demo" if self.simulation else "diagnostic","field_validated":False,
                 "coherent_controllers":len(active),"expected_controllers":len(self.workers),

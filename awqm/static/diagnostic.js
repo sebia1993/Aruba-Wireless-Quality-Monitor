@@ -130,6 +130,9 @@ function historyChart(report){
 function openHistory(r){
   incidentPanel=null;selected={id:r.id,name:r.ap_name,band:r.band};$("detail").hidden=false;
   const d=$("detailBody");d.replaceChildren(el("h3",r.ap_name+" · "+r.band),el("p","원본·집계 이력 · 실제 서비스 영향 및 원인 미확인"));
+  d.append(el("p","AP 앵커 관측 (상세 화면을 연 시점의 자료, 현재 상태 보장 아님)"));
+  if(r.ap_anchor?.observations?.length)d.append(table(["관측 WLC","자료 유형","보고 역할","관측 시각"],r.ap_anchor.observations.map(x=>[x.source,x.kind==="standby"?"Standby AP":"UAC AP DB",x.roles.join(", ")||"미확인",kst(x.observed_at)])));
+  else d.append(el("p","현재 검증된 추가 앵커 관측 없음"));
   const end=el("input");end.type="datetime-local";end.setAttribute("aria-label","종료 시각 KST");
   end.value=new Date((Math.ceil(Date.now()/60000)*60+60+32400)*1000).toISOString().slice(0,16);
   const resolution=el("select"),hours=el("select"),button=el("button","이력 조회"),output=el("div");
@@ -287,6 +290,7 @@ function clusterPanel(d){
   const labels={connected_observed:"연결 교차 관측",self_only:"자체 관측",peer_disagreement:"Peer 상태 상충",peer_issue_observed:"Peer 이상 관측",self_issue_observed:"자체 이상 관측",peer_only:"Peer 관측만 있음",unknown:"미확인"};
   const m=Object.fromEntries(["ap","client"].map(k=>[k,new Map(d.load[k].rows.map(r=>[r.controller,r]))]));
   c.append(table(["WLC","CPU %","멤버십","Role","Active AP","Standby AP","Active Client","Standby Client"],d.nodes.map(r=>[r.controller,r.cpu,labels[r.state]||r.state,r.role,m.ap.get(r.controller)?.active,m.ap.get(r.controller)?.standby,m.client.get(r.controller)?.active,m.client.get(r.controller)?.standby])));
+  c.append(el("h3","AP Standby / UAC DB 관측"),el("p","현재 AP와 일치하는 양성 관측 수입니다. 미관측은 장애·Standby 미구성으로 확정하지 않습니다."),table(["WLC","Standby 관측/일치","UAC AP DB 관측/일치","Standby 시각","UAC DB 시각"],d.nodes.map(r=>{const a=r.ap_anchors?.standby,u=r.ap_anchors?.uac_database;const count=x=>x?.status==="observed"?x.total+" / "+x.matched:"미확인";return [r.controller,count(a),count(u),kst(a?.observed_at),kst(u?.observed_at)];})));
   c.append(el("h3","WLC 자원 관측"),el("p","메모리 보고 사용률과 Datapath CPU별 1초·4초 값은 서로 다른 지표입니다. 장비 장애나 RF 원인으로 확정하지 않습니다."));
   const resourceLabels={disabled:"비활성",unavailable:"미확인",withheld:"보호/검증 대기",stale:"오래된 관측",attestation_unavailable:"검증 만료/불일치",cpu_inventory_mismatch:"CPU 목록 불일치",parse_error:"출력 형식 불일치",permission_denied:"권한 없음",unsupported:"명령 미지원",transport_error:"통신 오류",observed:"최근 관측"};
   c.append(table(["WLC","메모리 보고 사용률 %","Free (Kb)","메모리 관측 시각","Datapath CPU 수","1초 최대 %","4초 최대 %","Datapath 관측 시각","수집 상태"],d.nodes.map(r=>{

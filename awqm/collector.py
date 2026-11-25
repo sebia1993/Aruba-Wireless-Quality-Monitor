@@ -8,7 +8,7 @@ BASE_COMMANDS=frozenset(("show version","show cpuload","show lc-cluster group-me
     "show lc-cluster load distribution ap","show lc-cluster load distribution client",
     "show ap radio-summary","show ap active details","show ap database long","show ap association",
     "show user-table","show user-table standby","show ap bss-table","show ap standby",
-    "show memory","show datapath utilization"))
+    "show memory","show datapath utilization","show ap uac-database"))
 AP_COMMANDS=frozenset(("show ap debug client-table","show ap arm neighbors","show ap arm rf-summary","show ap arm history","show ap port status"))
 MAC=re.compile(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}",re.ASCII)
 AP=re.compile(r"[A-Za-z0-9_.-]{1,128}",re.ASCII)

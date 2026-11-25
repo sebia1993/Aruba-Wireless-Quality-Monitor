@@ -10,8 +10,9 @@ from .rf_neighbors import arm_neighbors
 from .cluster import group_membership,ap_load,client_load
 from .association_history import user_table
 from .controller_resources import memory,datapath
+from .ap_anchors import standby,uac_database
 PARSERS={"radio":radio_summary,"inventory":inventory,"active":active_details,"association":associations,"cpu":cpu_load,
-         "client":client_table,"stats":station_stats,"bss":bss_table,"version":version_identity,"neighbors":arm_neighbors,"cluster":group_membership,"ap-load":ap_load,"client-load":client_load,"users":user_table,"memory":memory,"datapath":datapath}
+         "client":client_table,"stats":station_stats,"bss":bss_table,"version":version_identity,"neighbors":arm_neighbors,"cluster":group_membership,"ap-load":ap_load,"client-load":client_load,"users":user_table,"memory":memory,"datapath":datapath,"standby":standby,"uac-ap":uac_database}
 
 def main():
     p=argparse.ArgumentParser(description="Local AOS 8 CLI parser validation (no SSH connection)")

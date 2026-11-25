@@ -17,7 +17,7 @@ class DiagnosticView:
         self.publication_revision=0
     def token(self,radio_id):
         return hmac.new(self.key,radio_id.encode("utf-8"),hashlib.sha256).hexdigest()[:32]
-    def publish(self,result,current=(),available=True,quality=None,client_views=(),client_enabled=False,neighbor_views=None,neighbor_enabled=False):
+    def publish(self,result,current=(),available=True,quality=None,client_views=(),client_enabled=False,neighbor_views=None,neighbor_enabled=False,anchor_views=None):
         now=int(self.clock())
         with self.lock:
             if available:
@@ -45,7 +45,8 @@ class DiagnosticView:
                         risk_status=q.get("status") if approved else "UNKNOWN",
                         approval=q.get("approval") if approved else None,
                         approval_until=q.get("valid_until") if approved else None,
-                        incident_id=q.get("incident_id") if approved else None))
+                        incident_id=q.get("incident_id") if approved else None,
+                        ap_anchor=deepcopy((anchor_views or {}).get(r["radio_id"])) if live else None))
                 if available:self.rows=rows;self.index=index
             else:
                 self.rows=[dict(r,freshness="stale_or_unconfirmed") for r in self.rows]
@@ -81,6 +82,12 @@ class DiagnosticView:
             for r in rows[(page-1)*size:page*size]:
                 x=dict(r)
                 if stale:x["freshness"]="stale_or_unconfirmed"
+                anchor=x.pop("ap_anchor",None)
+                if not stale and x["freshness"]=="observed" and anchor:
+                    observations=[{k:v for k,v in a.items() if k!="valid_until"} for a in anchor["observations"]
+                        if now<a["valid_until"] and 0<=now-a["observed_at"]<=600]
+                    x["ap_anchor"]={**anchor,"observations":observations} if observations else None
+                else:x["ap_anchor"]=None
                 if stale or x["freshness"]!="observed" or (x.get("approval_until") or 0)<=now:
                     x.update(quality="unvalidated",quality_score=None,risk_status="UNKNOWN",approval=None,approval_until=None,incident_id=None)
                 data.append(x)
@@ -92,6 +99,10 @@ class DiagnosticView:
                 # between coordinator publications.
                 meta["cluster"]=deepcopy(meta["cluster"])
                 for node in meta["cluster"].get("nodes",[]):
+                    for item in node.get("ap_anchors",{}).values():
+                        until=item.pop("valid_until",None)
+                        if item.get("status")=="observed" and (until is None or now>=until or not 0<=now-item["observed_at"]<=600):
+                            item.update(status="stale",total=None,matched=None,unmatched=None)
                     for label,resource in node.get("resources",{}).items():
                         until=resource.pop("valid_until",None)
                         if resource.get("status")=="observed" and (until is None or now>=until

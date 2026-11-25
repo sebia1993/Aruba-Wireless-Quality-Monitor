@@ -2,7 +2,7 @@
 
 Windows 11 / ArubaOS 8 클러스터 기반 무선 품질 분석 도구.
 
-**현재 단계: v0.32.0-dev — SSH 의존성 보안 개선 및 검증. 운영 배포 금지.**
+**현재 단계: v0.33.0-dev — SSH 의존성 보안 개선 및 검증. 운영 배포 금지.**
 실제 장비 접속, 실측 Airtime, 72시간 구동, Windows Service, HTTPS 및 Aruba 개인 계정 인증은 아직 검증/완료되지 않았습니다. 모의 화면은 실제 측정값이 아닙니다.
 
 ## 실행 (개발 환경)
@@ -132,6 +132,10 @@ Windows ZIP의 실제 설치 패키지 버전을 별도 CI에서 취약점 조�
 ## SSH 의존성 업데이트 및 로컬 검증
 
 `--validate-ssh`로 실제 루프백 SSH의 Host Key 확인·RSA/SHA-2·인증 및 CLI 동작을 확인합니다. Paramiko 5.1.0·cryptography 50.0.2로 버전을 고정하고 이전 취약 버전으로 자동 전환하지 않습니다. 구형 SSH 알고리즘만 지원하는 실제 장비는 현장 호환성 확인이 필요합니다. [보안 검증 안내](docs/DEPENDENCY_AUDIT.md).
+
+## AP Standby / UAC DB 관측
+
+별도 현장 검증 후 AP Standby 및 UAC AP DB의 현재 물리 AP 일치 관측을 제공하며, 단말 UAC 또는 장애 상태로 단정하지 않습니다. [검증 및 제한](docs/AP_ANCHORS.md).
 
 ## Windows 빌드
 ```powershell
