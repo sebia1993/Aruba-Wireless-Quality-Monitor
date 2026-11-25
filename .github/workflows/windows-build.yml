@@ -198,9 +198,6 @@ jobs:
         with:
           name: AWQM-unified-installer
           path: installer
-      - name: Open default setup with a fresh standard user and zero UI input
-        shell: pwsh
-        run: ./tools/hosted_default_install.ps1 -Installer (Resolve-Path installer/AWQM-Setup.exe)
       - name: Install the current-user package and open its Start menu entry
         shell: pwsh
         run: |

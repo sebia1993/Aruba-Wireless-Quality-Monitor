@@ -44,3 +44,11 @@ verified HTTPS response in the [browser run](https://github.com/sebia1993/Aruba-
 ## Windows service lifecycle
 
 The full folder-package workflow installs the frozen service under a temporary, dedicated local account on a disposable GitHub-hosted Windows Server runner. The fixture configures a synthetic controller and suspends its collection before startup. The service must decrypt its own DPAPI credential and publish a running heartbeat with collection paused. The job exercises the SCM failure-recovery policy, upgrades from a separately built v0.42.0 baseline, and restores the previous installation after a candidate start. The artifact records each verified phase and the candidate ZIP digest. Reboot on the target Windows 11 edition, field collection and the long run remain separate qualification steps.
+
+### Windows 11 first-launch release check
+
+Run the following from a verification environment with Python 3.12+ and pywin32 on a clean, non-elevated Windows 11 profile. The check opens the installer without arguments on an isolated desktop, observes the dashboard window and browser request, reads the dashboard and sample data, relaunches from Start, closes the app and removes its test installation. Retain the JSON result with the tested installer's digest. GitHub's Windows Server job separately checks current-user installation, the Start menu entry and removal.
+
+```powershell
+python tools/windows11_installer_validation.py .\AWQM-Setup.exe --sha256 $expectedHash --output .\first-launch-result
+```
