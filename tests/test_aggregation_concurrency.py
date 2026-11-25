@@ -76,7 +76,7 @@ class AggregationConcurrencyTests(TestCase):
                 with self.assertRaises(storage.AggregateRevisionChanged):
                     first.result(5)
                 self.assertEqual(second.result(5), {"5m": 2, "1h": 2})
-                self.assertEqual(saved.result(5), backup)
+                self.assertTrue(saved.result(5).samefile(backup))
             self.assertEqual(self.store.history("r:0", START, END, "1h")[0]["observed"], 2)
 
     def test_request_cancelled_while_waiting_for_another_rebuild(self):
