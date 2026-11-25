@@ -185,7 +185,7 @@ jobs:
   standard-user-launch:
     needs: windows
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 13
     steps:
       - uses: actions/checkout@v4
         with:
@@ -200,7 +200,11 @@ jobs:
           path: installer
       - name: Qualify actual downloaded EXE under a disposable standard user
         shell: pwsh
-        run: ./tools/hosted_standard_user_validation.ps1 -Installer installer/AWQM.exe -Output standard-user-launch.json
+        run: |
+          $baseline = Join-Path $env:RUNNER_TEMP 'AWQM-Setup-v0.47.0.exe'
+          Invoke-WebRequest 'https://github.com/sebia1993/Aruba-Wireless-Quality-Monitor/releases/download/v0.47.0/AWQM-Setup.exe' -OutFile $baseline
+          if ((Get-FileHash -LiteralPath $baseline -Algorithm SHA256).Hash -ine '15732fb9827aa7ebae58d36f26d545ca257fa5a9e99ea6974d3ecb100afe75ec') { throw 'Pinned baseline SHA-256 mismatch' }
+          ./tools/hosted_standard_user_validation.ps1 -Installer installer/AWQM.exe -Previous $baseline -Output standard-user-launch.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
