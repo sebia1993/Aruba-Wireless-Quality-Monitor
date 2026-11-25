@@ -137,18 +137,30 @@ class DiagnosticHTTPTests(unittest.TestCase):
                     resp=con.getresponse();return resp.status,dict(resp.getheaders()),resp.read()
                 finally:con.close()
             try:
-                self.assertEqual(req("GET","/api/radios?q=&page=1")[0],401)
+                login_status,login_headers,_=req("GET","/")
+                self.assertEqual(login_status,200)
+                self.assertEqual(login_headers["Referrer-Policy"],"same-origin")
+                api_status,api_headers,_=req("GET","/api/radios?q=&page=1")
+                self.assertEqual(api_status,401)
+                self.assertEqual(api_headers["Referrer-Policy"],"no-referrer")
                 iq=urlencode({"page":1,"status":"all","start":t-86400,"end":t+1})
                 self.assertEqual(req("GET","/api/incidents?"+iq)[0],401)
                 self.assertEqual(req("GET","/",headers={"Host":"invalid.example"})[0],403)
                 body=urlencode({"username":"op","password":"fixture"})
                 form={"Content-Type":"application/x-www-form-urlencoded","Origin":origin}
                 self.assertEqual(req("POST","/auth/login",body,{"Content-Type":form["Content-Type"]})[0],403)
+                for foreign in ("null","https://untrusted.example"):
+                    self.assertEqual(req("POST","/auth/login",body,{**form,"Origin":foreign})[0],403)
+                self.assertEqual(len(auth.sessions),0)
                 status,headers,_=req("POST","/auth/login",body,form)
                 self.assertEqual(status,303)
                 cookie=headers["Set-Cookie"].split(";",1)[0]
                 self.assertIn("Secure",headers["Set-Cookie"])
                 h={"Cookie":cookie}
+                page_status,page_headers,_=req("GET","/",headers=h)
+                self.assertEqual(page_status,200)
+                self.assertEqual(page_headers["Referrer-Policy"],"same-origin")
+                self.assertIn("form-action 'self'",page_headers["Content-Security-Policy"])
                 status,_,data=req("GET","/api/radios?q=&page=1",headers=h)
                 self.assertEqual(status,200)
                 self.assertNotIn(r.radio_id,data.decode())

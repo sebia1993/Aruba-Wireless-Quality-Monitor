@@ -1,4 +1,4 @@
-# AWQM development progress (v0.39.0-dev)
+# AWQM development progress (v0.40.0-dev)
 
 Planning is approved and complete. This is a provisional engineering estimate,
 not a measured test-pass percentage or field readiness claim. Each of the ten
@@ -41,3 +41,6 @@ v0.38 adds representative actual Store lifecycle validation: 32 Radios / 120 min
 
 
 v0.39 fixes stale detail/search after menu navigation, isolates in-flight callbacks, and adds separate actual Chromium browser CI for operator/admin login, search/pagination, detail/history export, WSS and revocation at two viewports. CI pending; existing 78.9% estimate retained until verified evidence. Browser dependencies are excluded from build packaging.
+
+
+v0.40.0-dev: both v0.39 browser jobs failed at native login; fix HTML referrer policy while preserving strict Origin and CSRF; add observed POST status/Origin and negative HTTP regression. Repeat CI pending; estimate 78.9% unchanged.
