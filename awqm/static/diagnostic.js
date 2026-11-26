@@ -501,6 +501,26 @@ function operationsPanel(){
         }
       }
       out.append(rf);
+      const arm=el("details");
+      arm.append(el("summary","승인 AP ARM 변경 이력 관측 (D08)"),
+        el("p","최근 Radio 이상 지표 또는 연속된 일관된 채널 관측의 변경이 조회 조건입니다. CLI 보고 경과 초와 수신 시각을 구분합니다. 실제 이벤트 시각·물리 Radio·전체 이력·원인은 미검증입니다."));
+      for(const id of Object.keys(state.controllers)){
+        const evidence=rows.get(id)?.arm_history_evidence;
+        if(!evidence?.configured)continue;
+        arm.append(el("h4",id),el("p","선택 AP "+evidence.selected_count+"대 · 현재 관측 "+evidence.rows.length+"대"));
+        if(!evidence.rows.length)arm.append(el("p","현재 관측 없음 또는 수집 조건 미충족"));
+        for(const item of evidence.rows){
+          arm.append(el("h4",item.ap_name+" · 수신 "+kst(item.received_at)),
+            el("p","CLI 파싱 행 "+item.event_count+"개"+(item.truncated?" · 표시 제한":"")+" · 전체 이력 미검증"));
+          for(const iface of item.interfaces){
+            arm.append(el("h4",iface.interface+" · "+(iface.phy_type||"보고 PHY 없음")),
+              el("p",!iface.table_present?"테이블 없음 · 변경 없음으로 판정하지 않음":"표시 "+iface.events.length+" / "+iface.event_count+"행"));
+            if(iface.events.length)arm.append(table(["보고 Reason","이전 채널","신규 채널","이전 출력 원시","신규 출력 원시","보고 경과 초"],
+              iface.events.map(e=>[e.reason_code,e.old_channel,e.new_channel,e.old_power,e.new_power,e.reported_age_seconds])));
+          }
+        }
+      }
+      out.append(arm);
       if(applied?.error)out.append(el("p","운영 상태 저장소 오류 · 신규 수집 차단","warn"));
       if(d.recent.length)out.append(el("h3","최근 요청 이력"),table(["시각","대상","요청"],d.recent.slice(0,20).map(x=>[kst(x.at),x.target,x.requested_paused?"일시정지":"재개"])));
     }catch(e){state=null;if(!expired)out.textContent="관리자 권한 필요 또는 상태 조회 실패";}

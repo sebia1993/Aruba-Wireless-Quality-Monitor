@@ -68,7 +68,8 @@ def matrix(worker):
             if r is not None:
                 reading = (r.status, r.observed_at, r.generation)
         elif ((command_id == "D07" and getattr(worker,"ap_ports",None) is not None)
-              or (command_id == "D04" and getattr(worker,"rf_summary",None) is not None)):
+              or (command_id == "D04" and getattr(worker,"rf_summary",None) is not None)
+              or (command_id == "D08" and getattr(worker,"arm_history",None) is not None)):
             implementation = "protected_detail"
             configured = True
             latched = name in worker.detail_disabled
