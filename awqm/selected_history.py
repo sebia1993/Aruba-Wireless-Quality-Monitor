@@ -182,6 +182,71 @@ def _port_history_detail(obs, ports):
     return rows
 
 
+# Historical D08 disclosure is intentionally fixed to the documented parser
+# subset. A future parser expansion must not silently expand disclosure.
+D08_HISTORY_REASONS = frozenset((
+    "I", "R", "N", "Q", "E", "INV", "G", "M", "P+", "P-", "40INT",
+    "NO40INT", "OFF", "OFF(R)", "OFF(MA)", "ON", "D", "AIRMATCH",
+    "I*", "C", "NC", "Random", "RMC", "RCP", "OFF(C)",
+))
+
+
+def _arm_history_detail(obs, interfaces):
+    if (not interfaces or any(obs[k] is not False for k in
+            ("target_verified", "radio_binding_verified", "completeness_verified",
+             "event_time_verified"))
+            or type(obs["interface_count"]) is not int
+            or obs["interface_count"] != len(interfaces)):
+        raise ValueError("invalid historical ARM provenance")
+
+    def notation(value, channel):
+        if value is None:
+            return None
+        pattern = r"[0-9]{1,3}[+\-ES]?" if channel else r"-?[0-9]{1,3}(?:\.[0-9]{1,3})?"
+        if type(value) is not str or re.fullmatch(pattern, value) is None:
+            raise ValueError("invalid historical ARM notation")
+        if channel and int(re.match(r"[0-9]+", value)[0]) > 233:
+            raise ValueError("invalid historical ARM channel")
+        return value
+
+    rows, seen, layouts = [], set(), set()
+    remaining, reported = 64, 0
+    for item in interfaces:
+        if type(item) is not dict:
+            raise ValueError("invalid historical ARM interface")
+        name, phy, present = item["interface"], item["phy_type"], item["table_present"]
+        count, events = item["event_count"], item["events"]
+        if (name not in ("wifi0", "wifi1", "wifi2") or name in seen
+                or phy not in (None, "2.4GHz", "5GHz", "6GHz")
+                or type(present) is not bool or (not present and phy is None)
+                or type(count) is not int or not 0 <= count <= 4096
+                or (not present and count != 0)
+                or type(events) is not list or len(events) != min(count, remaining)):
+            raise ValueError("invalid historical ARM interface fields")
+        seen.add(name)
+        layouts.add(phy is None)
+        retained = []
+        for event in events:
+            if type(event) is not dict:
+                raise ValueError("invalid historical ARM row")
+            reason, age = event["reason_code"], event["reported_age_seconds"]
+            if (type(reason) is not str or reason not in D08_HISTORY_REASONS
+                    or type(age) is not int or not 0 <= age <= 8639999999):
+                raise ValueError("invalid historical ARM event fields")
+            retained.append({"reason_code": reason, "reported_age_seconds": age,
+                             **{key: notation(event[key], key.endswith("channel"))
+                                for key in ("old_channel", "new_channel",
+                                            "old_power", "new_power")}})
+        rows.append({"interface": name, "phy_type": phy, "table_present": present,
+                     "reported_event_rows": count, "events": retained})
+        reported += count
+        remaining -= len(events)
+    if (len(layouts) != 1 or reported > 4096 or type(obs["event_count"]) is not int
+            or obs["event_count"] != reported or obs["truncated"] is not (reported > 64)):
+        raise ValueError("invalid historical ARM counts")
+    return rows
+
+
 def receipt_summary(receipt, token):
     """Explicit allowlist for the historical index, not a metric export.
 
@@ -228,10 +293,12 @@ def receipt_summary(receipt, token):
             detail = {"rf_detail": _rf_history_detail(obs, channels)}
         elif receipt.command == ARM:
             interfaces = sequence(obs["interfaces"], 3)
-            retained = sum(len(sequence(item["events"], 64)) for item in interfaces)
+            rows = _arm_history_detail(obs, interfaces)
+            retained = sum(len(item["events"]) for item in rows)
             summary = {"retained_event_rows": integer(retained, 0, 64),
                        "reported_event_rows": integer(obs["event_count"], retained, 4096),
                        "retained_interfaces": len(interfaces)}
+            detail = {"arm_detail": rows}
         elif receipt.command == STATS:
             summary = {"requested_radio": integer(obs["requested_radio"], 0, 2),
                        "observed_field_count": integer(obs["observed_field_count"], 0, 4096),

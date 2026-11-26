@@ -35,7 +35,7 @@ from awqm.model import Radio
 from awqm.quality_ledger import QualityLedger
 from awqm.secure_preview import tls_context
 from awqm.storage import Store
-from awqm.selected_history import SelectedHistory, Receipt, PORT, STATS, RF
+from awqm.selected_history import SelectedHistory, Receipt, PORT, STATS, RF, ARM
 from awqm.web_config import WebConfig, cert_expiry
 
 PASSWORD="synthetic-browser-only"
@@ -146,6 +146,21 @@ def fixture(root):
                          "split_scan_reported":None,"retry_raw":None,
                          "phy_error_raw":"0","mac_error_raw":None,"utilization":None}]}}
     archive.save(Receipt(f"{23:032x}","WLC-1",RF,now,json.dumps(rf_payload)))
+    arm_time=now-7200
+    arm_payload={"schema":1,"controller":"WLC-1","command":ARM,"received_at":arm_time,
+                 "source":"selected-cli-unvalidated","ap_binding":"d"*64,
+                 "measurement_start":None,"measurement_end":None,"counter_epoch":None,
+                 "observation":{"ap_name":"PRIVATE-HISTORY-ARM","received_at":arm_time,
+                     "field_validated":False,"sample_time_verified":False,"target_verified":False,
+                     "radio_binding_verified":False,"completeness_verified":False,"event_time_verified":False,
+                     "interface_count":2,"event_count":1,"truncated":False,"interfaces":[
+                         {"interface":"wifi0","phy_type":"5GHz","table_present":True,"event_count":1,
+                          "events":[{"reason_code":"OFF(R)","old_channel":"44-","new_channel":"0",
+                                     "old_power":None,"new_power":"0","reported_age_seconds":62,
+                                     "private":"PRIVATE-HISTORY-ARM-EVENT"}]},
+                         {"interface":"wifi1","phy_type":"2.4GHz","table_present":False,
+                          "event_count":0,"events":[]}]}}
+    archive.save(Receipt(f"{24:032x}","WLC-1",ARM,arm_time,json.dumps(arm_payload)))
     view=DiagnosticView(store,lambda:now+1,incidents=ledger.incidents,
                         selected_history=archive,selected_controllers=("WLC-1",))
     meta={"coherent_controllers":1,"expected_controllers":4,"mapped_radios":len(rows),
@@ -463,8 +478,18 @@ def browser_test(output):
                         expect(history).not_to_contain_text("c"*64)
                         history.get_by_label("정밀 이력 수집 항목").select_option("D08")
                         expect(history.locator("tbody tr")).to_have_count(0)
+                        history.get_by_label("정밀 이력 조회 기간").select_option("3600")
                         history.get_by_role("button",name="정밀 이력 조회").click()
                         expect(history).to_contain_text("조회 범위에 저장 기록 없음")
+                        history.get_by_label("정밀 이력 조회 기간").select_option("86400")
+                        history.get_by_role("button",name="정밀 이력 조회").click()
+                        history.get_by_text("ARM 보고값 1행",exact=True).click()
+                        expect(history.get_by_text("wifi0 · PHY 5GHz",exact=True)).to_be_visible()
+                        expect(history.get_by_text("Reason: OFF(R) · 채널: 44- → 0 · Power 원문: 미확인 → 0 · 보고된 상대 경과: 62초",exact=True)).to_be_visible()
+                        expect(history.get_by_text("wifi1 · PHY 2.4GHz",exact=True)).to_be_visible()
+                        expect(history.get_by_text("이벤트 표 미보고 · 변경 없음으로 판단 불가",exact=True)).to_be_visible()
+                        expect(history).not_to_contain_text("PRIVATE-HISTORY")
+                        expect(history).not_to_contain_text("d"*64)
                         history.get_by_label("이력 WLC ID").fill("not-configured")
                         history.get_by_role("button",name="정밀 이력 조회").click()
                         expect(history).to_contain_text("이력 조회 실패")

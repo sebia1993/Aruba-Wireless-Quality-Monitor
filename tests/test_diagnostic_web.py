@@ -194,7 +194,7 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 status,_,raw=req("GET",history_path,headers=admin_h)
                 self.assertEqual(status,200)
                 self.assertEqual(json.loads(raw),{"enabled":False,"rows":[],"next_cursor":None})
-                from awqm.selected_history import SelectedHistory, Receipt, PORT
+                from awqm.selected_history import SelectedHistory, Receipt, PORT, ARM
                 archive=SelectedHistory(s)
                 view.selected_history=archive
                 view.selected_controllers=frozenset(("w1",))
@@ -232,6 +232,27 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 status,_,raw=req("GET",tail,headers=admin_h)
                 self.assertEqual(status,200)
                 self.assertIsNone(json.loads(raw)["next_cursor"])
+                arm_payload={**payload,"command":ARM,"observation":{
+                    "ap_name":"PRIVATE-ARM","received_at":t,"field_validated":False,
+                    "sample_time_verified":False,"target_verified":False,
+                    "radio_binding_verified":False,"completeness_verified":False,
+                    "event_time_verified":False,"interface_count":1,"event_count":1,"truncated":False,
+                    "interfaces":[{"interface":"wifi0","phy_type":"5GHz","table_present":True,
+                        "event_count":1,"events":[{"reason_code":"P-","old_channel":"36+",
+                            "new_channel":"36+","old_power":"18","new_power":"0",
+                            "reported_age_seconds":0,"private":"PRIVATE-ARM-EVENT"}]}]}}
+                archive.save(Receipt("3"*32,"w1",ARM,t,json.dumps(arm_payload)))
+                arm_path=history_path.replace("command=D07","command=D08")
+                self.assertEqual(req("GET",arm_path)[0],401)
+                self.assertEqual(req("GET",arm_path,headers=h)[0],403)
+                status,headers,raw=req("GET",arm_path,headers=admin_h)
+                self.assertEqual(status,200)
+                self.assertEqual(headers["Cache-Control"],"no-store")
+                self.assertEqual(json.loads(raw)["rows"][0]["arm_detail"], [
+                    {"interface":"wifi0","phy_type":"5GHz","table_present":True,
+                     "reported_event_rows":1,"events":[{"reason_code":"P-","old_channel":"36+",
+                         "new_channel":"36+","old_power":"18","new_power":"0","reported_age_seconds":0}]}])
+                self.assertNotIn("PRIVATE-",raw.decode())
                 from unittest.mock import patch
                 with patch.object(audit,"record",side_effect=OSError):
                     status,_,raw=req("GET",history_path,headers=admin_h)

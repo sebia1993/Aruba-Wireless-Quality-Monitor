@@ -323,6 +323,22 @@ class SelectedHistoryTests(unittest.TestCase):
                          "phy_error_raw":"0", "mac_error_raw":None, "utilization":None}])
                 else:
                     self.assertNotIn("rf_detail", row)
+                if ident == "D08":
+                    self.assertEqual(row["summary"], {"retained_event_rows":4,
+                        "reported_event_rows":4, "retained_interfaces":2})
+                    self.assertEqual(row["arm_detail"], [
+                        {"interface":"wifi0","phy_type":None,"table_present":True,"reported_event_rows":3,
+                         "events":[{"reason_code":"I","old_channel":"36+","new_channel":"44-",
+                                    "old_power":"18","new_power":"18","reported_age_seconds":62},
+                                   {"reason_code":"P-","old_channel":"44-","new_channel":"44-",
+                                    "old_power":"18","new_power":"15","reported_age_seconds":0},
+                                   {"reason_code":"OFF(R)","old_channel":"44-","new_channel":"0",
+                                    "old_power":None,"new_power":"0","reported_age_seconds":93784}]},
+                        {"interface":"wifi1","phy_type":None,"table_present":True,"reported_event_rows":1,
+                         "events":[{"reason_code":"P+","old_channel":"6","new_channel":"6",
+                                    "old_power":"9","new_power":"12","reported_age_seconds":9}]}])
+                else:
+                    self.assertNotIn("arm_detail", row)
                 raw = json.dumps(page)
                 for private in (AP, MAC, KEY, data["ap_binding"], original.receipt_id,
                                 "radio_approval", "connection", "observation"):
@@ -500,6 +516,76 @@ class SelectedHistoryTests(unittest.TestCase):
         del row["rx_bytes"]
         with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
             project()
+        engine.close()
+
+    def test_d08_history_bounds_privacy_and_header_only(self):
+        from awqm.selected_history import receipt_summary
+        w, engine, _ = self.worker_engine(ARM)
+        outcome = Engine._step(w)
+        original = outcome[0].selected_receipt
+        self.assertIsNotNone(original)
+        self.harvest(engine, outcome)
+        data = json.loads(original.payload)
+        obs = data["observation"]
+        first, second = obs["interfaces"]
+        event = first["events"][0]
+        event["private"] = "DO-NOT-DISCLOSE"
+        first["private"] = MAC
+
+        def project():
+            return receipt_summary(replace(original, payload=json.dumps(data)), lambda _: "masked")
+
+        self.assertNotIn("DO-NOT-DISCLOSE", json.dumps(project()))
+        self.assertNotIn(MAC, json.dumps(project()))
+        for target, key, invalid in (
+            (first, "interface", ["wifi3", "wifi1", None, []]),
+            (first, "phy_type", ["8GHz", "5GHz", False]),
+            (first, "table_present", [False, 1, None]),
+            (first, "event_count", [True, -1, 4, 4097]),
+            (event, "reason_code", ["private", None, []]),
+            (event, "old_channel", ["234+", "N/A", 36, "36++"]),
+            (event, "old_power", ["nan", "1000", 18, "18.0001"]),
+            (event, "reported_age_seconds", [True, -1, 8640000000, "62", 1.5]),
+            (obs, "event_time_verified", [True, 0, None]),
+            (obs, "radio_binding_verified", [True, 0, None]),
+            (obs, "completeness_verified", [True, 0, None]),
+            (obs, "target_verified", [True, 0, None]),
+            (obs, "interface_count", [True, 0, 3]),
+            (obs, "event_count", [True, 0, 5]),
+            (obs, "truncated", [True, 0, None]),
+        ):
+            previous = target[key]
+            for value in invalid:
+                with self.subTest(key=key, value=value):
+                    target[key] = value
+                    with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
+                        project()
+            target[key] = previous
+        del event["new_channel"]
+        with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
+            project()
+        event["new_channel"] = "44-"
+        # Repeated identical rows are reported evidence, not unique events.
+        first["events"] = [dict(event) for _ in range(64)]
+        first["event_count"] = 65
+        second["events"] = []
+        obs["event_count"] = 66
+        obs["truncated"] = True
+        self.assertEqual(project()["summary"], {"retained_event_rows":64,
+                         "reported_event_rows":66,"retained_interfaces":2})
+        self.assertEqual(project()["arm_detail"][1]["reported_event_rows"], 1)
+        first["events"].append(dict(event))
+        with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
+            project()
+        # A valid PHY-only header is retained as unknown completeness.
+        obs.update(interfaces=[{"interface":"wifi0","phy_type":"5GHz",
+                   "table_present":False,"events":[],"event_count":0}],
+                   interface_count=1,event_count=0,truncated=False)
+        page = project()
+        self.assertEqual(page["arm_detail"], [{"interface":"wifi0","phy_type":"5GHz",
+                         "table_present":False,"reported_event_rows":0,"events":[]}])
+        self.assertFalse(page["completeness_verified"])
+        self.assertIsNone(page["measurement_start"])
         engine.close()
 
     def test_admin_default_page_bounds_and_same_second_cursor(self):
