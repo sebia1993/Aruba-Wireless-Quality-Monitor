@@ -28,7 +28,8 @@ concurrency:
 
 jobs:
   publish:
-    if: ${{ github.ref == 'refs/heads/feature/unified-launcher' && (github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'AWQM release request: ')) }}
+    if: >-
+      ${{ github.ref == 'refs/heads/feature/unified-launcher' && (github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'AWQM release request: ')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 12
     permissions:
@@ -36,7 +37,8 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_REQUEST: ${{ github.event_name == 'workflow_dispatch' && format('AWQM release request: {0} {1} {2}', inputs.version, inputs.run_id, inputs.source_sha) || github.event.head_commit.message }}
+      RELEASE_REQUEST: >-
+        ${{ github.event_name == 'workflow_dispatch' && format('AWQM release request: {0} {1} {2}', inputs.version, inputs.run_id, inputs.source_sha) || github.event.head_commit.message }}
     steps:
       - name: Verify exact source, full qualification and artifact provenance
         shell: bash
