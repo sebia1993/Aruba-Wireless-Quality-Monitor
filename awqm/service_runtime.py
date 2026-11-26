@@ -194,7 +194,9 @@ def run_service(root,stop,on_ready=None):
             retention=Retention(store,backup_root,audit_path) if retention_enabled else None,
             audit_path=audit_path,archive_days=archive_days))
         resources.callback(maintenance.close)
-        view=DiagnosticView(store,time.time,incidents=quality.incidents,association_history=history) if web else None
+        view=DiagnosticView(store,time.time,incidents=quality.incidents,association_history=history,
+                            selected_history=engine.selected_history,
+                            selected_controllers=(t.id for t in cfg.targets)) if web else None
         if web:
             server=create_listener(web,cfg,engine.workers,gate,view,stop,manual_enabled=manual_enabled,
                 operations=operations,maintenance_status=lambda: maintenance.web_status(retention_enabled,archive_days))

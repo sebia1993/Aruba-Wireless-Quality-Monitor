@@ -185,8 +185,55 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 self.assertEqual(req("GET","/api/admin/status",headers=h)[0],403)
                 self.assertEqual(req("GET","/api/admin/collection",headers=h)[0],403)
                 self.assertEqual(req("GET","/api/admin/collection")[0],401)
+                history_query = urlencode({"controller":"w1","command":"D07","start":t-10,"end":t+1})
+                history_path = "/api/admin/selected-history?" + history_query
+                self.assertEqual(req("GET",history_path)[0],401)
+                self.assertEqual(req("GET",history_path,headers=h)[0],403)
                 admin_token=auth.login("admin","fixture")
                 admin_h={"Cookie":"__Host-awqm_session="+admin_token}
+                status,_,raw=req("GET",history_path,headers=admin_h)
+                self.assertEqual(status,200)
+                self.assertEqual(json.loads(raw),{"enabled":False,"rows":[],"next_cursor":None})
+                from awqm.selected_history import SelectedHistory, Receipt, PORT
+                archive=SelectedHistory(s)
+                view.selected_history=archive
+                view.selected_controllers=frozenset(("w1",))
+                private_binding="a"*64
+                payload={"schema":1,"controller":"w1","command":PORT,"received_at":t,
+                         "source":"selected-cli-unvalidated","ap_binding":private_binding,
+                         "measurement_start":None,"measurement_end":None,"counter_epoch":None,
+                         "connection":"PRIVATE-CONNECTION","observation":{
+                             "ap_name":"PRIVATE-AP","received_at":t,"field_validated":False,
+                             "sample_time_verified":False,"ports":[{"port":0,"oper":"up"}]}}
+                for receipt_id in ("1"*32,"2"*32):
+                    archive.save(Receipt(receipt_id,"w1",PORT,t,json.dumps(payload)))
+                status,headers,raw=req("GET",history_path+"&limit=1",headers=admin_h)
+                self.assertEqual(status,200)
+                self.assertEqual(headers["Cache-Control"],"no-store")
+                page=json.loads(raw)
+                self.assertEqual(page["rows"][0]["summary"],{"retained_port_rows":1})
+                self.assertNotIn(private_binding,raw.decode())
+                self.assertNotIn("PRIVATE-",raw.decode())
+                self.assertNotIn("observation",raw.decode())
+                self.assertEqual(req("GET",history_path+"&after_time="+str(t),headers=admin_h)[0],400)
+                self.assertEqual(req("GET",history_path+"&limit=21",headers=admin_h)[0],400)
+                self.assertEqual(req("GET",history_path+"&command=D03",headers=admin_h)[0],400)
+                self.assertEqual(req("GET",history_path.replace("controller=w1","controller=w2"),headers=admin_h)[0],400)
+                cursor=page["next_cursor"]
+                tail=history_path+"&limit=1&"+urlencode({"after_time":cursor["received_at"],"after_id":cursor["receipt_id"]})
+                status,_,raw=req("GET",tail,headers=admin_h)
+                self.assertEqual(status,200)
+                self.assertIsNone(json.loads(raw)["next_cursor"])
+                from unittest.mock import patch
+                with patch.object(audit,"record",side_effect=OSError):
+                    status,_,raw=req("GET",history_path,headers=admin_h)
+                    self.assertEqual(status,503)
+                    self.assertNotIn("ap_token",raw.decode())
+                with audit._db() as db:
+                    events=db.execute("SELECT username,target FROM audit WHERE event='selected_history'").fetchall()
+                self.assertTrue(events)
+                self.assertTrue(all(event==("admin",None) for event in events))
+                self.assertEqual(req("GET",history_path,headers=h)[0],403)
                 status,_,raw=req("GET","/api/admin/status",headers=admin_h)
                 self.assertEqual(status,200)
                 self.assertEqual(json.loads(raw)["maintenance"],{"available":True,"retention_enabled":False,"policy_editable":False})

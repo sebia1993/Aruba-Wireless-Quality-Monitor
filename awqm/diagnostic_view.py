@@ -8,6 +8,7 @@ import hashlib,hmac,secrets,re
 from copy import deepcopy
 from threading import RLock
 from .reporting import csv_report,html_report,WINDOWS,timestamp
+from .selected_history import COMMAND_IDS, receipt_summary
 
 # The live merger assigns site:wired-MAC and appends the physical Radio ID.
 # Never group legacy or malformed identities by display name or IP.
@@ -24,11 +25,16 @@ def _physical_ap(row):
     return None
 
 class DiagnosticView:
-    def __init__(self,store,clock,key=None,incidents=None,association_history=None):
+    def __init__(self,store,clock,key=None,incidents=None,association_history=None,
+                 selected_history=None, selected_controllers=()):
         if store.mode!="diagnostic":raise ValueError("diagnostic store required")
         self.store=store;self.clock=clock;self.key=key or secrets.token_bytes(32)
         self.lock=RLock();self.rows=[];self.index={};self.meta={};self.incidents=incidents;self.association_history=association_history;self.client_rows=[];self.client_enabled=False;self.neighbor_views={};self.neighbor_enabled=False
         self.publication_revision=0;self.ap_index={}
+        if selected_history is not None and selected_history.store is not store:
+            raise ValueError("selected history store mismatch")
+        self.selected_history=selected_history
+        self.selected_controllers=frozenset(selected_controllers)
     def token(self,radio_id):
         return hmac.new(self.key,radio_id.encode("utf-8"),hashlib.sha256).hexdigest()[:32]
     def publish(self,result,current=(),available=True,quality=None,client_views=(),client_enabled=False,neighbor_views=None,neighbor_enabled=False,anchor_views=None):
@@ -177,6 +183,25 @@ class DiagnosticView:
             try:mac=rid.split(":",1)[1].rsplit(":",1)[0]
             except IndexError:raise ReservationRejected("physical_ap_identity_unavailable") from None
             return {**{k:row[k] for k in ("controller","ap_name","observed_at")},"binding":bind_ap(mac)}
+    def selected_history_page(self,controller,command_id,start,end,limit=20,after=None):
+        # HTTP handler authorizes and audits before invoking this internal
+        # read model. No operation changes, queue admission or SSH.
+        if self.selected_history is None:
+            return {"enabled":False,"rows":[],"next_cursor":None}
+        if controller not in self.selected_controllers or command_id not in COMMAND_IDS:
+            raise ValueError("invalid selected history scope")
+        if not self.store.lock.acquire(blocking=False):
+            raise RuntimeError("storage busy")
+        try:
+            page,cursor=self.selected_history.query(controller,COMMAND_IDS[command_id],
+                                                    start,end,limit=limit,after=after)
+        finally:
+            self.store.lock.release()
+        return {"enabled":True,"controller":controller,"command_id":command_id,
+                "time_basis":"receipt_time","snapshot":False,
+                "rows":[receipt_summary(row,self.token) for row in page],
+                "next_cursor":None if cursor is None else
+                    {"received_at":cursor[0],"receipt_id":cursor[1]}}
     def association_page(self,ident,page):
         if self.association_history is None:return {"enabled":False,"rows":[],"total":0,"page":page,"size":50}
         return self.association_history.page(int(self.clock()),ident,page)

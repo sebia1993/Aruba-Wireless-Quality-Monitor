@@ -268,6 +268,69 @@ class SelectedHistoryTests(unittest.TestCase):
         restored = SelectedHistory(Store(backup, mode="diagnostic"))
         self.assertEqual(restored.query("w1", PORT, 1000, 1001), (ordered, None))
 
+    def test_admin_read_model_summaries_of_each_real_worker_receipt(self):
+        from awqm.diagnostic_view import DiagnosticView
+        from awqm.selected_history import COMMAND_IDS
+        for ident, cmd in COMMAND_IDS.items():
+            with self.subTest(command=ident):
+                w, engine, session = self.worker_engine(cmd)
+                outcome = Engine._step(w)
+                original = outcome[0].selected_receipt
+                self.assertIsNotNone(original)
+                self.harvest(engine, outcome)
+                view = DiagnosticView(engine.store, lambda: self.now, key=b"fixture",
+                                      selected_history=engine.selected_history,
+                                      selected_controllers=("w1",))
+                before = list(session.calls)
+                page = view.selected_history_page("w1", ident, 1000, 1001)
+                self.assertEqual(len(page["rows"]), 1)
+                row = page["rows"][0]
+                data = json.loads(original.payload)
+                self.assertEqual(row["ap_token"], view.token("selected-history:" + data["ap_binding"]))
+                self.assertEqual(row["received_at"], 1000)
+                self.assertFalse(row["field_validated"])
+                self.assertFalse(row["sample_time_verified"])
+                self.assertFalse(row["completeness_verified"])
+                self.assertIsNone(row["counter_epoch"])
+                self.assertEqual(page["time_basis"], "receipt_time")
+                self.assertFalse(page["snapshot"])
+                self.assertIsNone(page["next_cursor"])
+                self.assertTrue(row["summary"])
+                if ident == "D07":
+                    self.assertEqual(row["summary"]["retained_port_rows"], len(data["observation"]["ports"]))
+                raw = json.dumps(page)
+                for private in (AP, MAC, KEY, data["ap_binding"], original.receipt_id,
+                                "radio_approval", "connection", "observation"):
+                    self.assertNotIn(private, raw)
+                self.assertEqual(before, session.calls)
+                with self.assertRaises(ValueError):
+                    view.selected_history_page("unconfigured", ident, 1000, 1001)
+                with self.assertRaises(ValueError):
+                    view.selected_history_page("w1", cmd, 1000, 1001)
+                disabled = DiagnosticView(engine.store, lambda: self.now)
+                self.assertFalse(disabled.selected_history_page("w1", ident, 1000, 1001)["enabled"])
+                # Malformed archived evidence fails closed; no raw payload or
+                # fabricated empty/normal receipt. An unknown private field
+                # is not copied even if stored in an otherwise valid payload.
+                data["observation"]["extra_private"] = "DO-NOT-DISCLOSE"
+                altered = replace(original, receipt_id="f"*32 if original.receipt_id != "f"*32 else "0"*32,
+                                  payload=json.dumps(data))
+                engine.selected_history.save(altered)
+                page = view.selected_history_page("w1", ident, 1000, 1001, limit=1)
+                cursor = page["next_cursor"]
+                self.assertIsNotNone(cursor)
+                tail = view.selected_history_page("w1", ident, 1000, 1001,
+                            limit=1, after=(cursor["received_at"],cursor["receipt_id"]))
+                self.assertIsNone(tail["next_cursor"])
+                self.assertNotIn("DO-NOT-DISCLOSE",json.dumps((page,tail)))
+                data["ap_binding"] = "invalid"
+                invalid = replace(original, receipt_id="1"*32 if original.receipt_id != "1"*32 else "2"*32,
+                                  payload=json.dumps(data))
+                engine.selected_history.save(invalid)
+                with self.assertRaisesRegex(RuntimeError,"selected history record unavailable"):
+                    view.selected_history_page("w1", ident, 1000, 1001)
+                engine.close()
+
     def test_private_receipt_query_bounds_and_cursor(self):
         _, engine, _ = self.worker_engine(PORT)
         ledger = engine.selected_history

@@ -15,7 +15,8 @@ from .arm_rf_summary import COMMAND as RF
 from .live_arm_history import COMMAND as ARM
 from .live_radio_stats import COMMAND as STATS
 
-COMMANDS = frozenset((PORT, RF, ARM, STATS))
+COMMAND_IDS = {"D03": STATS, "D04": RF, "D07": PORT, "D08": ARM}
+COMMANDS = frozenset(COMMAND_IDS.values())
 POLICY = {"version": 1, "enabled": True, "policy": "bounded-selected-receipts-v1"}
 MAX_ROWS = 50000
 MAX_BYTES = 128 * 1024 * 1024
@@ -71,6 +72,69 @@ def capture(worker, path, target, key, started, received):
     return Receipt(uuid4().hex, worker.controller, path.command, received,
                    json.dumps(data, ensure_ascii=True, sort_keys=True,
                               separators=(",", ":"), allow_nan=False))
+
+
+def receipt_summary(receipt, token):
+    """Explicit allowlist for the historical index, not a metric export.
+
+    AP binding is keyed by the view instance before disclosure; no AP name,
+    raw payload, connection, approval, or sample/event time is returned.
+    Count fields describe the receipt, never completeness or device health.
+    """
+    def integer(value, lo, hi):
+        if type(value) is not int or not lo <= value <= hi:
+            raise ValueError("invalid historical count")
+        return value
+
+    def sequence(value, bound):
+        if type(value) is not list or len(value) > bound:
+            raise ValueError("invalid historical rows")
+        return value
+
+    try:
+        data = json.loads(receipt.payload)
+        obs = data["observation"]
+        binding = data["ap_binding"]
+        if (type(data["schema"]) is not int or data["schema"] != 1
+                or data["controller"] != receipt.controller
+                or data["command"] != receipt.command
+                or data["received_at"] != receipt.received_at
+                or data["source"] != "selected-cli-unvalidated"
+                or type(binding) is not str or re.fullmatch(r"[0-9a-f]{64}", binding) is None
+                or obs["received_at"] != receipt.received_at
+                or obs["field_validated"] is not False
+                or obs["sample_time_verified"] is not False
+                or any(data[k] is not None for k in
+                       ("measurement_start", "measurement_end", "counter_epoch"))):
+            raise ValueError("invalid historical provenance")
+        if receipt.command == PORT:
+            summary = {"retained_port_rows": len(sequence(obs["ports"], 32))}
+        elif receipt.command == RF:
+            retained = len(sequence(obs["channels"], 64))
+            summary = {"retained_channel_rows": retained,
+                       "reported_channel_rows": integer(obs["row_count"], retained, 768)}
+        elif receipt.command == ARM:
+            interfaces = sequence(obs["interfaces"], 3)
+            retained = sum(len(sequence(item["events"], 64)) for item in interfaces)
+            summary = {"retained_event_rows": integer(retained, 0, 64),
+                       "reported_event_rows": integer(obs["event_count"], retained, 4096),
+                       "retained_interfaces": len(interfaces)}
+        elif receipt.command == STATS:
+            summary = {"requested_radio": integer(obs["requested_radio"], 0, 2),
+                       "observed_field_count": integer(obs["observed_field_count"], 0, 4096),
+                       "ignored_row_count": integer(obs["ignored_row_count"], 0, 4096)}
+        else:
+            raise ValueError("invalid historical command")
+        return {"ap_token": token("selected-history:" + binding),
+                "received_at": integer(receipt.received_at, 0, MAX_TIMESTAMP),
+                "source": "selected-cli-unvalidated", "field_validated": False,
+                "sample_time_verified": False, "completeness_verified": False,
+                "measurement_start": None, "measurement_end": None,
+                "counter_epoch": None, "summary": summary}
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+        # Corrupt or unsupported archived schema must not become a plausible
+        # empty/normal observation or disclose the offending record.
+        raise RuntimeError("selected history record unavailable") from None
 
 
 class SelectedHistoryFull(RuntimeError):

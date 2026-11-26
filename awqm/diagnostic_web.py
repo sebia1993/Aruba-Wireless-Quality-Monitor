@@ -198,7 +198,7 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
             if self.path=="/login-detail.js":
                 self._send(200,(STATIC/"login-detail.js").read_bytes(),"text/javascript; charset=utf-8");return
             try:
-                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html","/api/neighbors","/api/ap-radios","/api/association-history","/api/admin/collection"))
+                s=auth.session(self._token(),touch=path.path in ("/","/api/history","/api/history.csv","/api/history.html","/api/admin/status","/api/incidents","/api/incident","/api/incident/summary","/api/incident/report.csv","/api/incident/report.html","/api/neighbors","/api/ap-radios","/api/association-history","/api/admin/collection","/api/admin/selected-history"))
             except AuthDenied:
                 if self.path=="/":self._login()
                 else:self._json(401,{"error":"authentication_required"})
@@ -285,6 +285,18 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
                     if operations is None:self._json(200,{"enabled":False});return
                     self._json(200,{"enabled":True,"desired":operations.snapshot(),"applied":view.operation_status(),
                                     "recent":operations.recent()})
+                elif path.path=="/api/admin/selected-history":
+                    if s.role!="admin":self._json(403,{"error":"access_denied"});return
+                    q=self._query(path,{"controller","command","start","end"},
+                                  optional=("limit","after_time","after_id"))
+                    if ("after_time" in q)!=("after_id" in q):
+                        raise ValueError("invalid selected history cursor")
+                    after=(int(q["after_time"]),q["after_id"]) if "after_time" in q else None
+                    # No arbitrary query strings, AP identities or receipt IDs
+                    # in the audit target. Audit failure prevents disclosure.
+                    audit.record(s.username,"selected_history")
+                    self._json(200,view.selected_history_page(q["controller"],q["command"],
+                               int(q["start"]),int(q["end"]),int(q.get("limit",20)),after))
                 elif self.path=="/api/admin/status":
                     if s.role!="admin":self._json(403,{"error":"access_denied"});return
                     audit.record(s.username,"admin_status")
