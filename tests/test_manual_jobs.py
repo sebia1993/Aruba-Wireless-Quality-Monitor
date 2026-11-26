@@ -50,6 +50,7 @@ class ManualTests(unittest.TestCase):
         a=self.reserve();self.assertTrue(a["joined"])
         self.assertFalse(a["can_cancel"])
         self.assertEqual(a["job_id"],auto.job_id)
+        self.assertIsNotNone(self.worker.jobs.get(auto.job_id).binding)
         self.assertEqual(self.broker.cancel("op",self.broker.epoch,a["receipt_id"])["status"],"queued")
         self.worker.jobs.start(auto.job_id,1001)
         self.assertEqual(self.reserve()["status"],"running")

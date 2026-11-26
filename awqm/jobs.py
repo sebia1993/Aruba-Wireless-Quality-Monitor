@@ -46,6 +46,18 @@ class Jobs:
             self.records.pop(key)
             for req,job_id in list(self.requests.items()):
                 if job_id==key:self.requests.pop(req,None)
+    def _ensure_binding(self, job, binding):
+        if binding is None or job.binding == binding:
+            return job
+        # A queued legacy/unbound job may adopt a physical binding before
+        # execution. Never join a running or terminal unbound job as if it
+        # had already executed for that physical AP.
+        if job.binding is not None or job.status not in ("queued","deferred"):
+            raise ValueError("physical target changed or unverified")
+        job=replace(job,binding=binding)
+        self.records[job.job_id]=job
+        return job
+
     def submit(self,request_id,name,target,now,ttl=300,binding=None):
         if not isinstance(request_id,str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,96}",request_id):
             raise ValueError("invalid request ID")
@@ -60,14 +72,14 @@ class Jobs:
             self._expire(now)
             if request_id in self.requests:
                 old=self.records[self.requests[request_id]]
-                if (old.name,old.target)!=key or (binding is not None and old.binding is not None and old.binding!=binding):raise ValueError("request ID conflict")
-                return old
+                if (old.name,old.target)!=key:raise ValueError("request ID conflict")
+                return self._ensure_binding(old,binding)
             existing=self.active.get(key)
             if existing:
-                if binding is not None and self.records[existing].binding not in (None,binding):raise ValueError("physical target changed")
                 if len(self.requests)>=self.history_limit*4:raise RuntimeError("request index full")
+                job=self._ensure_binding(self.records[existing],binding)
                 self.requests[request_id]=existing
-                return self.records[existing]
+                return job
             if len(self.active)>=self.limit:raise RuntimeError("detail queue full")
             self._trim()
             if len(self.records)>=self.history_limit or len(self.requests)>=self.history_limit*4:

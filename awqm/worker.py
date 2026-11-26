@@ -20,7 +20,7 @@ from .cluster import MEMBERSHIP,AP_LOAD,CLIENT_LOAD,LOAD_COMMANDS,group_membersh
 from .live_neighbors import COMMAND as NEIGHBOR,width_value
 from .rf_neighbors import arm_neighbors
 from .association_history import COMMANDS as USER_TABLES,user_table
-from .manual_jobs import bind_ap
+from .ap_detail_target import current_ap_binding
 from .controller_resources import COMMANDS as RESOURCE_COMMANDS,MEMORY,DATAPATH,memory,datapath
 from .ap_anchors import COMMANDS as ANCHOR_COMMANDS,STANDBY,UAC,standby,uac_database
 from .cli_capabilities import matrix as capability_matrix
@@ -260,13 +260,8 @@ class ControllerWorker:
                 return False
             anchors=[a for a in r.data if a["name"]==job.target and "A" in a["roles"]]
             if len(anchors)!=1:return False
-            if self.live_detail and job.request_id.startswith("manual-"):
-                inv=self.latest.get("show ap database long")
-                if not inv or inv.generation!=self.generation or self.outcomes[inv.command].status!="success" or not 0<=now-inv.observed_at<=660:return False
-                entries=[a for a in inv.data if a["name"]==job.target and a["ip"]==anchors[0]["ip"]]
-                if len(entries)!=1 or not job.binding:return False
-                try:return bind_ap(entries[0]["mac"])==job.binding
-                except ValueError:return False
+            if self.live_detail:
+                return bool(job.binding and current_ap_binding(self,job.target,now)==job.binding)
             return True
         r=self.latest.get("show ap association")
         a=self.latest.get("show ap active details")

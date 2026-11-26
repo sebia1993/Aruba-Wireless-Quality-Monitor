@@ -86,7 +86,9 @@ class LiveClientTests(unittest.TestCase):
         with patch("awqm.worker.fingerprint",return_value="fixture-key"):
             for _ in range(7):
                 self.assertEqual(w.tick().status,"success")
-            job=w.submit_detail("test-live","show ap debug client-table","DEMO-AP-001")
+            from awqm.manual_jobs import bind_ap
+            binding=bind_ap("02:00:00:00:00:01")
+            job=w.submit_detail("test-live","show ap debug client-table","DEMO-AP-001",binding=binding)
             self.assertTrue(w._live_detail_allowed(job))
             result=w.tick()
             self.assertEqual(result.command,"show ap debug client-table")
@@ -94,7 +96,7 @@ class LiveClientTests(unittest.TestCase):
             self.assertEqual(w.jobs.get(job.job_id).status,"completed")
             self.assertFalse(w.detail_latest) # do not retain raw live detail
             w.client_approval=None
-            j=w.submit_detail("test-deny","show ap debug client-table","DEMO-AP-001")
+            j=w.submit_detail("test-deny","show ap debug client-table","DEMO-AP-001",binding=binding)
             self.assertIsNone(w.tick())
             self.assertEqual(w.jobs.get(j.job_id).reason,"client_validation_or_freshness_required")
             w.client_approval=ClientApproval("tag",900,1900,True)
@@ -106,13 +108,17 @@ class LiveClientTests(unittest.TestCase):
         from awqm.jobs import Jobs
         class W:
             def __init__(self):self.jobs=Jobs()
-            def submit_detail(self,req,name,target,ttl):return self.jobs.submit(req,name,target,1000,ttl)
+            def submit_detail(self,req,name,target,ttl,binding=None):return self.jobs.submit(req,name,target,1000,ttl,binding=binding)
         r,s,q,a,assoc,bss,d=fixture()
-        radios=[replace(r,radio_id=str(i),ap_id=str(i),ap_name="AP-"+str(i)) for i in range(8)]
+        radios=[replace(r,radio_id=str(i),ap_id=f"site:02:00:00:00:00:{i:02x}",ap_name="AP-"+str(i)) for i in range(8)]
         quality={x.radio_id:{"observed_at":1000,"status":"PERSISTENT","score":50} for x in radios}
         l=LiveClients({"w1":ClientApproval("tag",900,1900,True)})
         workers={"w1":W()}
         self.assertEqual(len(l.plan(radios,[s],quality,1000,workers)),2)
+        from awqm.ap_detail_target import binding_from_physical_id
+        by_name={r.ap_name:r for r in radios}
+        for job in workers["w1"].jobs.pending(1000):
+            self.assertEqual(job.binding,binding_from_physical_id(by_name[job.target].ap_id))
         self.assertEqual(l.plan(radios,[s],quality,1001,workers),[])
 
     def test_failed_table_invalidates_previous_ap_view(self):

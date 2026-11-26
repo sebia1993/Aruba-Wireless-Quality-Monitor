@@ -1,6 +1,7 @@
 """Bounded automatic investigation planning, not a cause classifier."""
 from collections import defaultdict
 import hashlib
+from .ap_detail_target import binding_from_physical_id
 
 COMMAND="show ap debug client-table"
 
@@ -37,7 +38,11 @@ class Selector:
                 key=(controller,r["ap_id"])
                 if r["ap_name"] in active_ap or now-self.last.get(key,-1e20)<self.cooldown:continue
                 rid=hashlib.sha256(f'{controller}|{r["ap_id"]}|{r["observed_at"]//60}'.encode()).hexdigest()[:32]
-                try:j=w.submit_detail("auto-"+rid,COMMAND,r["ap_name"],ttl=180)
+                try:
+                    # Live selection must carry the physical identity captured
+                    # by the merged Radio observation. Demo jobs stay separate.
+                    kwargs={"binding":binding_from_physical_id(r["ap_id"])} if self.allow_attested else {}
+                    j=w.submit_detail("auto-"+rid,COMMAND,r["ap_name"],ttl=180,**kwargs)
                 except (RuntimeError,ValueError):continue
                 active_ap.add(r["ap_name"]);self.last[key]=now;n+=1
                 submitted.append((controller,j.job_id))
