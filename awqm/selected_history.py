@@ -21,6 +21,7 @@ POLICY = {"version": 1, "enabled": True, "policy": "bounded-selected-receipts-v1
 MAX_ROWS = 50000
 MAX_BYTES = 128 * 1024 * 1024
 MAX_RECEIPT = 128 * 1024
+MAX_PENDING = 4
 MAX_QUERY_ROWS = 20
 MAX_QUERY_SECONDS = 30 * 86400
 MAX_TIMESTAMP = 253402300799
@@ -333,6 +334,10 @@ class SelectedHistory:
                 receipt_id TEXT PRIMARY KEY, controller TEXT NOT NULL,
                 command TEXT NOT NULL, received_at INTEGER NOT NULL,
                 payload TEXT NOT NULL, payload_bytes INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS selected_detail_pending(
+                controller TEXT PRIMARY KEY, receipt_id TEXT NOT NULL UNIQUE,
+                command TEXT NOT NULL, received_at INTEGER NOT NULL,
+                payload TEXT NOT NULL, payload_bytes INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS selected_detail_receipt_time
                 ON selected_detail_receipts(controller,received_at);
             CREATE INDEX IF NOT EXISTS selected_detail_receipt_size
@@ -376,8 +381,8 @@ class SelectedHistory:
         cursor = (page[-1].received_at, page[-1].receipt_id) if len(rows) > limit else None
         return page, cursor
 
-    def save(self, receipt):
-        """Idempotent exact replay, serialized with other core DB writes."""
+    @staticmethod
+    def _values(receipt):
         if not isinstance(receipt, Receipt) or receipt.command not in COMMANDS:
             raise ValueError("invalid selected receipt")
         size = len(receipt.payload.encode("utf-8"))
@@ -393,20 +398,84 @@ class SelectedHistory:
                 or data["observation"].get("field_validated") is not False
                 or data["observation"].get("sample_time_verified") is not False):
             raise ValueError("invalid selected receipt provenance")
-        values = (receipt.controller, receipt.command, receipt.received_at,
-                  receipt.payload, size)
+        return (receipt.controller, receipt.command, receipt.received_at,
+                receipt.payload, size)
+
+    @classmethod
+    def _pending_values(cls, receipt):
+        values = cls._values(receipt)
+        if (type(receipt.receipt_id) is not str
+                or re.fullmatch(r"[0-9a-f]{32}", receipt.receipt_id) is None
+                or type(receipt.controller) is not str
+                or not 1 <= len(receipt.controller) <= 128
+                or type(receipt.received_at) is not int
+                or not 0 <= receipt.received_at <= MAX_TIMESTAMP):
+            raise ValueError("invalid pending selected receipt")
+        return values
+
+    def stage(self, receipt):
+        """Durably stage one accepted receipt per controller; never overwrite."""
+        values = self._pending_values(receipt)
         with self.store.lock, self.store._db(self.store.root / "core.db") as db:
+            old = db.execute("""SELECT receipt_id,controller,command,received_at,payload,payload_bytes
+                FROM selected_detail_pending WHERE controller=? OR receipt_id=?""",
+                             (receipt.controller, receipt.receipt_id)).fetchall()
+            if old:
+                if old != [(receipt.receipt_id, *values)]:
+                    raise ValueError("pending selected receipt conflict")
+                return False
+            if db.execute("SELECT COUNT(*) FROM selected_detail_pending").fetchone()[0] >= MAX_PENDING:
+                raise SelectedHistoryFull("selected pending capacity")
+            db.execute("""INSERT INTO selected_detail_pending
+                (receipt_id,controller,command,received_at,payload,payload_bytes)
+                VALUES(?,?,?,?,?,?)""", (receipt.receipt_id, *values))
+        return True
+
+    def pending(self):
+        """Restore a bounded private queue, rejecting malformed/corrupt rows."""
+        with self.store.lock, self.store._db(self.store.root / "core.db") as db:
+            count, largest = db.execute("""SELECT COUNT(*),
+                COALESCE(MAX(length(CAST(payload AS BLOB))),0)
+                FROM selected_detail_pending""").fetchone()
+            if count > MAX_PENDING or largest > MAX_RECEIPT:
+                raise ValueError("invalid selected pending bounds")
+            rows = db.execute("""SELECT receipt_id,controller,command,received_at,payload,payload_bytes
+                FROM selected_detail_pending ORDER BY controller LIMIT ?""",
+                              (MAX_PENDING + 1,)).fetchall()
+        result = {}
+        for row in rows:
+            receipt = Receipt(*row[:5])
+            if self._pending_values(receipt) != row[1:] or receipt.controller in result:
+                raise ValueError("invalid selected pending record")
+            result[receipt.controller] = receipt
+        return result
+
+    def save(self, receipt):
+        """Commit archive and acknowledge an exact staged receipt atomically."""
+        values = self._values(receipt)
+        size = values[-1]
+        with self.store.lock, self.store._db(self.store.root / "core.db") as db:
+            staged = db.execute("""SELECT receipt_id,controller,command,received_at,payload,payload_bytes
+                FROM selected_detail_pending WHERE receipt_id=? OR controller=?""",
+                                (receipt.receipt_id, receipt.controller)).fetchall()
+            if staged and staged != [(receipt.receipt_id, *values)]:
+                raise ValueError("pending selected receipt conflict")
             old = db.execute("""SELECT controller,command,received_at,payload,payload_bytes
                 FROM selected_detail_receipts WHERE receipt_id=?""",
                              (receipt.receipt_id,)).fetchone()
             if old is not None:
                 if old != values:
                     raise ValueError("selected receipt ID conflict")
-                return False
-            count, total = db.execute("""SELECT COUNT(*),COALESCE(SUM(payload_bytes),0)
-                FROM selected_detail_receipts""").fetchone()
-            if count >= MAX_ROWS or total + size > MAX_BYTES:
-                raise SelectedHistoryFull("selected history capacity")
-            db.execute("INSERT INTO selected_detail_receipts VALUES(?,?,?,?,?,?)",
-                       (receipt.receipt_id, *values))
-        return True
+            else:
+                count, total = db.execute("""SELECT COUNT(*),COALESCE(SUM(payload_bytes),0)
+                    FROM selected_detail_receipts""").fetchone()
+                if count >= MAX_ROWS or total + size > MAX_BYTES:
+                    raise SelectedHistoryFull("selected history capacity")
+                db.execute("INSERT INTO selected_detail_receipts VALUES(?,?,?,?,?,?)",
+                           (receipt.receipt_id, *values))
+            if staged:
+                # Only retire the exact queue entry in the same transaction
+                # as its archived copy. Failure rolls both changes back.
+                db.execute("DELETE FROM selected_detail_pending WHERE receipt_id=?",
+                           (receipt.receipt_id,))
+        return old is None

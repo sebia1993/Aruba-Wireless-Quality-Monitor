@@ -34,6 +34,12 @@ class SelectedHistoryTests(unittest.TestCase):
         self.key = patch("awqm.worker.fingerprint", return_value=KEY)
         self.key.start()
         self.addCleanup(self.key.stop)
+        # Synthetic capacity is controlled; explicit critical-disk cases
+        # override this fixture rather than depending on the runner's volume.
+        space = patch("awqm.engine.shutil.disk_usage",
+                      return_value=SimpleNamespace(free=80*10**9, total=100*10**9))
+        space.start()
+        self.addCleanup(space.stop)
 
     def worker_engine(self, cmd, enabled=True):
         session = Session()
@@ -135,6 +141,59 @@ class SelectedHistoryTests(unittest.TestCase):
         self.assertIsNone(engine.pulse()["storage_error"])
         self.assertEqual(engine.operation_status()["selected_history"]["pending"], 0)
         self.assertEqual(len(self.rows(engine.store)), 1)
+
+    def test_staged_receipt_recovers_on_engine_restart_without_ssh(self):
+        w, engine, session = self.worker_engine(PORT)
+        outcome = Engine._step(w)
+        receipt = outcome[0].selected_receipt
+        with patch.object(engine.selected_history, "save", side_effect=sqlite3.OperationalError):
+            self.assertEqual(self.harvest(engine, outcome)["storage_error"], "OperationalError")
+        self.assertEqual(engine.selected_history.pending(), {"w1": receipt})
+        self.assertEqual(self.rows(engine.store), [])
+        before = list(session.calls)
+        with self.assertRaisesRegex(RuntimeError, "selected history shutdown incomplete"):
+            engine.close()
+        # A new Store and Engine (same protected data directory), no old
+        # in-memory pending map or fresh collection.
+        reopened = Store(engine.store.root, mode="diagnostic")
+        restarted = Engine([w], reopened, clock=lambda: self.now, wall=lambda: self.now,
+                           selected_history=True)
+        self.addCleanup(restarted.close)
+        restarted.paused = True
+        self.assertEqual(restarted.selected_pending, {"w1": receipt})
+        self.assertIsNone(restarted.pulse()["storage_error"])
+        self.assertEqual(self.rows(reopened), [(receipt.receipt_id, receipt.payload)])
+        self.assertEqual(restarted.selected_history.pending(), {})
+        self.assertEqual(restarted.selected_pending, {})
+        self.assertEqual(session.calls, before)
+        self.assertEqual(restarted.published_radios, ())
+
+    def test_pending_conflict_capacity_and_atomic_ack(self):
+        w, engine, _ = self.worker_engine(PORT)
+        receipt = Engine._step(w)[0].selected_receipt
+        ledger = engine.selected_history
+        self.assertTrue(ledger.stage(receipt))
+        self.assertFalse(ledger.stage(receipt))
+        self.assertEqual(ledger.query("w1", PORT, 1000, 1001), ((), None))
+        other = replace(receipt, receipt_id="f"*32 if receipt.receipt_id != "f"*32 else "0"*32)
+        with self.assertRaises(ValueError):
+            ledger.stage(other)
+        with self.assertRaises(ValueError):
+            ledger.save(other)
+        with patch("awqm.selected_history.MAX_ROWS", 0):
+            with self.assertRaises(SelectedHistoryFull):
+                ledger.save(receipt)
+        self.assertEqual(ledger.pending(), {"w1": receipt})
+        self.assertEqual(self.rows(engine.store), [])
+        backup = engine.store.backup(Path(self.root.name) / "pending-backup")
+        restored = SelectedHistory(Store(backup, mode="diagnostic"))
+        self.assertEqual(restored.pending(), {"w1": receipt})
+        self.assertTrue(ledger.save(receipt))
+        self.assertEqual(ledger.pending(), {})
+        self.assertTrue(ledger.stage(receipt))
+        self.assertFalse(ledger.save(receipt))
+        self.assertEqual(ledger.pending(), {})
+        self.assertEqual(self.rows(engine.store), [(receipt.receipt_id, receipt.payload)])
 
     def test_close_drains_actual_worker_without_another_tick_or_publication(self):
         w, engine, session = self.worker_engine(PORT)

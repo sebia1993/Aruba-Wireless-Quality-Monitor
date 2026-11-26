@@ -33,8 +33,10 @@ class Engine:
         self.store=store;self.site=site;self.clock=clock;self.wall=wall
         if simulation and selected_history:raise ValueError("selected history requires diagnostic mode")
         self.selected_history=SelectedHistory(store) if selected_history else None
-        self.selected_pending={}
+        self.selected_pending=self.selected_history.pending() if self.selected_history else {}
         if self.selected_history:
+            if not set(self.selected_pending).issubset(self.workers):
+                raise ValueError("pending selected receipt controller unavailable")
             for w in workers:w.retain_selected_history=True
         self.client_history=ClientHistory(store.root/"client_history.db",simulation=True) if simulation else None
         self.detail_pending={}
@@ -155,7 +157,12 @@ class Engine:
                 try:
                     reading,snapshot,bss,assoc,frame,user_frame=f.result()
                     if self.selected_history and reading and reading.selected_receipt is not None:
-                        self.selected_pending[name]=reading.selected_receipt
+                        receipt=reading.selected_receipt
+                        previous=self.selected_pending.get(name)
+                        if previous is not None and previous != receipt:
+                            self.error="selected_history_conflict"
+                            raise RuntimeError("conflicting pending selected receipt")
+                        self.selected_pending[name]=receipt
                     if self.association_history:self.association_frames[name]=(snapshot,bss,user_frame)
                     if frame is not None:self.cluster_frames[name]=frame
                     if self.live_neighbors:
@@ -188,9 +195,7 @@ class Engine:
             # commit freezes further dispatch until explicit storage recovery.
             if self.selected_history and not self.error:
                 try:
-                    for name,receipt in list(self.selected_pending.items()):
-                        self.selected_history.save(receipt)
-                        del self.selected_pending[name]
+                    self._persist_selected()
                 except (ValueError,TypeError,KeyError,RuntimeError,sqlite3.Error,OSError) as exc:
                     self.error=type(exc).__name__
             maintenance_blocked=self._maintenance_step()
@@ -370,6 +375,22 @@ class Engine:
     def job_status(self,controller):
         w=self.workers[controller]
         return [asdict(j) for j in w.jobs.list(w.wall())]
+    def _persist_selected(self):
+        """Stage bounded receipts before archive commit; retry exact IDs only."""
+        for receipt in self.selected_pending.values():
+            space=shutil.disk_usage(self.store.root)
+            if disk_level(space.free,space.total)=="critical":
+                self.error="disk_protection"
+                return
+            self.selected_history.stage(receipt)
+        for name,receipt in list(self.selected_pending.items()):
+            space=shutil.disk_usage(self.store.root)
+            if disk_level(space.free,space.total)=="critical":
+                self.error="disk_protection"
+                return
+            self.selected_history.save(receipt)
+            del self.selected_pending[name]
+
     def _drain_selected_on_close(self):
         """Archive completed accepted receipts only; never dispatch or publish.
 
@@ -395,13 +416,7 @@ class Engine:
                 incomplete = type(exc).__name__
         if self.selected_pending and not self.error:
             try:
-                for name, receipt in list(self.selected_pending.items()):
-                    space = shutil.disk_usage(self.store.root)
-                    if disk_level(space.free, space.total) == "critical":
-                        self.error = "disk_protection"
-                        break
-                    self.selected_history.save(receipt)
-                    del self.selected_pending[name]
+                self._persist_selected()
             except (ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error, OSError) as exc:
                 self.error = type(exc).__name__
         if incomplete is not None or self.selected_pending:
