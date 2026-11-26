@@ -298,6 +298,12 @@ class SelectedHistoryTests(unittest.TestCase):
                 self.assertTrue(row["summary"])
                 if ident == "D07":
                     self.assertEqual(row["summary"]["retained_port_rows"], len(data["observation"]["ports"]))
+                    self.assertEqual(row["port_detail"], [
+                        {"port":0,"admin":"enabled","oper":"up","speed_mbps":2500,
+                         "duplex":"full","tx_packets":"0","tx_bytes":"18446744073709551615",
+                         "rx_packets":None,"rx_bytes":"300"}])
+                else:
+                    self.assertNotIn("port_detail", row)
                 if ident == "D03":
                     self.assertEqual(row["radio_detail"], {
                         "reported_counters": {"radio_resets":"0", "tx_timeouts":"4", "rx_crc_errors":"0"},
@@ -432,6 +438,66 @@ class SelectedHistoryTests(unittest.TestCase):
             project()
         obs["channels"].pop()
         del row["mac_error_raw"]
+        with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
+            project()
+        engine.close()
+
+    def test_d07_history_preserves_reported_values_and_rejects_corruption(self):
+        from awqm.selected_history import receipt_summary
+        w, engine, _ = self.worker_engine(PORT)
+        outcome = Engine._step(w)
+        original = outcome[0].selected_receipt
+        self.assertIsNotNone(original)
+        self.harvest(engine, outcome)
+        data = json.loads(original.payload)
+        obs = data["observation"]
+        row = obs["ports"][0]
+        row["private_key"] = "DO-NOT-DISCLOSE"
+        row["stp"] = "DO-NOT-DISCLOSE"
+        row["port_mac"] = MAC
+        second = dict(row, port=1, admin="disabled", oper="down",
+                      speed_mbps=None, duplex=None, tx_bytes=None)
+        obs["ports"].append(second)
+
+        def project():
+            return receipt_summary(replace(original, payload=json.dumps(data)), lambda _: "masked")
+
+        page = project()
+        self.assertEqual(page["summary"], {"retained_port_rows":2})
+        detail = page["port_detail"]
+        self.assertEqual(detail[0]["tx_bytes"], "18446744073709551615")
+        self.assertEqual(detail[0]["tx_packets"], "0")
+        self.assertIsNone(detail[0]["rx_packets"])
+        self.assertEqual(detail[1]["oper"], "down")
+        self.assertIsNone(detail[1]["speed_mbps"])
+        self.assertIsNone(detail[1]["duplex"])
+        self.assertIsNone(detail[1]["tx_bytes"])
+        for private in ("DO-NOT-DISCLOSE", MAC, "stp", "port_mac"):
+            self.assertNotIn(private, json.dumps(detail))
+        for target, key, invalid in (
+            (row, "port", [True, -1, 1000, 1, "0"]),
+            (row, "admin", ["unknown", None, []]),
+            (row, "oper", ["normal", True, None]),
+            (row, "speed_mbps", [True, 0, 100001, "2500", 1.5]),
+            (row, "duplex", ["auto", False, []]),
+            (row, "tx_bytes", ["18446744073709551616", 0, True, "-1", "1e4"]),
+            (obs, "physical_uplink_verified", [True, 0, None]),
+            (obs, "row_count_verified", [True, 0, None]),
+        ):
+            previous = target[key]
+            for value in invalid:
+                with self.subTest(key=key, value=value):
+                    target[key] = value
+                    with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
+                        project()
+            target[key] = previous
+        valid_ports = obs["ports"]
+        for invalid in ([], [dict(row, port=i) for i in range(33)], [row, None]):
+            obs["ports"] = invalid
+            with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
+                project()
+        obs["ports"] = valid_ports
+        del row["rx_bytes"]
         with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
             project()
         engine.close()

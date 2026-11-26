@@ -204,7 +204,11 @@ class DiagnosticHTTPTests(unittest.TestCase):
                          "measurement_start":None,"measurement_end":None,"counter_epoch":None,
                          "connection":"PRIVATE-CONNECTION","observation":{
                              "ap_name":"PRIVATE-AP","received_at":t,"field_validated":False,
-                             "sample_time_verified":False,"ports":[{"port":0,"oper":"up"}]}}
+                             "sample_time_verified":False,"row_count_verified":False,
+                             "physical_uplink_verified":False,"ports":[
+                                 {"port":0,"admin":"enabled","oper":"up","speed_mbps":2500,
+                                  "duplex":"full","tx_packets":"0","tx_bytes":"18446744073709551615",
+                                  "rx_packets":None,"rx_bytes":"300","stp":"PRIVATE-STP"}]}}
                 for receipt_id in ("1"*32,"2"*32):
                     archive.save(Receipt(receipt_id,"w1",PORT,t,json.dumps(payload)))
                 status,headers,raw=req("GET",history_path+"&limit=1",headers=admin_h)
@@ -212,6 +216,10 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 self.assertEqual(headers["Cache-Control"],"no-store")
                 page=json.loads(raw)
                 self.assertEqual(page["rows"][0]["summary"],{"retained_port_rows":1})
+                self.assertEqual(page["rows"][0]["port_detail"], [
+                    {"port":0,"admin":"enabled","oper":"up","speed_mbps":2500,
+                     "duplex":"full","tx_packets":"0","tx_bytes":"18446744073709551615",
+                     "rx_packets":None,"rx_bytes":"300"}])
                 self.assertNotIn(private_binding,raw.decode())
                 self.assertNotIn("PRIVATE-",raw.decode())
                 self.assertNotIn("observation",raw.decode())

@@ -154,6 +154,34 @@ def _rf_history_detail(obs, channels):
     return rows
 
 
+# D07's archived port projection is already stripped of wired MACs.
+# Do not expose unconstrained CLI labels (including STP), private fields,
+# or convert reported counters to deltas/rates.
+D07_HISTORY_COUNTERS = ("tx_packets", "tx_bytes", "rx_packets", "rx_bytes")
+
+
+def _port_history_detail(obs, ports):
+    if not ports or obs["row_count_verified"] is not False or obs["physical_uplink_verified"] is not False:
+        raise ValueError("invalid historical port provenance")
+    rows, seen = [], set()
+    for row in ports:
+        if type(row) is not dict:
+            raise ValueError("invalid historical port row")
+        port, admin, oper = row["port"], row["admin"], row["oper"]
+        speed, duplex = row["speed_mbps"], row["duplex"]
+        if (type(port) is not int or not 0 <= port <= 999 or port in seen
+                or admin not in ("enabled", "disabled")
+                or oper not in ("up", "down")
+                or (speed is not None and (type(speed) is not int or not 1 <= speed <= 100000))
+                or duplex not in (None, "full", "half")):
+            raise ValueError("invalid historical port field")
+        seen.add(port)
+        rows.append({"port": port, "admin": admin, "oper": oper,
+                     "speed_mbps": speed, "duplex": duplex,
+                     **{key: _reported_uint64(row[key]) for key in D07_HISTORY_COUNTERS}})
+    return rows
+
+
 def receipt_summary(receipt, token):
     """Explicit allowlist for the historical index, not a metric export.
 
@@ -189,7 +217,9 @@ def receipt_summary(receipt, token):
             raise ValueError("invalid historical provenance")
         detail = {}
         if receipt.command == PORT:
-            summary = {"retained_port_rows": len(sequence(obs["ports"], 32))}
+            ports = sequence(obs["ports"], 32)
+            summary = {"retained_port_rows": len(ports)}
+            detail = {"port_detail": _port_history_detail(obs, ports)}
         elif receipt.command == RF:
             channels = sequence(obs["channels"], 64)
             retained = len(channels)

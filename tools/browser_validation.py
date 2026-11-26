@@ -109,7 +109,14 @@ def fixture(root):
                  "measurement_start":None,"measurement_end":None,"counter_epoch":None,
                  "connection":"PRIVATE-HISTORY-CONNECTION","observation":{
                      "ap_name":"PRIVATE-HISTORY-AP","received_at":now,"field_validated":False,
-                     "sample_time_verified":False,"ports":[{"port":0}]* (2 if n==20 else 1)}}
+                     "sample_time_verified":False,"row_count_verified":False,
+                     "physical_uplink_verified":False,"ports":[
+                         {"port":0,"admin":"enabled","oper":"up","speed_mbps":2500,
+                          "duplex":"full","tx_packets":"0","tx_bytes":"18446744073709551615",
+                          "rx_packets":None,"rx_bytes":"300","stp":"PRIVATE-HISTORY-STP"}]
+                     + ([{"port":1,"admin":"disabled","oper":"down","speed_mbps":None,
+                          "duplex":None,"tx_packets":None,"tx_bytes":None,
+                          "rx_packets":"0","rx_bytes":None}] if n==20 else [])}}
         archive.save(Receipt(f"{n+1:032x}","WLC-1",PORT,now,json.dumps(payload)))
     stats_payload={"schema":1,"controller":"WLC-1","command":STATS,"received_at":now,
                    "source":"selected-cli-unvalidated","ap_binding":"b"*64,
@@ -424,6 +431,14 @@ def browser_test(output):
                         require("after_time" in q2 and "after_id" in q2,"cursor missing")
                         expect(history.locator("tbody tr")).to_have_count(1)
                         expect(history.locator("tbody td").nth(2)).to_have_text("2")
+                        history.get_by_text("포트 보고값 2행",exact=True).click()
+                        expect(history.get_by_text("포트 0 · Admin enabled / Oper up",exact=True)).to_be_visible()
+                        expect(history.get_by_text("속도: 2500 Mbps · Duplex: full",exact=True)).to_be_visible()
+                        expect(history.get_by_text("TX packets: 0 · TX bytes: 18446744073709551615 · RX packets: 미확인 · RX bytes: 300",exact=True)).to_be_visible()
+                        expect(history.get_by_text("포트 1 · Admin disabled / Oper down",exact=True)).to_be_visible()
+                        expect(history.get_by_text("속도: 미확인 · Duplex: 미확인",exact=True)).to_be_visible()
+                        expect(history).not_to_contain_text("PRIVATE-HISTORY")
+                        expect(history).not_to_contain_text("a"*64)
                         expect(history.get_by_role("button",name="다음 이력")).to_be_disabled()
                         history.get_by_label("정밀 이력 수집 항목").select_option("D03")
                         expect(history.locator("tbody tr")).to_have_count(0)

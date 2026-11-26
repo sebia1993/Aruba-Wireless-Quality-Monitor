@@ -496,6 +496,31 @@ function selectedHistoryPanel(){
     }
     return cell;
   }
+  function portDetail(row){
+    const rows=row.port_detail;
+    if(!Array.isArray(rows)||!rows.length||rows.length>32||rows.length!==row.summary?.retained_port_rows)
+      throw Error("invalid port history rows");
+    const cell=el("details"),seen=new Set();
+    cell.append(el("summary","포트 보고값 "+rows.length+"행"));
+    const show=v=>v===null?"미확인":String(v);
+    const counters=[["tx_packets","TX packets"],["tx_bytes","TX bytes"],["rx_packets","RX packets"],["rx_bytes","RX bytes"]];
+    for(const r of rows){
+      if(!Number.isInteger(r.port)||r.port<0||r.port>999||seen.has(r.port)||
+         !["enabled","disabled"].includes(r.admin)||!["up","down"].includes(r.oper)||
+         (r.speed_mbps!==null&&(!Number.isInteger(r.speed_mbps)||r.speed_mbps<1||r.speed_mbps>100000))||
+         ![null,"full","half"].includes(r.duplex))throw Error("invalid port history field");
+      seen.add(r.port);
+      const values=counters.map(([key,label])=>{
+        const v=r[key];
+        if(v!==null&&(typeof v!=="string"||!/^[0-9]{1,20}$/.test(v)))throw Error("invalid port history counter");
+        return label+": "+show(v);
+      });
+      cell.append(el("p","포트 "+r.port+" · Admin "+r.admin+" / Oper "+r.oper),
+        el("div","속도: "+(r.speed_mbps===null?"미확인":r.speed_mbps+" Mbps")+" · Duplex: "+show(r.duplex)),
+        el("div",values.join(" · ")));
+    }
+    return cell;
+  }
   for(const [id,label] of Object.entries(labels)){const o=el("option",id+" · "+label);o.value=id;command.append(o);}
   period.setAttribute("aria-label","정밀 이력 조회 기간");
   for(const [seconds,label] of [[3600,"최근 1시간"],[86400,"최근 24시간"],[604800,"최근 7일"],[2592000,"최근 30일"]]){
@@ -525,13 +550,14 @@ function selectedHistoryPanel(){
         " (종료 미포함) · 페이지 간 스냅샷 아님";
       if(!d.rows.length){out.append(el("p","조회 범위에 저장 기록 없음 · 수집 누락 또는 장애 여부는 판단할 수 없습니다."));return;}
       const fields=counts[scope.command];
-      const radio=scope.command==="D03",rf=scope.command==="D04";
+      const radio=scope.command==="D03",rf=scope.command==="D04",port=scope.command==="D07";
       out.append(table(["수신 시각 KST","임시 AP 토큰",...fields.map(x=>x[1]),
-        ...(radio?["보고된 Radio 값 (미검증)"]:rf?["주변 채널 보고값 (미검증)"]:[]),"측정·검증 상태"],
+        ...(radio?["보고된 Radio 값 (미검증)"]:rf?["주변 채널 보고값 (미검증)"]:port?["유선 포트 보고값 (미검증)"]:[]),"측정·검증 상태"],
         d.rows.map(r=>[kst(r.received_at),r.ap_token,...fields.map(x=>r.summary?.[x[0]]??"미확인"),
-          ...(radio?[radioDetail(r)]:rf?[rfDetail(r)]:[]),"미검증 · 측정 시각/Counter Epoch/완전성 미확인"])));
+          ...(radio?[radioDetail(r)]:rf?[rfDetail(r)]:port?[portDetail(r)]:[]),"미검증 · 측정 시각/Counter Epoch/완전성 미확인"])));
       if(radio)out.append(el("p","Radio 카운터는 수신된 누적값이며 구간 변화량이나 단말 Airtime이 아닙니다. Busy 1/4/64초는 별도 보고 구간이며 측정 시각은 미확인입니다."));
       if(rf)out.append(el("p","채널·대역은 CLI 보고값이며 실제 물리 Radio, Noise 단위, Util 측정 구간 및 완전성은 미확인입니다. Retry/Error 원시값은 비율이나 구간 변화량이 아니며 단말 Airtime 또는 원인을 확정하지 않습니다."));
+      if(port)out.append(el("p","Admin/Oper 및 속도는 과거 CLI 보고값입니다. 실제 업링크, AP Down, 장애 원인이나 현재 상태를 판단하지 않습니다. 카운터는 보고된 누적값이며 구간 변화량·전송률이 아닙니다."));
       if(d.next_cursor&&Number.isSafeInteger(d.next_cursor.received_at)&&
           /^[0-9a-f]{32}$/.test(d.next_cursor.receipt_id))cursor=d.next_cursor;
     }catch(e){
@@ -560,7 +586,7 @@ function selectedHistoryPanel(){
   next.addEventListener("click",()=>{if(cursor)load(cursor);});
   form.append(controller,command,period,submit);
   panel.append(el("h3","정밀 수집 이력"),
-    el("p","관리자 전용 · DB 수락 기록의 메타데이터와 D03/D04의 제한된 보고값을 조회합니다. AP 토큰은 서비스 실행 중에만 유효하며 실측값·상태·원인·완전성을 보장하지 않습니다."),
+    el("p","관리자 전용 · DB 수락 기록의 메타데이터와 D03/D04/D07의 제한된 보고값을 조회합니다. AP 토큰은 서비스 실행 중에만 유효하며 실측값·상태·원인·완전성을 보장하지 않습니다."),
     form,status,out,next);
   return panel;
 }
