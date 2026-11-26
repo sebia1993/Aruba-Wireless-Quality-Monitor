@@ -31,7 +31,7 @@ jobs:
     if: >-
       ${{ github.ref == 'refs/heads/feature/unified-launcher' && (github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'AWQM release request: ')) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     permissions:
       actions: read
       contents: write
@@ -53,8 +53,23 @@ jobs:
           jq -e --arg sha "$sha" '.merge_base_commit.sha == $sha' compare.json >/dev/null
           version="$(gh api "repos/$repo/contents/VERSION.txt?ref=$sha" --jq '.content' | base64 -d | tr -d '\r\n')"
           [[ "$tag" == "v$version" ]]
-          gh api "repos/$repo/actions/runs/$run_id" > run.json
-          jq -e --arg sha "$sha" --arg repo "$repo" '.head_sha == $sha and .head_branch == "feature/unified-launcher" and .head_repository.full_name == $repo and .path == ".github/workflows/windows-build.yml" and .status == "completed" and .conclusion == "success"' run.json >/dev/null
+          # Check provenance before waiting; never dispatch or retry an unqualified run.
+          check_run_identity() {
+            jq -e --arg sha "$sha" --arg repo "$repo" '.head_sha == $sha and .head_branch == "feature/unified-launcher" and .head_repository.full_name == $repo and .path == ".github/workflows/windows-build.yml"' run.json >/dev/null
+          }
+          for attempt_wait in $(seq 1 25); do
+            gh api "repos/$repo/actions/runs/$run_id" > run.json
+            check_run_identity
+            if [[ "$(jq -r '.status' run.json)" == completed ]]; then
+              break
+            fi
+            if [[ "$attempt_wait" -eq 25 ]]; then
+              echo "Qualification still pending; no publication." >&2
+              exit 1
+            fi
+            sleep 30
+          done
+          jq -e '.status == "completed" and .conclusion == "success"' run.json >/dev/null
           attempt="$(jq -r '.run_attempt' run.json)"
           gh api "repos/$repo/actions/runs/$run_id/attempts/$attempt/jobs?per_page=100" > jobs.json
           jq -e --arg sha "$sha" --argjson attempt "$attempt" '
