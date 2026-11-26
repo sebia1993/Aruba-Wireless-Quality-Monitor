@@ -74,6 +74,40 @@ def capture(worker, path, target, key, started, received):
                               separators=(",", ":"), allow_nan=False))
 
 
+# Fixed historical disclosure contract, intentionally independent of future
+# parser expansion. These values are as reported, not measured deltas or Airtime.
+D03_HISTORY_COUNTERS = ("radio_resets", "tx_timeouts", "rx_crc_errors")
+D03_HISTORY_BUSY = ("channel_busy_1s_percent", "channel_busy_4s_percent",
+                    "channel_busy_64s_percent")
+
+
+def _radio_history_detail(obs):
+    def counter(value):
+        if value is None:
+            return None
+        if (type(value) is not str or re.fullmatch(r"[0-9]{1,20}", value) is None
+                or int(value) > 2**64-1):
+            raise ValueError("invalid historical Radio counter")
+        return value
+
+    def percentage(value):
+        if value is None:
+            return None
+        if type(value) not in (int, float) or not 0 <= value <= 100:
+            raise ValueError("invalid historical Radio percentage")
+        return value
+
+    # Missing fields in an accepted schema-1 capture are corruption, not zero.
+    # Unknown fields (including future/private keys) are never projected.
+    counters, busy = obs["counters"], obs["radio_percentages"]
+    if type(counters) is not dict or type(busy) is not dict:
+        raise ValueError("invalid historical Radio detail")
+    return {"reported_counters": {key: counter(counters[key])
+                                 for key in D03_HISTORY_COUNTERS},
+            "reported_busy_windows": {key: percentage(busy[key])
+                                      for key in D03_HISTORY_BUSY}}
+
+
 def receipt_summary(receipt, token):
     """Explicit allowlist for the historical index, not a metric export.
 
@@ -107,6 +141,7 @@ def receipt_summary(receipt, token):
                 or any(data[k] is not None for k in
                        ("measurement_start", "measurement_end", "counter_epoch"))):
             raise ValueError("invalid historical provenance")
+        detail = {}
         if receipt.command == PORT:
             summary = {"retained_port_rows": len(sequence(obs["ports"], 32))}
         elif receipt.command == RF:
@@ -123,6 +158,7 @@ def receipt_summary(receipt, token):
             summary = {"requested_radio": integer(obs["requested_radio"], 0, 2),
                        "observed_field_count": integer(obs["observed_field_count"], 0, 4096),
                        "ignored_row_count": integer(obs["ignored_row_count"], 0, 4096)}
+            detail = {"radio_detail": _radio_history_detail(obs)}
         else:
             raise ValueError("invalid historical command")
         return {"ap_token": token("selected-history:" + binding),
@@ -130,7 +166,7 @@ def receipt_summary(receipt, token):
                 "source": "selected-cli-unvalidated", "field_validated": False,
                 "sample_time_verified": False, "completeness_verified": False,
                 "measurement_start": None, "measurement_end": None,
-                "counter_epoch": None, "summary": summary}
+                "counter_epoch": None, "summary": summary, **detail}
     except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
         # Corrupt or unsupported archived schema must not become a plausible
         # empty/normal observation or disclose the offending record.

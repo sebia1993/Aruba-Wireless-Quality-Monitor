@@ -298,6 +298,13 @@ class SelectedHistoryTests(unittest.TestCase):
                 self.assertTrue(row["summary"])
                 if ident == "D07":
                     self.assertEqual(row["summary"]["retained_port_rows"], len(data["observation"]["ports"]))
+                if ident == "D03":
+                    self.assertEqual(row["radio_detail"], {
+                        "reported_counters": {"radio_resets":"0", "tx_timeouts":"4", "rx_crc_errors":"0"},
+                        "reported_busy_windows": {"channel_busy_1s_percent":50,
+                            "channel_busy_4s_percent":42.5, "channel_busy_64s_percent":0}})
+                else:
+                    self.assertNotIn("radio_detail", row)
                 raw = json.dumps(page)
                 for private in (AP, MAC, KEY, data["ap_binding"], original.receipt_id,
                                 "radio_approval", "connection", "observation"):
@@ -330,6 +337,45 @@ class SelectedHistoryTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,"selected history record unavailable"):
                     view.selected_history_page("w1", ident, 1000, 1001)
                 engine.close()
+
+    def test_d03_history_preserves_uint64_null_and_rejects_corrupt_values(self):
+        from awqm.selected_history import receipt_summary
+        w, engine, session = self.worker_engine(STATS)
+        outcome = Engine._step(w)
+        original = outcome[0].selected_receipt
+        self.assertIsNotNone(original)
+        self.harvest(engine, outcome)
+        data = json.loads(original.payload)
+        obs = data["observation"]
+        obs["counters"]["radio_resets"] = "18446744073709551615"
+        obs["counters"]["tx_timeouts"] = None
+        obs["counters"]["private_counter"] = "DO-NOT-DISCLOSE"
+        obs["radio_percentages"]["channel_busy_64s_percent"] = None
+        obs["radio_percentages"]["private_busy"] = "DO-NOT-DISCLOSE"
+        def project():
+            return receipt_summary(replace(original, payload=json.dumps(data)), lambda _: "masked")
+        detail = project()["radio_detail"]
+        self.assertEqual(detail["reported_counters"], {
+            "radio_resets":"18446744073709551615", "tx_timeouts":None, "rx_crc_errors":"0"})
+        self.assertEqual(detail["reported_busy_windows"], {
+            "channel_busy_1s_percent":50, "channel_busy_4s_percent":42.5,
+            "channel_busy_64s_percent":None})
+        self.assertNotIn("DO-NOT-DISCLOSE", json.dumps(detail))
+        for group, key, invalid in (
+            ("counters","radio_resets",["18446744073709551616", 0, True, "-1", "1e4", "1"*21]),
+            ("radio_percentages","channel_busy_1s_percent",[True, "50", -1, 101, float("nan"), float("inf")]),
+        ):
+            original_value = obs[group][key]
+            for bad in invalid:
+                with self.subTest(group=group,bad=bad):
+                    obs[group][key] = bad
+                    with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
+                        project()
+            obs[group][key] = original_value
+        del obs["counters"]["rx_crc_errors"]
+        with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
+            project()
+        engine.close()
 
     def test_admin_default_page_bounds_and_same_second_cursor(self):
         from awqm.diagnostic_view import DiagnosticView

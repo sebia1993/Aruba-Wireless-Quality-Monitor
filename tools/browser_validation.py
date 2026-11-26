@@ -35,7 +35,7 @@ from awqm.model import Radio
 from awqm.quality_ledger import QualityLedger
 from awqm.secure_preview import tls_context
 from awqm.storage import Store
-from awqm.selected_history import SelectedHistory, Receipt, PORT
+from awqm.selected_history import SelectedHistory, Receipt, PORT, STATS
 from awqm.web_config import WebConfig, cert_expiry
 
 PASSWORD="synthetic-browser-only"
@@ -111,6 +111,18 @@ def fixture(root):
                      "ap_name":"PRIVATE-HISTORY-AP","received_at":now,"field_validated":False,
                      "sample_time_verified":False,"ports":[{"port":0}]* (2 if n==20 else 1)}}
         archive.save(Receipt(f"{n+1:032x}","WLC-1",PORT,now,json.dumps(payload)))
+    stats_payload={"schema":1,"controller":"WLC-1","command":STATS,"received_at":now,
+                   "source":"selected-cli-unvalidated","ap_binding":"b"*64,
+                   "measurement_start":None,"measurement_end":None,"counter_epoch":None,
+                   "observation":{"ap_name":"PRIVATE-HISTORY-RADIO","received_at":now,
+                       "field_validated":False,"sample_time_verified":False,"requested_radio":1,
+                       "observed_field_count":5,"ignored_row_count":0,
+                       "counters":{"radio_resets":"18446744073709551615","tx_timeouts":None,
+                                   "rx_crc_errors":"0","private":"PRIVATE-HISTORY-VALUE"},
+                       "radio_percentages":{"channel_busy_1s_percent":50,
+                                            "channel_busy_4s_percent":42.5,
+                                            "channel_busy_64s_percent":0}}}
+    archive.save(Receipt(f"{22:032x}","WLC-1",STATS,now,json.dumps(stats_payload)))
     view=DiagnosticView(store,lambda:now+1,incidents=ledger.incidents,
                         selected_history=archive,selected_controllers=("WLC-1",))
     meta={"coherent_controllers":1,"expected_controllers":4,"mapped_radios":len(rows),
@@ -397,6 +409,16 @@ def browser_test(output):
                         expect(history.locator("tbody tr")).to_have_count(1)
                         expect(history.locator("tbody td").nth(2)).to_have_text("2")
                         expect(history.get_by_role("button",name="다음 이력")).to_be_disabled()
+                        history.get_by_label("정밀 이력 수집 항목").select_option("D03")
+                        expect(history.locator("tbody tr")).to_have_count(0)
+                        history.get_by_role("button",name="정밀 이력 조회").click()
+                        expect(history.get_by_text("Radio reset: 18446744073709551615",exact=True)).to_be_visible()
+                        expect(history.get_by_text("TX timeout: 미확인",exact=True)).to_be_visible()
+                        expect(history.get_by_text("RX CRC error: 0",exact=True)).to_be_visible()
+                        expect(history.get_by_text("채널 Busy 4초 %: 42.5",exact=True)).to_be_visible()
+                        expect(history.get_by_text("채널 Busy 64초 %: 0",exact=True)).to_be_visible()
+                        expect(history).not_to_contain_text("PRIVATE-HISTORY")
+                        expect(history).not_to_contain_text("b"*64)
                         history.get_by_label("정밀 이력 수집 항목").select_option("D04")
                         expect(history.locator("tbody tr")).to_have_count(0)
                         history.get_by_role("button",name="정밀 이력 조회").click()

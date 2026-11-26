@@ -439,6 +439,28 @@ function selectedHistoryPanel(){
     D04:[["retained_channel_rows","저장 채널 행"],["reported_channel_rows","보고 채널 행"]],
     D07:[["retained_port_rows","저장 포트 행"]],
     D08:[["retained_event_rows","저장 이벤트 행"],["reported_event_rows","보고 이벤트 행"],["retained_interfaces","저장 인터페이스"]]};
+  const radioFields=[
+    ["reported_counters","radio_resets","Radio reset"],
+    ["reported_counters","tx_timeouts","TX timeout"],
+    ["reported_counters","rx_crc_errors","RX CRC error"],
+    ["reported_busy_windows","channel_busy_1s_percent","채널 Busy 1초 %"],
+    ["reported_busy_windows","channel_busy_4s_percent","채널 Busy 4초 %"],
+    ["reported_busy_windows","channel_busy_64s_percent","채널 Busy 64초 %"]];
+  function radioDetail(row){
+    const detail=row.radio_detail;
+    if(!detail)throw Error("missing Radio history detail");
+    const cell=el("div");
+    for(const [group,key,label] of radioFields){
+      if(!detail[group]||!Object.hasOwn(detail[group],key))throw Error("invalid Radio history detail");
+      const value=detail[group][key];
+      if(value!==null&&(group==="reported_counters"?
+          typeof value!=="string"||!/^[0-9]{1,20}$/.test(value):
+          typeof value!=="number"||!Number.isFinite(value)||value<0||value>100))
+        throw Error("invalid Radio history value");
+      cell.append(el("div",label+": "+(value===null?"미확인":String(value))));
+    }
+    return cell;
+  }
   for(const [id,label] of Object.entries(labels)){const o=el("option",id+" · "+label);o.value=id;command.append(o);}
   period.setAttribute("aria-label","정밀 이력 조회 기간");
   for(const [seconds,label] of [[3600,"최근 1시간"],[86400,"최근 24시간"],[604800,"최근 7일"],[2592000,"최근 30일"]]){
@@ -468,9 +490,12 @@ function selectedHistoryPanel(){
         " (종료 미포함) · 페이지 간 스냅샷 아님";
       if(!d.rows.length){out.append(el("p","조회 범위에 저장 기록 없음 · 수집 누락 또는 장애 여부는 판단할 수 없습니다."));return;}
       const fields=counts[scope.command];
-      out.append(table(["수신 시각 KST","임시 AP 토큰",...fields.map(x=>x[1]),"측정·검증 상태"],
+      const radio=scope.command==="D03";
+      out.append(table(["수신 시각 KST","임시 AP 토큰",...fields.map(x=>x[1]),
+        ...(radio?["보고된 Radio 값 (미검증)"]:[]),"측정·검증 상태"],
         d.rows.map(r=>[kst(r.received_at),r.ap_token,...fields.map(x=>r.summary?.[x[0]]??"미확인"),
-          "미검증 · 측정 시각/Counter Epoch/완전성 미확인"])));
+          ...(radio?[radioDetail(r)]:[]),"미검증 · 측정 시각/Counter Epoch/완전성 미확인"])));
+      if(radio)out.append(el("p","Radio 카운터는 수신된 누적값이며 구간 변화량이나 단말 Airtime이 아닙니다. Busy 1/4/64초는 별도 보고 구간이며 측정 시각은 미확인입니다."));
       if(d.next_cursor&&Number.isSafeInteger(d.next_cursor.received_at)&&
           /^[0-9a-f]{32}$/.test(d.next_cursor.receipt_id))cursor=d.next_cursor;
     }catch(e){
@@ -499,7 +524,7 @@ function selectedHistoryPanel(){
   next.addEventListener("click",()=>{if(cursor)load(cursor);});
   form.append(controller,command,period,submit);
   panel.append(el("h3","정밀 수집 이력"),
-    el("p","관리자 전용 · DB에 수락된 기록의 메타데이터만 조회합니다. AP 토큰은 서비스 실행 중에만 유효하며 실측값·상태·원인·완전성을 보장하지 않습니다."),
+    el("p","관리자 전용 · DB 수락 기록의 메타데이터와 D03의 제한된 보고값을 조회합니다. AP 토큰은 서비스 실행 중에만 유효하며 실측값·상태·원인·완전성을 보장하지 않습니다."),
     form,status,out,next);
   return panel;
 }
