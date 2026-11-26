@@ -305,6 +305,18 @@ class SelectedHistoryTests(unittest.TestCase):
                             "channel_busy_4s_percent":42.5, "channel_busy_64s_percent":0}})
                 else:
                     self.assertNotIn("radio_detail", row)
+                if ident == "D04":
+                    self.assertEqual(row["rf_detail"], [
+                        {"channel":36, "reported_band":None, "noise_raw":"92",
+                         "split_scan_reported":False, "retry_raw":"18446744073709551615",
+                         "phy_error_raw":"0", "mac_error_raw":"0",
+                         "utilization":{"channel_utilization":8,"rx":3,"tx":2,
+                             "extension_channel_utilization":1,"quality":95}},
+                        {"channel":44, "reported_band":None, "noise_raw":None,
+                         "split_scan_reported":None, "retry_raw":None,
+                         "phy_error_raw":"0", "mac_error_raw":None, "utilization":None}])
+                else:
+                    self.assertNotIn("rf_detail", row)
                 raw = json.dumps(page)
                 for private in (AP, MAC, KEY, data["ap_binding"], original.receipt_id,
                                 "radio_approval", "connection", "observation"):
@@ -373,6 +385,53 @@ class SelectedHistoryTests(unittest.TestCase):
                         project()
             obs[group][key] = original_value
         del obs["counters"]["rx_crc_errors"]
+        with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
+            project()
+        engine.close()
+
+    def test_d04_history_preserves_reported_values_and_rejects_corruption(self):
+        from awqm.selected_history import receipt_summary
+        w, engine, _ = self.worker_engine(RF)
+        outcome = Engine._step(w)
+        original = outcome[0].selected_receipt
+        self.assertIsNotNone(original)
+        self.harvest(engine, outcome)
+        data = json.loads(original.payload)
+        obs = data["observation"]
+        row = obs["channels"][0]
+        row["private_key"] = "DO-NOT-DISCLOSE"
+        row["utilization"]["private_key"] = "DO-NOT-DISCLOSE"
+        row["noise_raw"] = "-92*"
+        row["split_scan_reported"] = True
+
+        def project():
+            return receipt_summary(replace(original, payload=json.dumps(data)), lambda _: "masked")
+
+        detail = project()["rf_detail"]
+        self.assertEqual(detail[0]["noise_raw"], "-92*")
+        self.assertIs(detail[0]["split_scan_reported"], True)
+        self.assertNotIn("DO-NOT-DISCLOSE", json.dumps(detail))
+        self.assertNotIn("interference_index", detail[1])
+        for target, key, invalid in (
+            (row, "channel", [True, 0, 234, "36"]),
+            (row, "reported_band", ["5GHz", []]),
+            (row, "retry_raw", ["18446744073709551616", 0, True, "-1"]),
+            (row, "noise_raw", [92, "N/A", "private-name"]),
+            (row, "split_scan_reported", [False, 1, None]),
+            (row["utilization"], "quality", [True, "95", -1, 101, float("nan")]),
+        ):
+            previous = target[key]
+            for value in invalid:
+                with self.subTest(key=key, value=value):
+                    target[key] = value
+                    with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
+                        project()
+            target[key] = previous
+        obs["channels"].append(dict(row))
+        with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
+            project()
+        obs["channels"].pop()
+        del row["mac_error_raw"]
         with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
             project()
         engine.close()

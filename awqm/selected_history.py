@@ -81,15 +81,16 @@ D03_HISTORY_BUSY = ("channel_busy_1s_percent", "channel_busy_4s_percent",
                     "channel_busy_64s_percent")
 
 
-def _radio_history_detail(obs):
-    def counter(value):
-        if value is None:
-            return None
-        if (type(value) is not str or re.fullmatch(r"[0-9]{1,20}", value) is None
-                or int(value) > 2**64-1):
-            raise ValueError("invalid historical Radio counter")
-        return value
+def _reported_uint64(value):
+    if value is None:
+        return None
+    if (type(value) is not str or re.fullmatch(r"[0-9]{1,20}", value) is None
+            or int(value) > 2**64-1):
+        raise ValueError("invalid historical counter")
+    return value
 
+
+def _radio_history_detail(obs):
     def percentage(value):
         if value is None:
             return None
@@ -102,10 +103,55 @@ def _radio_history_detail(obs):
     counters, busy = obs["counters"], obs["radio_percentages"]
     if type(counters) is not dict or type(busy) is not dict:
         raise ValueError("invalid historical Radio detail")
-    return {"reported_counters": {key: counter(counters[key])
+    return {"reported_counters": {key: _reported_uint64(counters[key])
                                  for key in D03_HISTORY_COUNTERS},
             "reported_busy_windows": {key: percentage(busy[key])
                                       for key in D03_HISTORY_BUSY}}
+
+
+# Only a bounded reported-value subset of the selected D04 channel table.
+# Do not expose arbitrary parser keys, infer a band, convert noise to dBm,
+# or treat reported utilization fields as aligned samples or client Airtime.
+D04_HISTORY_RAW = ("retry_raw", "phy_error_raw", "mac_error_raw")
+D04_HISTORY_UTIL = ("channel_utilization", "rx", "tx",
+                    "extension_channel_utilization", "quality")
+
+
+def _rf_history_detail(obs, channels):
+    layout = obs["layout"]
+    if layout not in ("legacy", "band", "phy-type") or not channels:
+        raise ValueError("invalid historical RF layout")
+    rows, seen = [], set()
+    for row in channels:
+        if type(row) is not dict:
+            raise ValueError("invalid historical RF row")
+        channel, band = row["channel"], row["reported_band"]
+        if (type(channel) is not int or not 1 <= channel <= 233
+                or (layout == "legacy" and band is not None)
+                or (layout != "legacy" and band not in ("2.4GHz", "5GHz", "6GHz"))
+                or (band, channel) in seen):
+            raise ValueError("invalid historical RF channel")
+        seen.add((band, channel))
+        noise = row["noise_raw"]
+        if noise is not None and (type(noise) is not str or
+                re.fullmatch(r"-?[0-9]{1,3}\*?", noise) is None):
+            raise ValueError("invalid historical RF noise")
+        split = row["split_scan_reported"]
+        if split is not (None if noise is None else noise.endswith("*")):
+            raise ValueError("invalid historical RF split-scan marker")
+        util = row["utilization"]
+        if util is not None:
+            if type(util) is not dict:
+                raise ValueError("invalid historical RF utilization")
+            util = {key: util[key] for key in D04_HISTORY_UTIL}
+            if any(type(value) is not int or not 0 <= value <= 100
+                   for value in util.values()):
+                raise ValueError("invalid historical RF utilization value")
+        rows.append({"channel": channel, "reported_band": band,
+                     "noise_raw": noise, "split_scan_reported": split,
+                     **{key: _reported_uint64(row[key]) for key in D04_HISTORY_RAW},
+                     "utilization": util})
+    return rows
 
 
 def receipt_summary(receipt, token):
@@ -145,9 +191,11 @@ def receipt_summary(receipt, token):
         if receipt.command == PORT:
             summary = {"retained_port_rows": len(sequence(obs["ports"], 32))}
         elif receipt.command == RF:
-            retained = len(sequence(obs["channels"], 64))
+            channels = sequence(obs["channels"], 64)
+            retained = len(channels)
             summary = {"retained_channel_rows": retained,
                        "reported_channel_rows": integer(obs["row_count"], retained, 768)}
+            detail = {"rf_detail": _rf_history_detail(obs, channels)}
         elif receipt.command == ARM:
             interfaces = sequence(obs["interfaces"], 3)
             retained = sum(len(sequence(item["events"], 64)) for item in interfaces)

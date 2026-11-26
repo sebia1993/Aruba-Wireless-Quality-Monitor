@@ -35,7 +35,7 @@ from awqm.model import Radio
 from awqm.quality_ledger import QualityLedger
 from awqm.secure_preview import tls_context
 from awqm.storage import Store
-from awqm.selected_history import SelectedHistory, Receipt, PORT, STATS
+from awqm.selected_history import SelectedHistory, Receipt, PORT, STATS, RF
 from awqm.web_config import WebConfig, cert_expiry
 
 PASSWORD="synthetic-browser-only"
@@ -123,6 +123,22 @@ def fixture(root):
                                             "channel_busy_4s_percent":42.5,
                                             "channel_busy_64s_percent":0}}}
     archive.save(Receipt(f"{22:032x}","WLC-1",STATS,now,json.dumps(stats_payload)))
+    rf_payload={"schema":1,"controller":"WLC-1","command":RF,"received_at":now,
+                "source":"selected-cli-unvalidated","ap_binding":"c"*64,
+                "measurement_start":None,"measurement_end":None,"counter_epoch":None,
+                "observation":{"ap_name":"PRIVATE-HISTORY-RF","received_at":now,
+                    "field_validated":False,"sample_time_verified":False,
+                    "layout":"band","row_count":2,"channels":[
+                        {"channel":36,"reported_band":"5GHz","noise_raw":"92*",
+                         "split_scan_reported":True,"retry_raw":"18446744073709551615",
+                         "phy_error_raw":"0","mac_error_raw":None,
+                         "utilization":{"channel_utilization":8,"rx":3,"tx":2,
+                             "extension_channel_utilization":1,"quality":95,
+                             "private":"PRIVATE-HISTORY-VALUE"}},
+                        {"channel":44,"reported_band":"5GHz","noise_raw":None,
+                         "split_scan_reported":None,"retry_raw":None,
+                         "phy_error_raw":"0","mac_error_raw":None,"utilization":None}]}}
+    archive.save(Receipt(f"{23:032x}","WLC-1",RF,now,json.dumps(rf_payload)))
     view=DiagnosticView(store,lambda:now+1,incidents=ledger.incidents,
                         selected_history=archive,selected_controllers=("WLC-1",))
     meta={"coherent_controllers":1,"expected_controllers":4,"mapped_radios":len(rows),
@@ -420,6 +436,17 @@ def browser_test(output):
                         expect(history).not_to_contain_text("PRIVATE-HISTORY")
                         expect(history).not_to_contain_text("b"*64)
                         history.get_by_label("정밀 이력 수집 항목").select_option("D04")
+                        expect(history.locator("tbody tr")).to_have_count(0)
+                        history.get_by_role("button",name="정밀 이력 조회").click()
+                        history.get_by_text("채널 보고값 2행",exact=True).click()
+                        expect(history.get_by_text("채널 36 · 대역 5GHz",exact=True)).to_be_visible()
+                        expect(history.get_by_text("Retry: 18446744073709551615 · PHY error: 0 · MAC error: 미확인",exact=True)).to_be_visible()
+                        expect(history.get_by_text("Noise 원문: 92*",exact=True)).to_be_visible()
+                        expect(history.get_by_text("Util/Quality 보고값: 채널 8 / RX 3 / TX 2 / 확장 채널 1 / Quality 95",exact=True)).to_be_visible()
+                        expect(history.get_by_text("Noise 원문: 미확인",exact=True)).to_be_visible()
+                        expect(history).not_to_contain_text("PRIVATE-HISTORY")
+                        expect(history).not_to_contain_text("c"*64)
+                        history.get_by_label("정밀 이력 수집 항목").select_option("D08")
                         expect(history.locator("tbody tr")).to_have_count(0)
                         history.get_by_role("button",name="정밀 이력 조회").click()
                         expect(history).to_contain_text("조회 범위에 저장 기록 없음")

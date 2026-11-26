@@ -461,6 +461,41 @@ function selectedHistoryPanel(){
     }
     return cell;
   }
+  function rfDetail(row){
+    const rows=row.rf_detail;
+    if(!Array.isArray(rows)||!rows.length||rows.length>64||rows.length!==row.summary?.retained_channel_rows)
+      throw Error("invalid RF history rows");
+    const cell=el("details");
+    cell.append(el("summary","채널 보고값 "+rows.length+"행"));
+    const show=v=>v===null?"미확인":String(v);
+    const counters=[["retry_raw","Retry"],["phy_error_raw","PHY error"],["mac_error_raw","MAC error"]];
+    const utilFields=[["channel_utilization","채널"],["rx","RX"],["tx","TX"],["extension_channel_utilization","확장 채널"],["quality","Quality"]];
+    for(const r of rows){
+      if(!Number.isInteger(r.channel)||r.channel<1||r.channel>233||
+         ![null,"2.4GHz","5GHz","6GHz"].includes(r.reported_band)||
+         (r.noise_raw!==null&&(typeof r.noise_raw!=="string"||! /^-?[0-9]{1,3}\*?$/.test(r.noise_raw)))||
+         r.split_scan_reported!==(r.noise_raw===null?null:r.noise_raw.endsWith("*")))
+        throw Error("invalid RF history channel");
+      const values=[];
+      for(const [key,label] of counters){
+        const v=r[key];
+        if(v!==null&&(typeof v!=="string"||!/^[0-9]{1,20}$/.test(v)))throw Error("invalid RF history counter");
+        values.push(label+": "+show(v));
+      }
+      let utilText="미확인";
+      if(r.utilization!==null){
+        utilText=utilFields.map(([key,label])=>{
+          const v=r.utilization?.[key];
+          if(!Number.isInteger(v)||v<0||v>100)throw Error("invalid RF history utilization");
+          return label+" "+v;
+        }).join(" / ");
+      }
+      cell.append(el("p","채널 "+r.channel+" · 대역 "+show(r.reported_band)),
+        el("div",values.join(" · ")),el("div","Noise 원문: "+show(r.noise_raw)),
+        el("div","Util/Quality 보고값: "+utilText));
+    }
+    return cell;
+  }
   for(const [id,label] of Object.entries(labels)){const o=el("option",id+" · "+label);o.value=id;command.append(o);}
   period.setAttribute("aria-label","정밀 이력 조회 기간");
   for(const [seconds,label] of [[3600,"최근 1시간"],[86400,"최근 24시간"],[604800,"최근 7일"],[2592000,"최근 30일"]]){
@@ -490,12 +525,13 @@ function selectedHistoryPanel(){
         " (종료 미포함) · 페이지 간 스냅샷 아님";
       if(!d.rows.length){out.append(el("p","조회 범위에 저장 기록 없음 · 수집 누락 또는 장애 여부는 판단할 수 없습니다."));return;}
       const fields=counts[scope.command];
-      const radio=scope.command==="D03";
+      const radio=scope.command==="D03",rf=scope.command==="D04";
       out.append(table(["수신 시각 KST","임시 AP 토큰",...fields.map(x=>x[1]),
-        ...(radio?["보고된 Radio 값 (미검증)"]:[]),"측정·검증 상태"],
+        ...(radio?["보고된 Radio 값 (미검증)"]:rf?["주변 채널 보고값 (미검증)"]:[]),"측정·검증 상태"],
         d.rows.map(r=>[kst(r.received_at),r.ap_token,...fields.map(x=>r.summary?.[x[0]]??"미확인"),
-          ...(radio?[radioDetail(r)]:[]),"미검증 · 측정 시각/Counter Epoch/완전성 미확인"])));
+          ...(radio?[radioDetail(r)]:rf?[rfDetail(r)]:[]),"미검증 · 측정 시각/Counter Epoch/완전성 미확인"])));
       if(radio)out.append(el("p","Radio 카운터는 수신된 누적값이며 구간 변화량이나 단말 Airtime이 아닙니다. Busy 1/4/64초는 별도 보고 구간이며 측정 시각은 미확인입니다."));
+      if(rf)out.append(el("p","채널·대역은 CLI 보고값이며 실제 물리 Radio, Noise 단위, Util 측정 구간 및 완전성은 미확인입니다. Retry/Error 원시값은 비율이나 구간 변화량이 아니며 단말 Airtime 또는 원인을 확정하지 않습니다."));
       if(d.next_cursor&&Number.isSafeInteger(d.next_cursor.received_at)&&
           /^[0-9a-f]{32}$/.test(d.next_cursor.receipt_id))cursor=d.next_cursor;
     }catch(e){
@@ -524,7 +560,7 @@ function selectedHistoryPanel(){
   next.addEventListener("click",()=>{if(cursor)load(cursor);});
   form.append(controller,command,period,submit);
   panel.append(el("h3","정밀 수집 이력"),
-    el("p","관리자 전용 · DB 수락 기록의 메타데이터와 D03의 제한된 보고값을 조회합니다. AP 토큰은 서비스 실행 중에만 유효하며 실측값·상태·원인·완전성을 보장하지 않습니다."),
+    el("p","관리자 전용 · DB 수락 기록의 메타데이터와 D03/D04의 제한된 보고값을 조회합니다. AP 토큰은 서비스 실행 중에만 유효하며 실측값·상태·원인·완전성을 보장하지 않습니다."),
     form,status,out,next);
   return panel;
 }
