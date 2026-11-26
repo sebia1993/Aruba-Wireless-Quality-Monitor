@@ -3,6 +3,7 @@
 These parsers are tested against invented, documentation-shaped fixtures, not
 captured production output. A layout mismatch fails closed.
 """
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 import ipaddress
 import re
@@ -203,10 +204,33 @@ def merge_radios(snapshots, site="default", max_skew=45):
     newest=max(s.observed_at for s in snapshots)
     # Coordinator supplies individually freshness-checked snapshots.
     fresh=[s for s in snapshots if max_skew is None or newest-s.observed_at<=max_skew]
+    # Cross-WLC replication of the same inventory identity is permitted.
+    # Conflicting positive identity claims are not. Index once per snapshot
+    # rather than scanning all APs for every Radio (large campus tables).
     inventory_by_name={}
+    names_by_mac=defaultdict(set)
+    ips_by_mac=defaultdict(set)
+    local={}
     for s in fresh:
+        by_key=defaultdict(list)
+        names=Counter()
+        ips=Counter()
+        macs=Counter()
         for a in s.inventory:
-            inventory_by_name.setdefault((a["name"],a["ip"]),set()).add(a["mac"])
+            key=(a["name"],a["ip"])
+            wired=a["mac"]
+            inventory_by_name.setdefault(key,set()).add(wired)
+            if a["name"]:
+                names_by_mac[wired].add(a["name"])
+            if a["ip"]:
+                ips_by_mac[wired].add(a["ip"])
+            by_key[key].append(wired)
+            names[a["name"]]+=1
+            ips[a["ip"]]+=1
+            macs[wired]+=1
+        local[s.controller]=(by_key,names,ips,macs,
+                             Counter(a["name"] for a in s.active),
+                             Counter(a["ip"] for a in s.active))
     owners={}
     for s in fresh:
         for a in s.active:
@@ -233,7 +257,26 @@ def merge_radios(snapshots, site="default", max_skew=45):
             elif claims[0][0].controller!=s.controller:
                 # A standby/UAC observation is not a second physical radio.
                 continue
+            elif not key[0] or not key[1]:
+                why="local AP identity missing"
             else:
+                wired=next(iter(macs))
+                by_key,names,ips,local_macs,active_names,active_ips=local[s.controller]
+                # The AAC source itself must corroborate the target. A
+                # peer inventory cannot fill a missing local identity.
+                if (by_key.get(key)!=[wired] or names[key[0]]!=1
+                        or ips[key[1]]!=1 or local_macs[wired]!=1
+                        or active_names[key[0]]!=1 or active_ips[key[1]]!=1):
+                    unresolved.append(dict(controller=s.controller,name=r["name"],
+                                           reason="local AP identity ambiguous or missing"))
+                    continue
+                # A fresh peer can report the same wired MAC with a different
+                # name or IP even without claiming AAC. Withhold until the
+                # positive claims agree; a missing IP is not a conflicting IP.
+                if len(names_by_mac[wired])!=1 or len(ips_by_mac[wired])!=1:
+                    unresolved.append(dict(controller=s.controller,name=r["name"],
+                                           reason="cross-controller inventory identity conflict"))
+                    continue
                 radios=[x for x in claims[0][1]["radios"] if x["band"]==r["band"] and x["channel"]==r["channel"]]
                 if len(radios)!=1:
                     why="physical radio identity ambiguous"

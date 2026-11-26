@@ -88,3 +88,54 @@ class ParserTests(unittest.TestCase):
         t=replace(t,inventory=inventory(inv2.replace("02:00:00:00:00:20","02:00:00:00:00:10")))
         rows,issues=merge_radios([s,t],max_skew=None)
         self.assertEqual(rows,[]);self.assertTrue(issues)
+
+    def test_replicated_inventory_is_not_duplicate_local_identity(self):
+        inv,act,rf,_=sample()
+        s=ControllerSnapshot("WLC-1",120,inventory(inv),active_details(act),radio_summary(rf))
+        peer=replace(s,controller="WLC-2",active=[{**s.active[0],"roles":["SA"]}])
+        for snapshots in ([s,peer],[peer,s]):
+            rows,issues=merge_radios(snapshots,max_skew=None)
+            self.assertEqual(len(rows),2)
+            self.assertEqual({r.controller for r in rows},{"WLC-1"})
+            self.assertEqual(issues,[])
+        # No local inventory: a peer cannot substitute its copy for AAC.
+        rows,issues=merge_radios([replace(s,inventory=[]),peer],max_skew=None)
+        self.assertEqual(rows,[])
+        self.assertTrue(issues)
+
+    def test_duplicate_local_claims_are_withheld(self):
+        inv,act,rf,_=sample()
+        s=ControllerSnapshot("WLC-1",120,inventory(inv),active_details(act),radio_summary(rf))
+        row=s.inventory[0]
+        a=s.active[0]
+        for duplicate in (dict(row),dict(row,name="OTHER"),
+                          dict(row,ip="192.0.2.99"),
+                          dict(row,mac="02:00:00:00:00:99",ip="192.0.2.99"),
+                          dict(row,mac="02:00:00:00:00:99",name="OTHER")):
+            with self.subTest(duplicate=duplicate):
+                rows,issues=merge_radios([replace(s,inventory=[row,duplicate])])
+                self.assertEqual(rows,[])
+                self.assertTrue(issues)
+        for duplicate in (dict(a,roles=["SA"]),dict(a,name="OTHER",roles=["SA"]),
+                          dict(a,ip="192.0.2.99",roles=["SA"])):
+            rows,issues=merge_radios([replace(s,active=[a,duplicate])])
+            self.assertEqual(rows,[])
+            self.assertTrue(issues)
+
+    def test_peer_positive_identity_conflict_without_second_aac(self):
+        inv,act,rf,_=sample()
+        s=ControllerSnapshot("WLC-1",120,inventory(inv),active_details(act),radio_summary(rf))
+        row=s.inventory[0]
+        for changed in (dict(row,name="RENAMED"),dict(row,ip="192.0.2.99"),
+                        dict(row,name="RENAMED",ip=None)):
+            peer=ControllerSnapshot("WLC-2",120,[changed],[],[])
+            for snapshots in ([s,peer],[peer,s]):
+                rows,issues=merge_radios(snapshots,max_skew=None)
+                self.assertEqual(rows,[])
+                self.assertEqual({x["reason"] for x in issues},
+                                 {"cross-controller inventory identity conflict"})
+            # Caller-selected freshness excludes a stale peer; no claim of
+            # full cluster coverage is manufactured from its absence.
+            self.assertEqual(len(merge_radios([s,replace(peer,observed_at=30)])[0]),2)
+        incomplete=ControllerSnapshot("WLC-2",120,[dict(row,ip=None)],[],[])
+        self.assertEqual(len(merge_radios([s,incomplete])[0]),2)
