@@ -521,6 +521,22 @@ function operationsPanel(){
         }
       }
       out.append(arm);
+      const stats=el("details");
+      stats.append(el("summary","승인 AP Radio 상세 통계 관측 (D03)"),
+        el("p","이상 Radio의 요청 ID와 CLI 수신 시각입니다. 실제 응답 대상·측정 시각·카운터 초기화·전체 advanced 레이아웃은 미검증입니다. Busy 구간은 별도 표시하며 단말 Airtime이나 장애 원인으로 계산하지 않습니다."));
+      for(const id of Object.keys(state.controllers)){
+        const evidence=rows.get(id)?.radio_stats_evidence;
+        if(!evidence?.configured)continue;
+        stats.append(el("h4",id),el("p","선택 AP "+evidence.selected_count+"대 · 현재 Radio 관측 "+evidence.rows.length+"개"));
+        if(!evidence.rows.length)stats.append(el("p","현재 관측 없음 또는 수집 조건 미충족"));
+        for(const item of evidence.rows){
+          stats.append(el("h4",item.ap_name+" · 요청 Radio "+item.requested_radio+" · 수신 "+kst(item.received_at)),
+            el("p","파싱 필드 "+item.observed_field_count+"개 · 미해석 행 "+item.ignored_row_count+"개"),
+            table(["보고 카운터","원시 값"],Object.entries(item.counters)),
+            table(["보고 구간","원시 %"],Object.entries(item.radio_percentages)));
+        }
+      }
+      out.append(stats);
       if(applied?.error)out.append(el("p","운영 상태 저장소 오류 · 신규 수집 차단","warn"));
       if(d.recent.length)out.append(el("h3","최근 요청 이력"),table(["시각","대상","요청"],d.recent.slice(0,20).map(x=>[kst(x.at),x.target,x.requested_paused?"일시정지":"재개"])));
     }catch(e){state=null;if(!expired)out.textContent="관리자 권한 필요 또는 상태 조회 실패";}

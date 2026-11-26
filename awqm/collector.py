@@ -20,6 +20,10 @@ def command(name, target=None):
         return name+" ap-name "+target
     if name in ("show ap association client-mac","show ap arm neighbors bssid") and isinstance(target,str) and MAC.fullmatch(target):
         return name+" "+target
+    if (name=="show ap debug radio-stats" and type(target) is tuple and len(target)==2
+            and isinstance(target[0],str) and AP.fullmatch(target[0])
+            and type(target[1]) is int and target[1] in (0,1,2)):
+        return name+" ap-name "+target[0]+" radio "+str(target[1])+" advanced"
     if name=="show ap debug client-stats" and isinstance(target,str) and MAC.fullmatch(target):
         return name+" client-mac "+target+" advanced"
     raise ValueError("command or target not allowed")

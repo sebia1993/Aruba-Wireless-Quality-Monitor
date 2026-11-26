@@ -30,6 +30,8 @@ from .arm_rf_summary import COMMAND as RF_SUMMARY, rf_summary
 from .live_rf_summary import RFSummary
 from .arm_history import arm_history
 from .live_arm_history import ARMHistory, COMMAND as ARM_HISTORY
+from .radio_stats import radio_stats
+from .live_radio_stats import RadioStats, COMMAND as RADIO_STATS
 
 PARSERS={
     "show cpuload":cpu_load,
@@ -60,7 +62,7 @@ class Reading:
     target: str|None=None
 
 class ControllerWorker:
-    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False,neighbor_approval=None,history_approval=None,manual_detail=False,resource_approval=None,anchor_approval=None,port_approval=None,rf_approval=None,arm_approval=None):
+    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False,neighbor_approval=None,history_approval=None,manual_detail=False,resource_approval=None,anchor_approval=None,port_approval=None,rf_approval=None,arm_approval=None,stats_approval=None):
         self.controller=controller;self.session_factory=session_factory
         self.clock=clock;self.wall=wall
         self.field_approval=field_approval;self.enable_cluster=enable_cluster;self.neighbor_approval=neighbor_approval;self.history_approval=history_approval;self.manual_detail=bool(manual_detail);self.resource_approval=resource_approval;self.anchor_approval=anchor_approval
@@ -68,6 +70,7 @@ class ControllerWorker:
         self.ap_ports=ApPorts(port_approval) if live_detail and port_approval is not None else None
         self.rf_summary=RFSummary(rf_approval) if live_detail and rf_approval is not None else None
         self.arm_history=ARMHistory(arm_approval) if live_detail and arm_approval is not None else None
+        self.radio_stats=RadioStats(stats_approval) if live_detail and stats_approval is not None else None
         self.selected_detail_next=float("-inf")
         polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table") and (enable_cluster or p.name!=MEMBERSHIP) and (history_approval is not None or p.name not in USER_TABLES) and (resource_approval is not None or p.name not in RESOURCE_COMMANDS) and (enable_cluster and anchor_approval is not None or p.name not in ANCHOR_COMMANDS))
         if enable_cluster:polls=polls+(Poll(AP_LOAD,120,20,2),Poll(CLIENT_LOAD,120,20,2))
@@ -88,6 +91,7 @@ class ControllerWorker:
         if self.ap_ports:self.ap_ports.clear()
         if self.rf_summary:self.rf_summary.clear()
         if self.arm_history:self.arm_history.clear()
+        if self.radio_stats:self.radio_stats.clear()
         if self.session is not None:
             try:self.session.close()
             finally:self.session=None
@@ -139,9 +143,9 @@ class ControllerWorker:
             if p is None:
                 reading=self._detail_tick()
                 # Existing detail reservations take priority over selected investigations.
-                if reading is None and (self.ap_ports or self.rf_summary or self.arm_history) and not self.jobs.pending(self.wall()):
+                if reading is None and (self.ap_ports or self.rf_summary or self.arm_history or self.radio_stats) and not self.jobs.pending(self.wall()):
                     reading=self._selected_detail_tick()
-                if reading is not None and (reading.command in DETAIL_PARSERS or reading.command in (AP_PORT,RF_SUMMARY,ARM_HISTORY)):
+                if reading is not None and (reading.command in DETAIL_PARSERS or reading.command in (AP_PORT,RF_SUMMARY,ARM_HISTORY,RADIO_STATS)):
                     # Do not retain AP/client targets, payloads or exception text.
                     self.detail_outcomes[reading.command]=(reading.status,reading.observed_at,reading.generation)
                 return reading
@@ -230,6 +234,7 @@ class ControllerWorker:
                     "ap_port_evidence":self.ap_ports.project(self,fingerprint(self.session),int(self.wall())) if self.ap_ports else None,
                     "rf_summary_evidence":self.rf_summary.project(self,fingerprint(self.session),int(self.wall())) if self.rf_summary else None,
                     "arm_history_evidence":self.arm_history.project(self,fingerprint(self.session),int(self.wall())) if self.arm_history else None,
+                    "radio_stats_evidence":self.radio_stats.project(self,fingerprint(self.session),int(self.wall())) if self.radio_stats else None,
                     "heartbeat_age_seconds":round(max(0,now-self.last_heartbeat),1)}
         finally:self.lock.release()
     def user_frame(self):
@@ -338,7 +343,7 @@ class ControllerWorker:
         protection=self.schedule.protection
         available=min(10-protection.budget(now,60,True),150-protection.budget(now,300))
         if available<1:return None
-        options=[(path,parser) for path,parser in ((self.ap_ports,port_status),(self.rf_summary,rf_summary),(self.arm_history,arm_history)) if path]
+        options=[(path,parser) for path,parser in ((self.ap_ports,port_status),(self.rf_summary,rf_summary),(self.arm_history,arm_history),(self.radio_stats,radio_stats)) if path]
         # Oldest eligible command path first; one combined selected
         # attempt per WLC/60s. Never expand the existing detail budget.
         for path,parser in sorted(options,key=lambda x:x[0].next_round):
@@ -350,13 +355,14 @@ class ControllerWorker:
             self.selected_detail_next=now+60
             path.begin(target,now)
             try:
-                raw=self.session.run(cmd,target=target[0],timeout=min(10,available),idle_timeout=min(10,available))
+                cli_target=(target[0],target[2]) if cmd==RADIO_STATS else target[0]
+                raw=self.session.run(cmd,target=cli_target,timeout=min(10,available),idle_timeout=min(10,available))
                 if DENIED.search(raw) or UNSUPPORTED.search(raw):
                     self.detail_disabled.add(cmd)
                     path.clear()
                     status="permission_denied" if DENIED.search(raw) else "unsupported"
                 else:
-                    try:value=parser(raw,target[0])
+                    try:value=parser(raw,target[0],target[2]) if cmd==RADIO_STATS else parser(raw,target[0])
                     except (ValueError,TypeError):status="parse_error"
                     else:
                         at=int(self.wall())
