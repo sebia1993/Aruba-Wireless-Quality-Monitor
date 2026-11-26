@@ -227,6 +227,69 @@ class SelectedHistoryTests(unittest.TestCase):
         self.assertFalse(w.retain_selected_history)
         self.assertIsNone(w.session)
 
+    def test_private_receipt_query_pages_actual_archived_worker_results(self):
+        w, engine, session = self.worker_engine(PORT)
+        outcome = Engine._step(w)
+        original = outcome[0].selected_receipt
+        self.assertIsNotNone(original)
+        self.harvest(engine, outcome)
+        ledger = engine.selected_history
+        # Distinct synthetic accepted receipt IDs at the same second must
+        # remain separately pageable; exact replays must not add rows.
+        other = replace(original, receipt_id="f"*32 if original.receipt_id != "f"*32 else "0"*32)
+        self.assertTrue(ledger.save(other))
+        self.assertFalse(ledger.save(original))
+        earlier = json.loads(original.payload)
+        earlier["received_at"] = 999
+        earlier["started_at"] = 999
+        earlier["observation"]["received_at"] = 999
+        excluded = replace(original, receipt_id="e"*32, received_at=999,
+                           payload=json.dumps(earlier))
+        ledger.save(excluded)
+        before = list(session.calls)
+        ordered = tuple(sorted((original, other), key=lambda r: r.receipt_id))
+        first, cursor = ledger.query("w1", PORT, 1000, 1001, limit=1)
+        self.assertEqual(first, ordered[:1])
+        self.assertEqual(cursor, (first[0].received_at, first[0].receipt_id))
+        second, end = ledger.query("w1", PORT, 1000, 1001, limit=1, after=cursor)
+        self.assertEqual(second, ordered[1:])
+        self.assertIsNone(end)
+        self.assertEqual(ledger.query("w1", PORT, 1000, 1001), (ordered, None))
+        for controller, command, start, end in (
+            ("w2", PORT, 1000, 1001), ("w1", RF, 1000, 1001),
+            ("w1", PORT, 1001, 1002),
+        ):
+            self.assertEqual(ledger.query(controller, command, start, end), ((), None))
+        self.assertEqual(ledger.query("w1", PORT, 999, 1000), ((excluded,), None))
+        self.assertEqual(session.calls, before)
+        self.assertEqual(len(self.rows(engine.store)), 3)
+        self.assertNotIn(original.receipt_id, json.dumps(engine.operation_status()))
+        backup = engine.store.backup(Path(self.root.name) / "query-backup")
+        restored = SelectedHistory(Store(backup, mode="diagnostic"))
+        self.assertEqual(restored.query("w1", PORT, 1000, 1001), (ordered, None))
+
+    def test_private_receipt_query_bounds_and_cursor(self):
+        _, engine, _ = self.worker_engine(PORT)
+        ledger = engine.selected_history
+        for args, kw in [
+            (("", PORT, 0, 1), {}), (("w"*129, PORT, 0, 1), {}),
+            (("w1", "arbitrary command", 0, 1), {}),
+            (("w1", [], 0, 1), {}), (("w1", PORT, True, 2), {}),
+            (("w1", PORT, 0, 30*86400+1), {}),
+            (("w1", PORT, -1, 1), {}), (("w1", PORT, 1, 1), {}),
+            (("w1", PORT, 0, 10**20), {}),
+            (("w1", PORT, 0, 1), {"limit": True}),
+            (("w1", PORT, 0, 1), {"limit": 21}),
+            (("w1", PORT, 0, 1), {"limit": 0}),
+            (("w1", PORT, 0, 1), {"after": (1, "a"*32)}),
+            (("w1", PORT, 0, 1), {"after": (0, "bad")}),
+            (("w1", PORT, 0, 1), {"after": (False, "a"*32)}),
+            (("w1", PORT, 0, 1), {"after": [0, "a"*32]}),
+        ]:
+            with self.subTest(args=args, kw=kw), self.assertRaises(ValueError):
+                ledger.query(*args, **kw)
+        self.assertEqual(ledger.query("w1", PORT, 0, 30*86400), ((), None))
+
     def test_capacity_replay_conflict_and_core_backup(self):
         w, engine, _ = self.worker_engine(PORT)
         receipt = Engine._step(w)[0].selected_receipt

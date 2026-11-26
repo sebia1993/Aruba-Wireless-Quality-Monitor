@@ -6,6 +6,7 @@ Core SQLite backup/restore includes this table; no automatic deletion here.
 """
 from dataclasses import dataclass
 import json
+import re
 from uuid import uuid4
 
 from .service_config import safe_path
@@ -19,6 +20,9 @@ POLICY = {"version": 1, "enabled": True, "policy": "bounded-selected-receipts-v1
 MAX_ROWS = 50000
 MAX_BYTES = 128 * 1024 * 1024
 MAX_RECEIPT = 128 * 1024
+MAX_QUERY_ROWS = 20
+MAX_QUERY_SECONDS = 30 * 86400
+MAX_TIMESTAMP = 253402300799
 
 
 def load_selected_history(cfg):
@@ -88,7 +92,44 @@ class SelectedHistory:
                 ON selected_detail_receipts(controller,received_at);
             CREATE INDEX IF NOT EXISTS selected_detail_receipt_size
                 ON selected_detail_receipts(payload_bytes);
+            CREATE INDEX IF NOT EXISTS selected_detail_receipt_query
+                ON selected_detail_receipts(controller,command,received_at,receipt_id);
             """)
+
+    def query(self, controller, command, start, end, *, limit=20, after=None):
+        """Private bounded receipt-time query; caller must authorize disclosure.
+
+        Not an observation-time query, a coverage statement or a public API.
+        Keyset order is ascending (received_at, receipt_id), with [start,end).
+        Separate requests are not a database snapshot: concurrent late inserts
+        before the cursor may be missed. No count, raw CLI or device access.
+        """
+        if (type(controller) is not str or not 1 <= len(controller) <= 128
+                or type(command) is not str or command not in COMMANDS
+                or type(start) is not int or type(end) is not int
+                or not 0 <= start < end <= MAX_TIMESTAMP
+                or end - start > MAX_QUERY_SECONDS
+                or type(limit) is not int or not 1 <= limit <= MAX_QUERY_ROWS):
+            raise ValueError("invalid selected history query")
+        params = [controller, command, start, end]
+        where = "controller=? AND command=? AND received_at>=? AND received_at<?"
+        if after is not None:
+            if (type(after) is not tuple or len(after) != 2
+                    or type(after[0]) is not int or not start <= after[0] < end
+                    or type(after[1]) is not str
+                    or re.fullmatch(r"[0-9a-f]{32}", after[1]) is None):
+                raise ValueError("invalid selected history cursor")
+            where += " AND (received_at,receipt_id)>(?,?)"
+            params.extend(after)
+        with self.store.lock, self.store._db(self.store.root / "core.db") as db:
+            rows = db.execute(
+                "SELECT receipt_id,controller,command,received_at,payload "
+                "FROM selected_detail_receipts WHERE " + where +
+                " ORDER BY received_at,receipt_id LIMIT ?", (*params, limit+1)
+            ).fetchall()
+        page = tuple(Receipt(*row) for row in rows[:limit])
+        cursor = (page[-1].received_at, page[-1].receipt_id) if len(rows) > limit else None
+        return page, cursor
 
     def save(self, receipt):
         """Idempotent exact replay, serialized with other core DB writes."""
