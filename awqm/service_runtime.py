@@ -17,6 +17,7 @@ from .live_rf_summary import load_rf_approvals
 from .live_arm_history import load_arm_approvals
 from .live_radio_stats import load_stats_approvals
 from .retention import Retention,load_retention
+from .selected_history import load_selected_history
 from .archive_retention import load_archive_retention
 from .live_neighbors import LiveNeighbors,load_neighbor_approvals
 from .association_history import AssociationHistory,load_history_approvals,load_key
@@ -154,6 +155,7 @@ def run_service(root,stop,on_ready=None):
         profile=load_profile(cfg)
         manual_enabled=load_manual_policy(cfg)
         retention_enabled=load_retention(cfg)
+        selected_history=load_selected_history(cfg)
         archive_days = load_archive_retention(cfg)
         approvals=load_approvals(cfg)
         resource_approvals=load_resource_approvals(cfg,approvals)
@@ -185,7 +187,7 @@ def run_service(root,stop,on_ready=None):
         engine=Engine(workers,store,site=cfg.site,simulation=False,durable_jobs=False,auto=False,
                       quality_ledger=quality,live_clients=LiveClients(client_approvals,station_approvals=station_approvals,correlation_approvals=correlation_approvals) if client_approvals else None,
                       cluster_monitor=ClusterMonitor({t.id:t.ip for t in cfg.targets}),
-                      live_neighbors=LiveNeighbors(neighbor_approvals,quality.incidents) if neighbor_approvals else None,association_history=history)
+                      live_neighbors=LiveNeighbors(neighbor_approvals,quality.incidents) if neighbor_approvals else None,association_history=history,selected_history=selected_history)
         resources.callback(engine.close)
         backup_root=safe_path(cfg.root,"backup");audit_path=safe_path(cfg.root,"logs/web-audit.db")
         maintenance=BackgroundMaintenance(Maintenance(store,backup_root,

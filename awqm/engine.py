@@ -14,10 +14,11 @@ from .selection import Selector
 from .client_history import ClientHistory,map_samples
 from .live_neighbors import COMMAND as NEIGHBOR
 from .ap_anchors import reconcile as reconcile_anchors
+from .selected_history import SelectedHistory
 import json
 
 class Engine:
-    def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time,simulation=False,durable_jobs=False,auto=False,quality_ledger=None,live_clients=None,cluster_monitor=None,live_neighbors=None,association_history=None):
+    def __init__(self,workers,store,site="local-trial",clock=time.monotonic,wall=time.time,simulation=False,durable_jobs=False,auto=False,quality_ledger=None,live_clients=None,cluster_monitor=None,live_neighbors=None,association_history=None,selected_history=False):
         self.workers={w.controller:w for w in workers}
         if not 1<=len(workers)<=4 or len(self.workers)!=len(workers):
             raise ValueError("one to four unique workers required")
@@ -28,6 +29,11 @@ class Engine:
             for w in workers:
                 w.jobs=DurableJobs(store.root/"jobs.db",w.controller,now=wall())
         self.store=store;self.site=site;self.clock=clock;self.wall=wall
+        if simulation and selected_history:raise ValueError("selected history requires diagnostic mode")
+        self.selected_history=SelectedHistory(store) if selected_history else None
+        self.selected_pending={}
+        if self.selected_history:
+            for w in workers:w.retain_selected_history=True
         self.client_history=ClientHistory(store.root/"client_history.db",simulation=True) if simulation else None
         self.detail_pending={}
         self.client_stats_last={}
@@ -125,7 +131,11 @@ class Engine:
             counts={k:sum(j.status==k for j in jobs) for k in ("queued","deferred","running")}
             states.append({"controller":name,**wanted,"applied_revision":applied["revision"] if applied else None,
                 "phase":phase,"inflight":name in self.inflight,"jobs":counts,**protection})
-        return {"revision":self.operation_revision,"error":self.operation_error,"controllers":states}
+        result={"revision":self.operation_revision,"error":self.operation_error,"controllers":states}
+        if self.selected_history:
+            result["selected_history"]={"enabled":True,"pending":len(self.selected_pending),
+                "storage_error":self.error,"field_validated":False}
+        return result
 
     def pulse(self):
         """Nonblocking relative to SSH workers; SQLite commit is serialized here.
@@ -142,6 +152,8 @@ class Engine:
                 del self.inflight[name]
                 try:
                     reading,snapshot,bss,assoc,frame,user_frame=f.result()
+                    if self.selected_history and reading and reading.selected_receipt is not None:
+                        self.selected_pending[name]=reading.selected_receipt
                     if self.association_history:self.association_frames[name]=(snapshot,bss,user_frame)
                     if frame is not None:self.cluster_frames[name]=frame
                     if self.live_neighbors:
@@ -169,6 +181,16 @@ class Engine:
                     self.next_tick[name]=now+15
                     if isinstance(exc, (sqlite3.Error,OSError)):
                         self.error=type(exc).__name__
+            # A completed receipt is historical, not a current-state claim.
+            # Keep at most one pending receipt per in-flight worker; a failed
+            # commit freezes further dispatch until explicit storage recovery.
+            if self.selected_history and not self.error:
+                try:
+                    for name,receipt in list(self.selected_pending.items()):
+                        self.selected_history.save(receipt)
+                        del self.selected_pending[name]
+                except (ValueError,TypeError,KeyError,RuntimeError,sqlite3.Error,OSError) as exc:
+                    self.error=type(exc).__name__
             maintenance_blocked=self._maintenance_step()
             active=[]
             inventory_tables=[]
@@ -352,7 +374,9 @@ class Engine:
             self.closed=True
         self.pool.shutdown(wait=True,cancel_futures=True)
         for w in self.workers.values():w.close()
-        for w in self.workers.values():w.identity_peers=()
+        for w in self.workers.values():
+            w.identity_peers=()
+            w.retain_selected_history=False
     def run(self,stop,interval=.25,maintenance=None):
         try:
             while not stop.is_set():

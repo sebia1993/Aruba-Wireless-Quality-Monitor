@@ -32,6 +32,7 @@ from .arm_history import arm_history
 from .live_arm_history import ARMHistory, COMMAND as ARM_HISTORY
 from .radio_stats import radio_stats
 from .live_radio_stats import RadioStats, COMMAND as RADIO_STATS
+from .selected_history import capture as capture_selected_history, Receipt
 
 PARSERS={
     "show cpuload":cpu_load,
@@ -60,6 +61,7 @@ class Reading:
     reason: str=""
     generation: int=0
     target: str|None=None
+    selected_receipt: Receipt|None=None
 
 class ControllerWorker:
     def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False,neighbor_approval=None,history_approval=None,manual_detail=False,resource_approval=None,anchor_approval=None,port_approval=None,rf_approval=None,arm_approval=None,stats_approval=None):
@@ -72,6 +74,7 @@ class ControllerWorker:
         self.arm_history=ARMHistory(arm_approval) if live_detail and arm_approval is not None else None
         self.radio_stats=RadioStats(stats_approval) if live_detail and stats_approval is not None else None
         self.selected_detail_next=float("-inf")
+        self.retain_selected_history=False
         polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table") and (enable_cluster or p.name!=MEMBERSHIP) and (history_approval is not None or p.name not in USER_TABLES) and (resource_approval is not None or p.name not in RESOURCE_COMMANDS) and (enable_cluster and anchor_approval is not None or p.name not in ANCHOR_COMMANDS))
         if enable_cluster:polls=polls+(Poll(AP_LOAD,120,20,2),Poll(CLIENT_LOAD,120,20,2))
         if field_approval is not None:polls=polls+(Poll("show version",600,30,0),)
@@ -366,6 +369,8 @@ class ControllerWorker:
             target,context=selected
             self.selected_detail_next=now+60
             path.begin(target,now)
+            started=int(self.wall())
+            receipt=None
             try:
                 cli_target=(target[0],target[2]) if cmd==RADIO_STATS else target[0]
                 raw=self.session.run(cmd,target=cli_target,timeout=min(10,available),idle_timeout=min(10,available))
@@ -383,8 +388,11 @@ class ControllerWorker:
                         else:
                             path.record(target,context,at,value)
                             status="success"
+                            if self.retain_selected_history:
+                                receipt=capture_selected_history(self,path,target,fingerprint(self.session),started,at)
+                                if receipt is None:status="withheld"
                 # Generic engine ingestion must never treat these as client data.
-                return Reading(cmd,status,int(self.wall()),generation=self.generation)
+                return Reading(cmd,status,int(self.wall()),generation=self.generation,selected_receipt=receipt)
             except Exception as exc:
                 self._failed(type(exc).__name__)
                 return Reading(cmd,"transport_error",int(self.wall()),generation=self.generation)
