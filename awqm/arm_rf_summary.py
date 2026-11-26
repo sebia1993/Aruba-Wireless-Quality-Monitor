@@ -77,6 +77,8 @@ def rf_summary(text, expected_ap):
     if len(ends)!=1 or ends[0]<5:
         raise ParseError("missing or ambiguous RF channel legend")
     end=ends[0]
+    if end-4>768:
+        raise ParseError("invalid RF channel row count")
     tail=lines[end+1:]
     # Explicitly accept a channel-table-only capture. Recognize the
     # documented optional split-scan note, then only known section starts.

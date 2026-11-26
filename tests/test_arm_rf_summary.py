@@ -80,6 +80,15 @@ class RFSummaryTests(unittest.TestCase):
             rf_summary(raw,"DEMO-AP;show version")
         self.assertFalse(rf_summary("(host)[node] #show ap arm rf-summary ap-name DEMO-AP\n"+raw,"DEMO-AP")["target_verified"])
 
+    def test_bounds_duplicate_legend_and_verbose_not_supported(self):
+        raw=capture(ROW)
+        for bad in (raw+"\n"+LEGEND,
+                    "show ap arm rf-summary ap-name DEMO-AP verbose\n"+raw,
+                    capture(*([ROW]*769)),
+                    raw+"\n"+" "*512000):
+            with self.assertRaises(ParseError):
+                rf_summary(bad,"DEMO-AP")
+
     def test_probe_privacy_and_unchanged_live_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/"rf.txt"
