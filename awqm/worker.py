@@ -24,6 +24,8 @@ from .ap_detail_target import current_ap_binding
 from .controller_resources import COMMANDS as RESOURCE_COMMANDS,MEMORY,DATAPATH,memory,datapath
 from .ap_anchors import COMMANDS as ANCHOR_COMMANDS,STANDBY,UAC,standby,uac_database
 from .cli_capabilities import matrix as capability_matrix
+from .ap_port_status import COMMAND as AP_PORT, port_status
+from .live_ap_ports import ApPorts
 
 PARSERS={
     "show cpuload":cpu_load,
@@ -54,11 +56,12 @@ class Reading:
     target: str|None=None
 
 class ControllerWorker:
-    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False,neighbor_approval=None,history_approval=None,manual_detail=False,resource_approval=None,anchor_approval=None):
+    def __init__(self,controller,session_factory,clock=time.monotonic,wall=time.time,mode="safe",offset=0,enable_bss=False,field_approval=None,live_detail=False,client_approval=None,station_approval=None,enable_cluster=False,neighbor_approval=None,history_approval=None,manual_detail=False,resource_approval=None,anchor_approval=None,port_approval=None):
         self.controller=controller;self.session_factory=session_factory
         self.clock=clock;self.wall=wall
         self.field_approval=field_approval;self.enable_cluster=enable_cluster;self.neighbor_approval=neighbor_approval;self.history_approval=history_approval;self.manual_detail=bool(manual_detail);self.resource_approval=resource_approval;self.anchor_approval=anchor_approval
         self.live_detail=live_detail;self.client_approval=client_approval;self.station_approval=station_approval
+        self.ap_ports=ApPorts(port_approval) if live_detail and port_approval is not None else None
         polls=tuple(p for p in DEFAULT_POLLS if p.name in PARSERS and p.name!="show version" and (enable_bss or p.name!="show ap bss-table") and (enable_cluster or p.name!=MEMBERSHIP) and (history_approval is not None or p.name not in USER_TABLES) and (resource_approval is not None or p.name not in RESOURCE_COMMANDS) and (enable_cluster and anchor_approval is not None or p.name not in ANCHOR_COMMANDS))
         if enable_cluster:polls=polls+(Poll(AP_LOAD,120,20,2),Poll(CLIENT_LOAD,120,20,2))
         if field_approval is not None:polls=polls+(Poll("show version",600,30,0),)
@@ -75,6 +78,7 @@ class ControllerWorker:
         self.last_heartbeat=self.clock()
         self.maintenance_requested=False
     def _close(self):
+        if self.ap_ports:self.ap_ports.clear()
         if self.session is not None:
             try:self.session.close()
             finally:self.session=None
@@ -125,7 +129,10 @@ class ControllerWorker:
             p=self.schedule.next(self.clock())
             if p is None:
                 reading=self._detail_tick()
-                if reading is not None and reading.command in DETAIL_PARSERS:
+                # Existing detail reservations take priority over selected D07.
+                if reading is None and self.ap_ports and not self.jobs.pending(self.wall()):
+                    reading=self._port_tick()
+                if reading is not None and (reading.command in DETAIL_PARSERS or reading.command==AP_PORT):
                     # Do not retain AP/client targets, payloads or exception text.
                     self.detail_outcomes[reading.command]=(reading.status,reading.observed_at,reading.generation)
                 return reading
@@ -209,6 +216,7 @@ class ControllerWorker:
                     "retry_after_seconds":round(max(0,self.next_connect-now),1),
                     "disabled_polls":sorted(self.disabled),"disabled_details":sorted(self.detail_disabled),
                     "cli_capabilities":capability_matrix(self),
+                    "ap_port_evidence":self.ap_ports.project(self,fingerprint(self.session),int(self.wall())) if self.ap_ports else None,
                     "heartbeat_age_seconds":round(max(0,now-self.last_heartbeat),1)}
         finally:self.lock.release()
     def user_frame(self):
@@ -311,6 +319,39 @@ class ControllerWorker:
             if len(claims)!=1:return False
             target=claims[0]["ap_name"]
         return any(x["name"]==target and x["service"] and x["utilization"] is not None and x["utilization"]>=75 for x in r.data)
+    def _port_tick(self):
+        now=self.clock()
+        p=Poll(AP_PORT,120,10,5,True)
+        protection=self.schedule.protection
+        available=min(10-protection.budget(now,60,True),150-protection.budget(now,300))
+        if not protection.allowed(p,now) or available<1:return None
+        selected=self.ap_ports.select(self,fingerprint(self.session),int(self.wall()),now)
+        if selected is None:return None
+        target,context=selected
+        self.ap_ports.begin(target,now)
+        try:
+            raw=self.session.run(AP_PORT,target=target[0],timeout=min(10,available),idle_timeout=min(10,available))
+            if DENIED.search(raw) or UNSUPPORTED.search(raw):
+                self.detail_disabled.add(AP_PORT)
+                self.ap_ports.clear()
+                status="permission_denied" if DENIED.search(raw) else "unsupported"
+            else:
+                try:value=port_status(raw,target[0])
+                except (ValueError,TypeError):status="parse_error"
+                else:
+                    at=int(self.wall())
+                    if self.ap_ports.context(self,target,fingerprint(self.session),at)!=context:
+                        status="withheld"
+                    else:
+                        self.ap_ports.record(target,context,at,value)
+                        status="success"
+            # Generic engine ingestion must never treat D07 as client data.
+            return Reading(AP_PORT,status,int(self.wall()),generation=self.generation)
+        except Exception as exc:
+            self._failed(type(exc).__name__)
+            return Reading(AP_PORT,"transport_error",int(self.wall()),generation=self.generation)
+        finally:
+            self.schedule.protection.account(now,self.clock(),True)
     def _detail_tick(self):
         now=self.clock()
         for job in self.jobs.pending(self.wall()):

@@ -456,7 +456,7 @@ function operationsPanel(){
       const capability=el("details");
       capability.append(el("summary","WLC별 CLI 지원·관측 매트릭스"),
         el("p","구현·설정 상태와 현재 연결의 최근 파싱 결과를 구분합니다. 성공한 파싱도 실제 장비 지원·권한·지표 의미 검증을 보장하지 않습니다. 조회 시 SSH 명령을 추가 실행하지 않습니다."));
-      const implementations={base:"기본 수집",detail:"정밀 수집",detail_variant:"정밀 수집 (BSSID 변형)",offline:"오프라인 파서",pending:"미구현"};
+      const implementations={base:"기본 수집",detail:"정밀 수집",detail_variant:"정밀 수집 (BSSID 변형)",protected_detail:"승인 대상 정밀 수집",offline:"오프라인 파서",pending:"미구현"};
       const observations={parsed_response:"응답 파싱 성공",permission_denied:"권한 거부",unsupported:"명령 미지원 응답",parse_error:"파싱 실패",transport_error:"전송 오류",withheld:"수집 보류",detail_unavailable:"정밀 조회 불가",unobserved:"미관측"};
       for(const id of Object.keys(state.controllers)){
         capability.append(el("h4",id));
@@ -468,6 +468,21 @@ function operationsPanel(){
             observations[x.observation]||"미관측",x.observed_at==null?"—":kst(x.observed_at)])));
       }
       out.append(capability);
+      const ports=el("details");
+      ports.append(el("summary","승인 AP 유선 포트 관측 (D07)"),
+        el("p","보호된 설정에서 지정한 AP만 조회합니다. 표시 시각은 CLI 수신 시각이며 실제 포트 측정 시각, 업링크 여부, 장애 원인은 미검증입니다. 이 화면은 SSH를 추가 실행하지 않습니다."));
+      for(const id of Object.keys(state.controllers)){
+        const evidence=rows.get(id)?.ap_port_evidence;
+        if(!evidence?.configured)continue;
+        ports.append(el("h4",id),el("p","선택 AP "+evidence.selected_count+"대 · 현재 관측 "+evidence.rows.length+"대"));
+        if(!evidence.rows.length)ports.append(el("p","현재 관측 없음 또는 대상 검증·수집 보호로 보류"));
+        for(const item of evidence.rows){
+          ports.append(el("h4",item.ap_name+" · 수신 "+kst(item.received_at)),
+            table(["포트","Admin","Oper","속도 Mbps","Duplex","STP","TX 패킷","TX Bytes","RX 패킷","RX Bytes"],
+              item.ports.map(p=>[p.port,p.admin,p.oper,p.speed_mbps,p.duplex,p.stp,p.tx_packets,p.tx_bytes,p.rx_packets,p.rx_bytes])));
+        }
+      }
+      out.append(ports);
       if(applied?.error)out.append(el("p","운영 상태 저장소 오류 · 신규 수집 차단","warn"));
       if(d.recent.length)out.append(el("h3","최근 요청 이력"),table(["시각","대상","요청"],d.recent.slice(0,20).map(x=>[kst(x.at),x.target,x.requested_paused?"일시정지":"재개"])));
     }catch(e){state=null;if(!expired)out.textContent="관리자 권한 필요 또는 상태 조회 실패";}
