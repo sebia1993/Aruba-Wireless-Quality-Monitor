@@ -483,6 +483,24 @@ function operationsPanel(){
         }
       }
       out.append(ports);
+      const rf=el("details");
+      rf.append(el("summary","승인 AP 주변 채널 RF 관측 (D04)"),
+        el("p","선택 AP의 최근 Radio 이상 지표가 조회 조건입니다. 아래는 CLI 원시 보고값이며 실제 측정 시각, Noise 단위, Utilization 측정 구간 및 물리 Radio는 미검증입니다. Airtime이나 장애 원인으로 판정하지 않습니다."));
+      for(const id of Object.keys(state.controllers)){
+        const evidence=rows.get(id)?.rf_summary_evidence;
+        if(!evidence?.configured)continue;
+        rf.append(el("h4",id),el("p","선택 AP "+evidence.selected_count+"대 · 현재 관측 "+evidence.rows.length+"대"));
+        if(!evidence.rows.length)rf.append(el("p","현재 관측 없음 또는 수집 조건 미충족"));
+        const index=x=>x==null?"—":x.components.join("/")+" ("+x.reported_total+")"+(x.total_consistent?"":" · 불일치");
+        const util=x=>x==null?"—":[x.channel_utilization,x.rx,x.tx,x.extension_channel_utilization,x.quality].join("/");
+        for(const item of evidence.rows){
+          rf.append(el("h4",item.ap_name+" · 수신 "+kst(item.received_at)),
+            el("p","채널 "+item.channels.length+" / "+item.row_count+"행"+(item.truncated?" · 표시 제한":"")+" · 미해석 후속 행 "+item.unparsed_tail_lines),
+            table(["보고 Band","채널","Retry","PHY Err","MAC Err","Noise 원시","Util/RX/TX/Ext/Qual","Coverage (합계)","Interference (합계)"],
+              item.channels.map(c=>[c.reported_band,c.channel,c.retry_raw,c.phy_error_raw,c.mac_error_raw,c.noise_raw,util(c.utilization),index(c.coverage_index),index(c.interference_index)])));
+        }
+      }
+      out.append(rf);
       if(applied?.error)out.append(el("p","운영 상태 저장소 오류 · 신규 수집 차단","warn"));
       if(d.recent.length)out.append(el("h3","최근 요청 이력"),table(["시각","대상","요청"],d.recent.slice(0,20).map(x=>[kst(x.at),x.target,x.requested_paused?"일시정지":"재개"])));
     }catch(e){state=null;if(!expired)out.textContent="관리자 권한 필요 또는 상태 조회 실패";}

@@ -35,7 +35,11 @@ class PortApproval:
 
 
 def load_port_approvals(cfg, radios, now=None):
-    path = safe_path(cfg.root, "config/ap-port-validation.json")
+    return _load_selected_approvals(cfg, radios, now, "config/ap-port-validation.json", CONTRACT, CHECKS)
+
+
+def _load_selected_approvals(cfg, radios, now, relative, contract, required_checks):
+    path = safe_path(cfg.root, relative)
     if not path.exists():
         return {}
     if path.stat().st_size > 64000:
@@ -45,7 +49,7 @@ def load_port_approvals(cfg, radios, now=None):
         return {}
     if (not isinstance(doc, dict) or set(doc) != {"version", "enabled", "site", "contract", "controllers"}
             or type(doc["version"]) is not int or doc["version"] != 1 or doc["enabled"] is not True
-            or doc["site"] != cfg.site or doc["contract"] != CONTRACT):
+            or doc["site"] != cfg.site or doc["contract"] != contract):
         raise ValueError("invalid AP port approval")
     now = int(time.time()) if now is None else now
     rows = doc["controllers"]
@@ -69,7 +73,7 @@ def load_port_approvals(cfg, radios, now=None):
                 or any(ord(c) < 32 or ord(c) == 127 for c in reviewer)):
             raise ValueError("local reviewer reference required")
         checks = row["checks"]
-        if type(checks) is not dict or set(checks) != CHECKS or any(v is not True for v in checks.values()):
+        if type(checks) is not dict or set(checks) != required_checks or any(v is not True for v in checks.values()):
             raise ValueError("all AP port checks required")
         targets = row["targets"]
         if type(targets) is not list or not 1 <= len(targets) <= 5:
@@ -94,6 +98,9 @@ def load_port_approvals(cfg, radios, now=None):
 
 class ApPorts:
     """Called under the worker lock; no independent thread or SSH session."""
+    command = COMMAND
+    interval = INTERVAL
+
     def __init__(self, approval):
         self.approval = approval
         self.next_round = float("-inf")
@@ -125,7 +132,7 @@ class ApPorts:
         return (worker.generation, row["ip"])
 
     def select(self, worker, key, now, monotonic):
-        if monotonic < self.next_round or COMMAND in worker.detail_disabled:
+        if monotonic < self.next_round or self.command in worker.detail_disabled:
             return None
         for target in sorted(self.approval.targets, key=lambda t: (self.next_ap.get(t, float("-inf")), t)):
             if monotonic < self.next_ap.get(target, float("-inf")):
@@ -137,7 +144,7 @@ class ApPorts:
 
     def begin(self, target, monotonic):
         self.next_round = monotonic + ROUND_INTERVAL
-        self.next_ap[target] = monotonic + INTERVAL
+        self.next_ap[target] = monotonic + self.interval
         self.records.pop(target, None)
 
     def record(self, target, context, received, result):

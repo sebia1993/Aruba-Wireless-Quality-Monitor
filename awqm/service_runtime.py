@@ -13,6 +13,7 @@ from .cluster import ClusterMonitor
 from .controller_resources import load_resource_approvals
 from .ap_anchors import load_anchor_approvals
 from .live_ap_ports import load_port_approvals
+from .live_rf_summary import load_rf_approvals
 from .retention import Retention,load_retention
 from .archive_retention import load_archive_retention
 from .live_neighbors import LiveNeighbors,load_neighbor_approvals
@@ -156,6 +157,7 @@ def run_service(root,stop,on_ready=None):
         resource_approvals=load_resource_approvals(cfg,approvals)
         anchor_approvals=load_anchor_approvals(cfg,approvals)
         port_approvals=load_port_approvals(cfg,approvals)
+        rf_approvals=load_rf_approvals(cfg,approvals)
         client_approvals=load_client_approvals(cfg,approvals)
         station_approvals=load_station_approvals(cfg,client_approvals)
         correlation_approvals=load_correlation_approvals(cfg,station_approvals,retention_enabled=retention_enabled)
@@ -171,7 +173,7 @@ def run_service(root,stop,on_ready=None):
         operations=configured_ops(cfg)
         store=Store(safe_path(cfg.root,"data"),mode="diagnostic")
         gate=ConnectionGate(cfg.known_hosts,stop=stop)
-        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode=profile,offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True,neighbor_approval=neighbor_approvals.get(t.id),history_approval=history_approvals.get(t.id),manual_detail=manual_enabled,resource_approval=resource_approvals.get(t.id),anchor_approval=anchor_approvals.get(t.id),port_approval=port_approvals.get(t.id)) for i,t in enumerate(cfg.targets)]
+        workers=[ControllerWorker(t.id,lambda t=t:gate.connect(t),mode=profile,offset=i*15,enable_bss=True,field_approval=approvals.get(t.id),live_detail=True,client_approval=client_approvals.get(t.id),station_approval=station_approvals.get(t.id),enable_cluster=True,neighbor_approval=neighbor_approvals.get(t.id),history_approval=history_approvals.get(t.id),manual_detail=manual_enabled,resource_approval=resource_approvals.get(t.id),anchor_approval=anchor_approvals.get(t.id),port_approval=port_approvals.get(t.id),rf_approval=rf_approvals.get(t.id)) for i,t in enumerate(cfg.targets)]
         # Always open the local history ledger so old incidents remain
         # inspectable after an attestation is revoked or expires.
         quality=QualityLedger(store)
