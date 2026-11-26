@@ -453,6 +453,21 @@ function operationsPanel(){
           return [id,w.requested_paused?"정지 요청":"수집 허용 요청",phaseLabel,a?.cpu,protection[a?.protection]||"미확인",
             a?.cli_seconds_300,a?.detail_seconds_60,a?.jobs?(a.jobs.queued+a.jobs.deferred)+" / "+a.jobs.running:"미확인",b];
         })));
+      const capability=el("details");
+      capability.append(el("summary","WLC별 CLI 지원·관측 매트릭스"),
+        el("p","구현·설정 상태와 현재 연결의 최근 파싱 결과를 구분합니다. 성공한 파싱도 실제 장비 지원·권한·지표 의미 검증을 보장하지 않습니다. 조회 시 SSH 명령을 추가 실행하지 않습니다."));
+      const implementations={base:"기본 수집",detail:"정밀 수집",detail_variant:"정밀 수집 (BSSID 변형)",offline:"오프라인 파서",pending:"미구현"};
+      const observations={parsed_response:"응답 파싱 성공",permission_denied:"권한 거부",unsupported:"명령 미지원 응답",parse_error:"파싱 실패",transport_error:"전송 오류",withheld:"수집 보류",detail_unavailable:"정밀 조회 불가",unobserved:"미관측"};
+      for(const id of Object.keys(state.controllers)){
+        capability.append(el("h4",id));
+        const entries=rows.get(id)?.cli_capabilities;
+        if(!Array.isArray(entries)){capability.append(el("p","현재 CLI 상태 미확인"));continue;}
+        capability.append(table(["ID","CLI (템플릿)","구현","설정","차단 유지","최근 관측","관측 시각 KST"],
+          entries.map(x=>[x.id,x.command,implementations[x.implementation]||"미확인",
+            x.configured?"설정됨":"미설정",x.disabled_latched?"차단":"—",
+            observations[x.observation]||"미관측",x.observed_at==null?"—":kst(x.observed_at)])));
+      }
+      out.append(capability);
       if(applied?.error)out.append(el("p","운영 상태 저장소 오류 · 신규 수집 차단","warn"));
       if(d.recent.length)out.append(el("h3","최근 요청 이력"),table(["시각","대상","요청"],d.recent.slice(0,20).map(x=>[kst(x.at),x.target,x.requested_paused?"일시정지":"재개"])));
     }catch(e){state=null;if(!expired)out.textContent="관리자 권한 필요 또는 상태 조회 실패";}

@@ -23,6 +23,7 @@ from .association_history import COMMANDS as USER_TABLES,user_table
 from .manual_jobs import bind_ap
 from .controller_resources import COMMANDS as RESOURCE_COMMANDS,MEMORY,DATAPATH,memory,datapath
 from .ap_anchors import COMMANDS as ANCHOR_COMMANDS,STANDBY,UAC,standby,uac_database
+from .cli_capabilities import matrix as capability_matrix
 
 PARSERS={
     "show cpuload":cpu_load,
@@ -70,6 +71,7 @@ class ControllerWorker:
         self.jobs=Jobs()
         self.detail_latest={}
         self.detail_disabled=set()
+        self.detail_outcomes={}
         self.last_heartbeat=self.clock()
         self.maintenance_requested=False
     def _close(self):
@@ -121,7 +123,12 @@ class ControllerWorker:
                     if cmd in self.disabled or not cluster_load:self.schedule.due[cmd]=float("inf")
                     elif self.schedule.due[cmd]==float("inf"):self.schedule.due[cmd]=self.clock()
             p=self.schedule.next(self.clock())
-            if p is None:return self._detail_tick()
+            if p is None:
+                reading=self._detail_tick()
+                if reading is not None and reading.command in DETAIL_PARSERS:
+                    # Do not retain AP/client targets, payloads or exception text.
+                    self.detail_outcomes[reading.command]=(reading.status,reading.observed_at,reading.generation)
+                return reading
             if p.name in RESOURCE_COMMANDS or p.name in ANCHOR_COMMANDS:
                 at=int(self.wall());a=self.resource_approval if p.name in RESOURCE_COMMANDS else self.anchor_approval;r=self.field_approval;v=self.latest.get("show version")
                 protection=self.schedule.protection
@@ -177,7 +184,7 @@ class ControllerWorker:
         if not self.lock.acquire(blocking=False):return False
         try:
             self._close()
-            self.latest.clear();self.outcomes.clear();self.detail_latest.clear()
+            self.latest.clear();self.outcomes.clear();self.detail_latest.clear();self.detail_outcomes.clear()
             now=self.clock()
             self.schedule.reconnect(now)
             self.schedule.paused=bool(paused)
@@ -192,7 +199,7 @@ class ControllerWorker:
 
     def protection_frame(self):
         if not self.lock.acquire(blocking=False):
-            return {"connection":"busy","cpu":None,"protection":"unknown","profile":self.schedule.mode}
+            return {"connection":"busy","cpu":None,"protection":"unknown","profile":self.schedule.mode,"cli_capabilities":None}
         try:
             now=self.clock();p=self.schedule.protection
             return {"connection":"blocked" if self.blocked else "connected" if self.session is not None else "disconnected",
@@ -201,6 +208,7 @@ class ControllerWorker:
                     "cli_seconds_300":round(p.budget(now,300),2),"detail_seconds_60":round(p.budget(now,60,True),2),
                     "retry_after_seconds":round(max(0,self.next_connect-now),1),
                     "disabled_polls":sorted(self.disabled),"disabled_details":sorted(self.detail_disabled),
+                    "cli_capabilities":capability_matrix(self),
                     "heartbeat_age_seconds":round(max(0,now-self.last_heartbeat),1)}
         finally:self.lock.release()
     def user_frame(self):
