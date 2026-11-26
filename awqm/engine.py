@@ -8,6 +8,8 @@ from dataclasses import asdict,replace
 from threading import Lock
 import time
 import sqlite3
+import shutil
+from .storage import disk_level
 from .aos8 import merge_radios,merge_association_tables
 from .durable_jobs import DurableJobs
 from .selection import Selector
@@ -368,15 +370,57 @@ class Engine:
     def job_status(self,controller):
         w=self.workers[controller]
         return [asdict(j) for j in w.jobs.list(w.wall())]
+    def _drain_selected_on_close(self):
+        """Archive completed accepted receipts only; never dispatch or publish.
+
+        Called after executor shutdown, with no remaining running worker.
+        A failed drain is not a clean service stop. Existing storage errors
+        still require explicit recovery; never bypass critical disk protection.
+        """
+        incomplete = None
+        for name, future in list(self.inflight.items()):
+            del self.inflight[name]
+            if future.cancelled():
+                continue
+            try:
+                reading = future.result()[0]
+                if reading is not None and reading.selected_receipt is not None:
+                    receipt = reading.selected_receipt
+                    previous = self.selected_pending.get(name)
+                    if previous is not None and previous != receipt:
+                        raise RuntimeError("conflicting pending selected receipt")
+                    self.selected_pending[name] = receipt
+            except Exception as exc:
+                # Do not expose a worker exception, raw CLI or private payload.
+                incomplete = type(exc).__name__
+        if self.selected_pending and not self.error:
+            try:
+                for name, receipt in list(self.selected_pending.items()):
+                    space = shutil.disk_usage(self.store.root)
+                    if disk_level(space.free, space.total) == "critical":
+                        self.error = "disk_protection"
+                        break
+                    self.selected_history.save(receipt)
+                    del self.selected_pending[name]
+            except (ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error, OSError) as exc:
+                self.error = type(exc).__name__
+        if incomplete is not None or self.selected_pending:
+            self.error = self.error or incomplete or "selected_history_pending"
+            raise RuntimeError("selected history shutdown incomplete") from None
+
     def close(self):
         with self.lock:
             if self.closed:return
             self.closed=True
         self.pool.shutdown(wait=True,cancel_futures=True)
-        for w in self.workers.values():w.close()
-        for w in self.workers.values():
-            w.identity_peers=()
-            w.retain_selected_history=False
+        try:
+            if self.selected_history:
+                self._drain_selected_on_close()
+        finally:
+            for w in self.workers.values():w.close()
+            for w in self.workers.values():
+                w.identity_peers=()
+                w.retain_selected_history=False
     def run(self,stop,interval=.25,maintenance=None):
         try:
             while not stop.is_set():

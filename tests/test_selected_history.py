@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from awqm.engine import Engine
+from awqm.service_runtime import service_lifetime
+from threading import Event
 from awqm.storage import Store
 from awqm.worker import ControllerWorker
 from awqm.selected_history import (COMMANDS, POLICY, SelectedHistory, SelectedHistoryFull,
@@ -133,6 +135,97 @@ class SelectedHistoryTests(unittest.TestCase):
         self.assertIsNone(engine.pulse()["storage_error"])
         self.assertEqual(engine.operation_status()["selected_history"]["pending"], 0)
         self.assertEqual(len(self.rows(engine.store)), 1)
+
+    def test_close_drains_actual_worker_without_another_tick_or_publication(self):
+        w, engine, session = self.worker_engine(PORT)
+        # Real executor/worker, not a fabricated receipt. Wait for an accepted
+        # result but intentionally do not give pulse a chance to harvest it.
+        future = engine.pool.submit(Engine._step, w)
+        engine.inflight["w1"] = future
+        outcome = future.result(timeout=10)
+        receipt = outcome[0].selected_receipt
+        self.assertIsNotNone(receipt)
+        self.assertEqual(self.rows(engine.store), [])
+        before = list(session.calls)
+        with patch("awqm.engine.shutil.disk_usage",
+                   return_value=SimpleNamespace(free=80*10**9, total=100*10**9)):
+            engine.close()
+        self.assertEqual(self.rows(engine.store), [(receipt.receipt_id, receipt.payload)])
+        self.assertEqual(session.calls, before)
+        self.assertEqual(engine.selected_pending, {})
+        self.assertEqual(engine.inflight, {})
+        self.assertEqual(engine.published_radios, ())
+        self.assertFalse(w.retain_selected_history)
+        self.assertIsNone(w.session)
+        engine.close()  # Idempotent shutdown.
+        self.assertEqual(len(self.rows(engine.store)), 1)
+
+    def test_close_cancelled_future_and_disabled_archive_do_not_write(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                # Unique store directories for the two cases.
+                cmd = PORT if enabled else RF
+                w, engine, _ = self.worker_engine(cmd, enabled=enabled)
+                future = Future()
+                self.assertTrue(future.cancel())
+                engine.inflight["w1"] = future
+                with patch("awqm.engine.shutil.disk_usage") as usage:
+                    engine.close()
+                    usage.assert_not_called()
+                self.assertFalse(w.retain_selected_history)
+                if enabled:
+                    self.assertEqual(self.rows(engine.store), [])
+
+    def test_close_failure_is_not_clean_service_stop_and_preserves_pending(self):
+        for reason, cmd in (("disk", PORT), ("sqlite", RF), ("prior", ARM)):
+            with self.subTest(reason=reason):
+                w, engine, _ = self.worker_engine(cmd)
+                outcome = Engine._step(w)
+                receipt = outcome[0].selected_receipt
+                self.assertIsNotNone(receipt)
+                if reason == "prior":
+                    # Existing failed commit is not an implicit recovery.
+                    with patch.object(engine.selected_history, "save",
+                                      side_effect=sqlite3.OperationalError):
+                        self.harvest(engine, outcome)
+                else:
+                    future = Future()
+                    future.set_result(outcome)
+                    engine.inflight["w1"] = future
+                space = SimpleNamespace(free=(4 if reason == "disk" else 80)*10**9,
+                                        total=100*10**9)
+                status = Path(self.root.name) / ("status-" + reason + ".json")
+                stop = Event()
+                with patch("awqm.engine.shutil.disk_usage", return_value=space), \
+                        patch.object(engine.selected_history, "save",
+                                     side_effect=sqlite3.OperationalError) as save:
+                    with self.assertRaisesRegex(RuntimeError, "selected history shutdown incomplete"):
+                        with service_lifetime(stop, status, lambda: 1000) as resources:
+                            resources.callback(engine.close)
+                    if reason == "sqlite":
+                        save.assert_called_once_with(receipt)
+                    else:
+                        save.assert_not_called()
+                self.assertEqual(json.loads(status.read_text())["state"], "failed")
+                self.assertTrue(stop.is_set())
+                self.assertEqual(engine.selected_pending, {"w1": receipt})
+                self.assertEqual(self.rows(engine.store), [])
+                self.assertEqual(engine.error, "disk_protection" if reason == "disk"
+                                 else "OperationalError")
+                self.assertFalse(w.retain_selected_history)
+                self.assertIsNone(w.session)
+
+    def test_close_unavailable_worker_result_fails_without_leaking_exception(self):
+        w, engine, _ = self.worker_engine(PORT)
+        future = Future()
+        future.set_exception(RuntimeError("private diagnostic exception"))
+        engine.inflight["w1"] = future
+        with self.assertRaisesRegex(RuntimeError, "^selected history shutdown incomplete$"):
+            engine.close()
+        self.assertEqual(engine.error, "RuntimeError")
+        self.assertEqual(self.rows(engine.store), [])
+        self.assertFalse(w.retain_selected_history)
+        self.assertIsNone(w.session)
 
     def test_capacity_replay_conflict_and_core_backup(self):
         w, engine, _ = self.worker_engine(PORT)
