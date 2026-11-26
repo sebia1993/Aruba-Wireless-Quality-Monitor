@@ -109,3 +109,37 @@ class APDetailTargetTests(unittest.TestCase):
         q2.finish(old.job_id,"completed","fixture",1001)
         with self.assertRaises(ValueError):
             q2.submit("legacy",COMMAND,AP,1001,binding=BIND)
+
+    def test_peer_veto_for_reserved_ap_job_and_independent_freshness(self):
+        from awqm.ap_detail_target import peer_identity_conflicts
+        peer=ControllerWorker("w2",lambda:FixtureSession(2),lambda:self.now,lambda:self.now)
+        self.addCleanup(peer.close)
+        self.w.identity_peers=(peer,)
+        row=self.w.latest[INVENTORY].data[0]
+        claim=self.w.latest[ACTIVE].data[0]
+        for changed in (dict(row,name="RENAMED"),dict(row,ip="192.0.2.99"),
+                        dict(row,mac="02:00:00:00:00:99")):
+            peer._record(INVENTORY,"success",[changed])
+            self.assertIsNone(current_ap_binding(self.w,AP,self.now))
+        job=self.w.submit_detail("peer-conflict",COMMAND,AP,binding=BIND)
+        self.assertIsNone(self.w.tick())
+        self.assertEqual(self.w.jobs.get(job.job_id).reason,"target_anchor_unverified")
+        self.assertNotIn(COMMAND,self.calls)
+        # Inventory is replicated; a second positive AAC still vetoes it.
+        peer._record(INVENTORY,"success",[dict(row,ip=None)])
+        peer._record(ACTIVE,"success",[claim])
+        self.assertIsNone(current_ap_binding(self.w,AP,self.now))
+        peer._record(ACTIVE,"success",[dict(claim,roles=["SA"])])
+        self.assertEqual(current_ap_binding(self.w,AP,self.now),BIND)
+        # Independently timed peer inventory and active claims.
+        peer._record(INVENTORY,"success",[dict(row,name="RENAMED")])
+        peer._record(ACTIVE,"success",[claim])
+        for age,expected in ((-1,False),(150,True),(151,True),(660,True),(661,False)):
+            self.assertEqual(peer_identity_conflicts(self.w,AP,row["ip"],row["mac"],self.now+age),expected)
+        peer._record(INVENTORY,"parse_error")
+        self.assertTrue(peer_identity_conflicts(self.w,AP,row["ip"],row["mac"],self.now+150))
+        self.assertFalse(peer_identity_conflicts(self.w,AP,row["ip"],row["mac"],self.now+151))
+        peer.close()
+        self.assertEqual(current_ap_binding(self.w,AP,self.now),BIND)
+        self.assertEqual(self.w.tick().status,"success")
+        self.assertEqual(self.calls.count(COMMAND),1)

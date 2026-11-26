@@ -224,3 +224,60 @@ class PortWorkerTests(unittest.TestCase):
         self.assertIsNone(w.session)
         self.assertFalse(w.protection_frame()["ap_port_evidence"]["rows"])
         self.assertNotIn("private error",json.dumps(w.protection_frame()))
+
+    def test_peer_identity_veto_and_recovery_without_extra_ssh(self):
+        w=self.worker()
+        peer=ControllerWorker("w2",lambda:FixtureSession(2),lambda:self.now,lambda:self.now,mode="standard")
+        self.addCleanup(peer.close)
+        # Real worker parser path populates both peer frames independently
+        # of the Radio snapshot used for quality publication.
+        for _ in peer.schedule.polls:
+            self.assertEqual(peer.tick().status,"success")
+        inv="show ap database long"
+        active="show ap active details"
+        row=w.latest[inv].data[0]
+        claim=w.latest[active].data[0]
+        with tempfile.TemporaryDirectory() as root:
+            engine=Engine([w,peer],Store(root,mode="diagnostic"),clock=lambda:self.now,wall=lambda:self.now)
+            try:
+                peer._record(inv,"success",[dict(row,name="RENAMED")])
+                self.assertIsNone(w.tick())
+                self.assertFalse(self.port_calls())
+                peer._record(inv,"success",[dict(row)])
+                peer._record(active,"success",[dict(claim)])
+                self.assertIsNone(w.tick())
+                self.assertFalse(self.port_calls())
+                peer._record(active,"success",[dict(claim,roles=["SA"])])
+                self.assertEqual(w.tick().status,"success")
+                self.assertTrue(w.protection_frame()["ap_port_evidence"]["rows"])
+                # Positive peer evidence withdraws the current admin view.
+                peer._record(inv,"success",[dict(row,ip="192.0.2.99")])
+                self.assertFalse(w.protection_frame()["ap_port_evidence"]["rows"])
+                self.refresh(w)
+                self.assertIsNone(w.tick())
+                self.assertEqual(len(self.port_calls()),1)
+                # A failed peer refresh is not a positive contradiction.
+                peer._record(inv,"parse_error")
+                self.assertEqual(w.tick().status,"success")
+                self.assertEqual(len(self.port_calls()),2)
+            finally:engine.close()
+
+    def test_peer_change_during_selected_command_discards_response(self):
+        w=self.worker()
+        peer=ControllerWorker("w2",lambda:FixtureSession(2),lambda:self.now,lambda:self.now,mode="standard")
+        self.addCleanup(peer.close)
+        row=w.latest["show ap database long"].data[0]
+        with tempfile.TemporaryDirectory() as root:
+            engine=Engine([w,peer],Store(root,mode="diagnostic"),clock=lambda:self.now,wall=lambda:self.now)
+            try:
+                run=self.session.run
+                def contradict(name,*args,**kwargs):
+                    result=run(name,*args,**kwargs)
+                    if name==COMMAND:
+                        peer._record("show ap database long","success",[dict(row,name="RENAMED")])
+                    return result
+                with patch.object(self.session,"run",side_effect=contradict):
+                    self.assertEqual(w.tick().status,"withheld")
+                self.assertEqual(len(self.port_calls()),1)
+                self.assertFalse(w.protection_frame()["ap_port_evidence"]["rows"])
+            finally:engine.close()

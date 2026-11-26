@@ -48,6 +48,10 @@ class Engine:
         self.live_neighbors=live_neighbors;self.neighbor_frames={};self.neighbor_pending={};self.neighbor_views={};self.neighbor_refresh_at=None
         if simulation and association_history:raise ValueError("live history requires diagnostic mode")
         self.association_history=association_history;self.association_frames={};self.association_refresh_at=None
+        # Scope peer observations to this engine/site; no cross-lock or SSH.
+        if not simulation:
+            for w in workers:
+                w.identity_peers=tuple(p for p in workers if p is not w)
     @staticmethod
     def _step(w,cluster_load=False):
         r=w.tick(cluster_load=cluster_load) if w.enable_cluster else w.tick()
@@ -348,6 +352,7 @@ class Engine:
             self.closed=True
         self.pool.shutdown(wait=True,cancel_futures=True)
         for w in self.workers.values():w.close()
+        for w in self.workers.values():w.identity_peers=()
     def run(self,stop,interval=.25,maintenance=None):
         try:
             while not stop.is_set():

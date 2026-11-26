@@ -2,8 +2,9 @@
 
 An AP display name is not a physical identity. Validate the queued physical
 binding against unique current-connection AAC and inventory observations
-before any AP-scoped detail CLI. This is local evidence only: it cannot
-prove cluster-wide ownership or what happened after the observations.
+before any AP-scoped detail CLI. Fresh positive peer evidence can veto the local binding. Missing peer
+observations cannot prove cluster-wide ownership or what happened after
+collection.
 """
 from .collector import AP
 from .manual_jobs import bind_ap
@@ -17,6 +18,30 @@ def binding_from_physical_id(ap_id):
     if len(parts) != 7 or not parts[0]:
         raise ValueError("physical AP identity required")
     return bind_ap(":".join(parts[1:]))
+
+
+def peer_identity_conflicts(worker, target, ip, mac, now):
+    """Veto positive peer contradictions without taking another worker lock.
+
+    Each peer publishes a pair of immutable, independently timed identity
+    frames. A missing, failed, stale or future frame is not corroboration.
+    This is not a cluster transaction or a guarantee of complete coverage.
+    """
+    for peer in getattr(worker, "identity_peers", ()):
+        if peer.maintenance_requested:
+            continue
+        inventory, active = peer.identity_frame
+        if inventory is not None and 0 <= now-inventory[0] <= 660:
+            for name, addr, wired in inventory[1]:
+                if wired == mac and (name != target or (addr and addr != ip)):
+                    return True
+                if wired != mac and (name == target or addr == ip):
+                    return True
+        if active is not None and 0 <= now-active[0] <= 150:
+            if any(aac and (name == target or addr == ip)
+                   for name, addr, aac in active[1]):
+                return True
+    return False
 
 
 def current_ap_binding(worker, target, now):
@@ -49,6 +74,8 @@ def current_ap_binding(worker, target, now):
         return None
     mac = claims[0]["mac"]
     if sum(a["mac"] == mac for a in inventory) != 1:
+        return None
+    if peer_identity_conflicts(worker, target, ip, mac, now):
         return None
     try:
         return bind_ap(mac)

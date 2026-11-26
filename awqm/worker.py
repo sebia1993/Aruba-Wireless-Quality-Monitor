@@ -87,7 +87,12 @@ class ControllerWorker:
         self.detail_outcomes={}
         self.last_heartbeat=self.clock()
         self.maintenance_requested=False
+        # Private, immutable last-success identity frames. Readers never
+        # acquire another worker's lock while a CLI is running.
+        self.identity_frame=(None,None)
+        self.identity_peers=()
     def _close(self):
+        self.identity_frame=(None,None)
         if self.ap_ports:self.ap_ports.clear()
         if self.rf_summary:self.rf_summary.clear()
         if self.arm_history:self.arm_history.clear()
@@ -113,6 +118,13 @@ class ControllerWorker:
         self.outcomes[name]=r
         if status=="success":
             self.latest[name]=r
+        inv,active=self.identity_frame
+        if name=="show ap database long":
+            inv=(r.observed_at,tuple((a["name"],a["ip"],a["mac"]) for a in data)) if status=="success" else None
+            self.identity_frame=(inv,active)
+        elif name=="show ap active details":
+            active=(r.observed_at,tuple((a["name"],a["ip"],"A" in a["roles"]) for a in data)) if status=="success" else None
+            self.identity_frame=(inv,active)
         return r
     def tick(self,cluster_load=False):
         """At most one command. No backlog replay or concurrent CLI."""
