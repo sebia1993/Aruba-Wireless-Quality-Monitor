@@ -141,10 +141,14 @@ def fixture(root):
                          "phy_error_raw":"0","mac_error_raw":None,
                          "utilization":{"channel_utilization":8,"rx":3,"tx":2,
                              "extension_channel_utilization":1,"quality":95,
-                             "private":"PRIVATE-HISTORY-VALUE"}},
+                             "private":"PRIVATE-HISTORY-VALUE"},
+                         "coverage_index":{"components":["18446744073709551615","1"],"reported_total":"0",
+                             "total_consistent":False,"private":"PRIVATE-HISTORY-VALUE"},
+                         "interference_index":{"components":["18","11","4","1"],"reported_total":"34","total_consistent":True}},
                         {"channel":44,"reported_band":"5GHz","noise_raw":None,
                          "split_scan_reported":None,"retry_raw":None,
-                         "phy_error_raw":"0","mac_error_raw":None,"utilization":None}]}}
+                         "phy_error_raw":"0","mac_error_raw":None,"utilization":None,
+                         "coverage_index":None,"interference_index":None}]}}
     archive.save(Receipt(f"{23:032x}","WLC-1",RF,now,json.dumps(rf_payload)))
     arm_time=now-7200
     arm_payload={"schema":1,"controller":"WLC-1","command":ARM,"received_at":arm_time,
@@ -474,6 +478,10 @@ def browser_test(output):
                         expect(history.get_by_text("Noise 원문: 92*",exact=True)).to_be_visible()
                         expect(history.get_by_text("Util/Quality 보고값: 채널 8 / RX 3 / TX 2 / 확장 채널 1 / Quality 95",exact=True)).to_be_visible()
                         expect(history.get_by_text("Noise 원문: 미확인",exact=True)).to_be_visible()
+                        expect(history.get_by_text("Coverage 보고값: 18446744073709551615/1 (0) · 합계 불일치",exact=True)).to_be_visible()
+                        expect(history.get_by_text("Interference 보고값: 18/11/4/1 (34) · 합계 일치",exact=True)).to_be_visible()
+                        expect(history.get_by_text("Coverage 보고값: 미확인",exact=True)).to_be_visible()
+                        expect(history.get_by_text("Interference 보고값: 미확인",exact=True)).to_be_visible()
                         expect(history).not_to_contain_text("PRIVATE-HISTORY")
                         expect(history).not_to_contain_text("c"*64)
                         history.get_by_label("정밀 이력 수집 항목").select_option("D08")

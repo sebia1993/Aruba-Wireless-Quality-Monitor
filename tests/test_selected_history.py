@@ -376,10 +376,14 @@ class SelectedHistoryTests(unittest.TestCase):
                          "split_scan_reported":False, "retry_raw":"18446744073709551615",
                          "phy_error_raw":"0", "mac_error_raw":"0",
                          "utilization":{"channel_utilization":8,"rx":3,"tx":2,
-                             "extension_channel_utilization":1,"quality":95}},
+                             "extension_channel_utilization":1,"quality":95},
+                         "coverage_index":{"components":["7","1"],"reported_total":"8","total_consistent":True},
+                         "interference_index":{"components":["18","11","4","1"],"reported_total":"34","total_consistent":True}},
                         {"channel":44, "reported_band":None, "noise_raw":None,
                          "split_scan_reported":None, "retry_raw":None,
-                         "phy_error_raw":"0", "mac_error_raw":None, "utilization":None}])
+                         "phy_error_raw":"0", "mac_error_raw":None, "utilization":None,
+                         "coverage_index":None,
+                         "interference_index":{"components":["2","3","4","5"],"reported_total":"9","total_consistent":False}}])
                 else:
                     self.assertNotIn("rf_detail", row)
                 if ident == "D08":
@@ -484,6 +488,9 @@ class SelectedHistoryTests(unittest.TestCase):
         row["utilization"]["private_key"] = "DO-NOT-DISCLOSE"
         row["noise_raw"] = "-92*"
         row["split_scan_reported"] = True
+        idx = row["coverage_index"]
+        idx.update(components=["18446744073709551615","1"], reported_total="0",
+                   total_consistent=False, private="DO-NOT-DISCLOSE")
 
         def project():
             return receipt_summary(replace(original, payload=json.dumps(data)), lambda _: "masked")
@@ -492,8 +499,16 @@ class SelectedHistoryTests(unittest.TestCase):
         self.assertEqual(detail[0]["noise_raw"], "-92*")
         self.assertIs(detail[0]["split_scan_reported"], True)
         self.assertNotIn("DO-NOT-DISCLOSE", json.dumps(detail))
-        self.assertNotIn("interference_index", detail[1])
+        self.assertIsNone(detail[1]["coverage_index"])
+        self.assertEqual(detail[1]["interference_index"], {"components":["2","3","4","5"],
+                         "reported_total":"9","total_consistent":False})
+        self.assertEqual(detail[0]["coverage_index"], {"components":["18446744073709551615","1"],
+                         "reported_total":"0","total_consistent":False})
         for target, key, invalid in (
+            (row, "coverage_index", [[], True, {}]),
+            (idx, "components", [[], ["1"], ["1","2","3"], ["18446744073709551616","0"], [0,"0"], [None,"1"]]),
+            (idx, "reported_total", [None, True, "18446744073709551616", "-1"]),
+            (idx, "total_consistent", [True, 0, None]),
             (row, "channel", [True, 0, 234, "36"]),
             (row, "reported_band", ["5GHz", []]),
             (row, "retry_raw", ["18446744073709551616", 0, True, "-1"]),
@@ -512,6 +527,10 @@ class SelectedHistoryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
             project()
         obs["channels"].pop()
+        del row["interference_index"]
+        with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
+            project()
+        row["interference_index"] = None
         del row["mac_error_raw"]
         with self.assertRaisesRegex(RuntimeError, "^selected history record unavailable$"):
             project()

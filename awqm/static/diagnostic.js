@@ -470,6 +470,15 @@ function selectedHistoryPanel(){
     const show=v=>v===null?"미확인":String(v);
     const counters=[["retry_raw","Retry"],["phy_error_raw","PHY error"],["mac_error_raw","MAC error"]];
     const utilFields=[["channel_utilization","채널"],["rx","RX"],["tx","TX"],["extension_channel_utilization","확장 채널"],["quality","Quality"]];
+    function reportedIndex(value,count){
+      if(value===null)return "미확인";
+      const uint=v=>typeof v==="string"&&/^[0-9]{1,20}$/.test(v)&&BigInt(v)<=18446744073709551615n;
+      if(!value||!Array.isArray(value.components)||value.components.length!==count||
+         !value.components.every(uint)||!uint(value.reported_total)||
+         value.total_consistent!==(value.components.reduce((sum,v)=>sum+BigInt(v),0n)===BigInt(value.reported_total)))
+        throw Error("invalid RF history index");
+      return value.components.join("/")+" ("+value.reported_total+")"+(value.total_consistent?" · 합계 일치":" · 합계 불일치");
+    }
     for(const r of rows){
       if(!Number.isInteger(r.channel)||r.channel<1||r.channel>233||
          ![null,"2.4GHz","5GHz","6GHz"].includes(r.reported_band)||
@@ -492,7 +501,9 @@ function selectedHistoryPanel(){
       }
       cell.append(el("p","채널 "+r.channel+" · 대역 "+show(r.reported_band)),
         el("div",values.join(" · ")),el("div","Noise 원문: "+show(r.noise_raw)),
-        el("div","Util/Quality 보고값: "+utilText));
+        el("div","Util/Quality 보고값: "+utilText),
+        el("div","Coverage 보고값: "+reportedIndex(r.coverage_index,2)),
+        el("div","Interference 보고값: "+reportedIndex(r.interference_index,4)));
     }
     return cell;
   }

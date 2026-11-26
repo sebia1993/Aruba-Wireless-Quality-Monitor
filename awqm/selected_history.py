@@ -118,6 +118,26 @@ D04_HISTORY_UTIL = ("channel_utilization", "rx", "tx",
                     "extension_channel_utilization", "quality")
 
 
+def _rf_history_index(value, count):
+    """Keep reported index components and total, not a derived RF metric."""
+    if value is None:
+        return None
+    if type(value) is not dict or type(value["components"]) is not list:
+        raise ValueError("invalid historical RF index")
+    parts = value["components"]
+    if len(parts) != count:
+        raise ValueError("invalid historical RF index count")
+    parts = [_reported_uint64(part) for part in parts]
+    total = _reported_uint64(value["reported_total"])
+    if total is None or any(part is None for part in parts):
+        raise ValueError("invalid historical RF index value")
+    consistent = sum(map(int, parts)) == int(total)
+    if value["total_consistent"] is not consistent:
+        raise ValueError("invalid historical RF index consistency")
+    return {"components": parts, "reported_total": total,
+            "total_consistent": consistent}
+
+
 def _rf_history_detail(obs, channels):
     layout = obs["layout"]
     if layout not in ("legacy", "band", "phy-type") or not channels:
@@ -151,7 +171,9 @@ def _rf_history_detail(obs, channels):
         rows.append({"channel": channel, "reported_band": band,
                      "noise_raw": noise, "split_scan_reported": split,
                      **{key: _reported_uint64(row[key]) for key in D04_HISTORY_RAW},
-                     "utilization": util})
+                     "utilization": util,
+                     "coverage_index": _rf_history_index(row["coverage_index"], 2),
+                     "interference_index": _rf_history_index(row["interference_index"], 4)})
     return rows
 
 
