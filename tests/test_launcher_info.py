@@ -33,9 +33,16 @@ class LauncherInfoTests(unittest.TestCase):
                 self.assertIn(flag, result.stdout)
 
     def test_version_reports_application_version(self):
-        result = self.launch("--version")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), __version__)
+        # Keep the source CLI and package manifest in sync before the
+        # expensive frozen build; an import-only check misses version bumps.
+        manifest_version = (LAUNCHER.parent / "VERSION.txt").read_text(encoding="utf-8").strip()
+        self.assertRegex(manifest_version, r"^\d+\.\d+\.\d+$")
+        self.assertEqual(__version__, manifest_version)
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.launch("--version", cwd=directory)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), manifest_version)
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_runtime_info_reports_loaded_libraries_in_an_empty_directory(self):
         with tempfile.TemporaryDirectory() as directory:
