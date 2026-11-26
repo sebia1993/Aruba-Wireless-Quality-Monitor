@@ -426,6 +426,84 @@ function associationPanel(){
   return panel;
 }
 
+function selectedHistoryPanel(){
+  const panel=el("section",null,"history-panel"),form=el("form",null,"pager"),
+    out=el("div"),status=el("p"),controller=el("input"),command=el("select"),
+    period=el("select"),submit=el("button","정밀 이력 조회"),next=el("button","다음 이력");
+  panel.id="selected-history";status.setAttribute("role","status");
+  controller.required=true;controller.maxLength=128;controller.autocomplete="off";
+  controller.placeholder="등록된 WLC ID";controller.setAttribute("aria-label","이력 WLC ID");
+  command.setAttribute("aria-label","정밀 이력 수집 항목");
+  const labels={D03:"Radio 상세 통계",D04:"주변 채널 RF",D07:"AP 유선 포트",D08:"ARM 변경 이력"};
+  const counts={D03:[["requested_radio","요청 Radio"],["observed_field_count","관측 필드"],["ignored_row_count","제외 행"]],
+    D04:[["retained_channel_rows","저장 채널 행"],["reported_channel_rows","보고 채널 행"]],
+    D07:[["retained_port_rows","저장 포트 행"]],
+    D08:[["retained_event_rows","저장 이벤트 행"],["reported_event_rows","보고 이벤트 행"],["retained_interfaces","저장 인터페이스"]]};
+  for(const [id,label] of Object.entries(labels)){const o=el("option",id+" · "+label);o.value=id;command.append(o);}
+  period.setAttribute("aria-label","정밀 이력 조회 기간");
+  for(const [seconds,label] of [[3600,"최근 1시간"],[86400,"최근 24시간"],[604800,"최근 7일"],[2592000,"최근 30일"]]){
+    const o=el("option",label);o.value=String(seconds);period.append(o);
+  }
+  period.value="86400";submit.type="submit";next.type="button";next.disabled=true;
+  let query=null,cursor=null,loading=false;
+  function reset(){
+    query=null;cursor=null;next.disabled=true;out.replaceChildren();status.textContent="";
+  }
+  for(const input of [controller,command,period])input.addEventListener(input===controller?"input":"change",reset);
+  async function load(after){
+    if(loading||expired||!query||!panel.isConnected)return;
+    loading=true;cursor=null;out.replaceChildren();status.textContent="이력 조회 중";
+    for(const input of [controller,command,period,submit,next])input.disabled=true;
+    const scope=query;
+    try{
+      const params=new URLSearchParams(scope);
+      if(after){params.set("after_time",String(after.received_at));params.set("after_id",after.receipt_id);}
+      const d=await request("/api/admin/selected-history?"+params);
+      if(expired||!panel.isConnected||query!==scope)return;
+      if(d.enabled===false){status.textContent="정밀 이력 보존 비활성 · 이력 없음으로 판단할 수 없습니다.";return;}
+      if(d.enabled!==true||d.controller!==scope.controller||d.command_id!==scope.command||
+          d.time_basis!=="receipt_time"||d.snapshot!==false||!Array.isArray(d.rows)||d.rows.length>20)
+        throw Error("invalid history response");
+      status.textContent="수신 시각 기준 KST: "+kst(Number(scope.start))+" ~ "+kst(Number(scope.end))+
+        " (종료 미포함) · 페이지 간 스냅샷 아님";
+      if(!d.rows.length){out.append(el("p","조회 범위에 저장 기록 없음 · 수집 누락 또는 장애 여부는 판단할 수 없습니다."));return;}
+      const fields=counts[scope.command];
+      out.append(table(["수신 시각 KST","임시 AP 토큰",...fields.map(x=>x[1]),"측정·검증 상태"],
+        d.rows.map(r=>[kst(r.received_at),r.ap_token,...fields.map(x=>r.summary?.[x[0]]??"미확인"),
+          "미검증 · 측정 시각/Counter Epoch/완전성 미확인"])));
+      if(d.next_cursor&&Number.isSafeInteger(d.next_cursor.received_at)&&
+          /^[0-9a-f]{32}$/.test(d.next_cursor.receipt_id))cursor=d.next_cursor;
+    }catch(e){
+      if(!expired&&panel.isConnected&&query===scope){
+        out.replaceChildren();status.textContent="관리자 권한 또는 WLC 범위·저장 상태 확인 필요 · 이력 조회 실패";
+      }
+    }finally{
+      loading=false;
+      if(!expired&&panel.isConnected){
+        for(const input of [controller,command,period,submit])input.disabled=false;
+        next.disabled=!cursor;
+      }
+    }
+  }
+  form.addEventListener("submit",event=>{
+    event.preventDefault();if(loading||expired)return;
+    reset();
+    const id=controller.value.trim(),seconds=Number(period.value);
+    if(!id||!Object.hasOwn(labels,command.value)||![3600,86400,604800,2592000].includes(seconds)){
+      status.textContent="등록된 WLC ID와 조회 조건을 확인하세요.";return;
+    }
+    const end=Math.floor(Date.now()/1000)+1;
+    query={controller:id,command:command.value,start:String(end-seconds),end:String(end),limit:"20"};
+    load(null);
+  });
+  next.addEventListener("click",()=>{if(cursor)load(cursor);});
+  form.append(controller,command,period,submit);
+  panel.append(el("h3","정밀 수집 이력"),
+    el("p","관리자 전용 · DB에 수락된 기록의 메타데이터만 조회합니다. AP 토큰은 서비스 실행 중에만 유효하며 실측값·상태·원인·완전성을 보장하지 않습니다."),
+    form,status,out,next);
+  return panel;
+}
+
 function operationsPanel(){
   const panel=el("section"),out=el("div"),msg=el("p"),refresh=el("button","수집 보호·점검 상태 조회");
   let state=null,loading=false;
@@ -649,7 +727,7 @@ function render(){
   }
   if(view==="clients"){loadClients();return;}
   if(view==="history"){loadIncidents();return;}
-  if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)),maintenancePanel(a.maintenance));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out,operationsPanel(),jobsPanel(),associationPanel());return;}
+  if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)),maintenancePanel(a.maintenance));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out,operationsPanel(),jobsPanel(),associationPanel());if($("role").textContent.trim()==="권한: admin")c.append(selectedHistoryPanel());return;}
   if(!snapshot){c.append(el("p","자료 확인 중"));return;}
   if(view==="overview"){const k=el("div",null,"kpis");k.append(metric("관측 WLC",snapshot.coherent_controllers==null?null:snapshot.coherent_controllers+" / "+snapshot.expected_controllers),metric("저장된 Radio",snapshot.inventory_radios),metric("현재 매핑 Radio",snapshot.mapped_radios),metric("활성 단말 관측",snapshot.active_clients));c.append(k,el("p","최근 게시: "+kst(snapshot.published_at)+" · "+(snapshot.available?"관측 자료 제공":"현재 관측 확인 불가")),clusterPanel(snapshot.cluster));}
   c.append(table(["AP","WLC","대역","채널","사용률 %","간섭률 %","NF dBm","품질 점수","위험 관측","관측 시각 KST","수집 상태"],snapshot.rows.map(r=>{const b=el("button",r.ap_name);b.addEventListener("click",()=>openHistory(r));const cell=el("div");cell.append(b);if(r.incident_id){const i=el("button","위험 이력");i.addEventListener("click",()=>openIncident(r.incident_id));cell.append(i);}return [cell,r.controller,r.band,r.channel,r.utilization,r.interference,r.noise,r.quality_score==null?"미검증":r.quality_score,r.risk_status==="UNKNOWN"?"미확인":r.risk_status,kst(r.observed_at),r.freshness==="observed"?(r.quality==="local_operator_attested"?"최근 관측 · 현장 승인 지표":"최근 관측 · 미검증"):"오래됨 / 확인 불가"];})));

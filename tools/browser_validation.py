@@ -35,6 +35,7 @@ from awqm.model import Radio
 from awqm.quality_ledger import QualityLedger
 from awqm.secure_preview import tls_context
 from awqm.storage import Store
+from awqm.selected_history import SelectedHistory, Receipt, PORT
 from awqm.web_config import WebConfig, cert_expiry
 
 PASSWORD="synthetic-browser-only"
@@ -101,7 +102,17 @@ def fixture(root):
     snap=ControllerSnapshot(risk.controller,risk.observed_at,[],[],[],field_tag="fixture",
                             field_until=now+3600,field_connection="fixture",field_profile="safe")
     quality=ledger.evaluate([risk],[snap],now+1,{risk.radio_id:risk.observed_at})
-    view=DiagnosticView(store,lambda:now+1,incidents=ledger.incidents)
+    archive=SelectedHistory(store)
+    for n in range(21):
+        payload={"schema":1,"controller":"WLC-1","command":PORT,"received_at":now,
+                 "source":"selected-cli-unvalidated","ap_binding":"a"*64,
+                 "measurement_start":None,"measurement_end":None,"counter_epoch":None,
+                 "connection":"PRIVATE-HISTORY-CONNECTION","observation":{
+                     "ap_name":"PRIVATE-HISTORY-AP","received_at":now,"field_validated":False,
+                     "sample_time_verified":False,"ports":[{"port":0}]* (2 if n==20 else 1)}}
+        archive.save(Receipt(f"{n+1:032x}","WLC-1",PORT,now,json.dumps(payload)))
+    view=DiagnosticView(store,lambda:now+1,incidents=ledger.incidents,
+                        selected_history=archive,selected_controllers=("WLC-1",))
     meta={"coherent_controllers":1,"expected_controllers":4,"mapped_radios":len(rows),
           "active_clients":204}
     client = dict(id="c"*32, ap_name=risk.ap_name, controller=risk.controller, band=risk.band,
@@ -312,6 +323,9 @@ def browser_test(output):
                             result["scenarios"][f"{width}x{height}-{theme}-global-search-client-detail"]="pass"
                             page.locator('[data-view="admin"]').click()
                             expect(page.locator("#search")).to_be_disabled()
+                            expect(page.locator("#selected-history")).to_have_count(0)
+                            require(verified_get(context,url,"/api/admin/selected-history?controller=WLC-1&command=D07&start=0&end=1",cert)[0]==403,
+                                    "operator selected history endpoint not denied")
                             require(verified_get(context,url,"/api/admin/status",cert)[0]==403,
                                     "operator admin endpoint not denied")
                             page.locator('[data-view="radios"]').click()
@@ -360,6 +374,47 @@ def browser_test(output):
                         expect(page.get_by_text("감사 기록",exact=False)).to_be_visible()
                         require(verified_get(context,url,"/api/admin/status",cert)[0]==200,
                                 "admin endpoint unavailable")
+                        history=page.locator("#selected-history")
+                        expect(history.get_by_role("heading",name="정밀 수집 이력")).to_be_visible()
+                        history.get_by_label("이력 WLC ID").fill("WLC-1")
+                        history.get_by_label("정밀 이력 수집 항목").select_option("D07")
+                        with page.expect_response(lambda r: "/api/admin/selected-history?" in r.url) as first:
+                            history.get_by_role("button",name="정밀 이력 조회").click()
+                        require(first.value.status==200,"selected history request failed")
+                        expect(history.locator("tbody tr")).to_have_count(20)
+                        expect(history.get_by_text("미검증 · 측정 시각/Counter Epoch/완전성 미확인",exact=True)).to_have_count(20)
+                        expect(history).not_to_contain_text("PRIVATE-HISTORY")
+                        expect(history).not_to_contain_text("a"*64)
+                        with page.expect_response(lambda r: "/api/admin/selected-history?" in r.url) as second:
+                            history.get_by_role("button",name="다음 이력").click()
+                        require(second.value.status==200,"selected history cursor failed")
+                        from urllib.parse import parse_qs
+                        q1=parse_qs(urlsplit(first.value.url).query)
+                        q2=parse_qs(urlsplit(second.value.url).query)
+                        require(all(q1[k]==q2[k] for k in ("start","end","command","controller","limit")),
+                                "selected history page changed query bounds")
+                        require("after_time" in q2 and "after_id" in q2,"cursor missing")
+                        expect(history.locator("tbody tr")).to_have_count(1)
+                        expect(history.locator("tbody td").nth(2)).to_have_text("2")
+                        expect(history.get_by_role("button",name="다음 이력")).to_be_disabled()
+                        history.get_by_label("정밀 이력 수집 항목").select_option("D04")
+                        expect(history.locator("tbody tr")).to_have_count(0)
+                        history.get_by_role("button",name="정밀 이력 조회").click()
+                        expect(history).to_contain_text("조회 범위에 저장 기록 없음")
+                        history.get_by_label("이력 WLC ID").fill("not-configured")
+                        history.get_by_role("button",name="정밀 이력 조회").click()
+                        expect(history).to_contain_text("이력 조회 실패")
+                        expect(history.locator("tbody tr")).to_have_count(0)
+                        archive=view.selected_history
+                        try:
+                            view.selected_history=None
+                            history.get_by_label("이력 WLC ID").fill("WLC-1")
+                            history.get_by_role("button",name="정밀 이력 조회").click()
+                            expect(history).to_contain_text("정밀 이력 보존 비활성")
+                            expect(history.locator("tbody tr")).to_have_count(0)
+                        finally:
+                            view.selected_history=archive
+                        result["scenarios"]["admin_selected_history_index"]="pass"
                         submit_form(page,url,"/auth/logout",page.get_by_role("button",name="로그아웃",exact=True))
                         expect(page.locator('input[name="username"]')).to_be_visible()
                         result["scenarios"]["admin_login_status_logout"]="pass"

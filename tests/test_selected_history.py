@@ -331,6 +331,38 @@ class SelectedHistoryTests(unittest.TestCase):
                     view.selected_history_page("w1", ident, 1000, 1001)
                 engine.close()
 
+    def test_admin_default_page_bounds_and_same_second_cursor(self):
+        from awqm.diagnostic_view import DiagnosticView
+        w, engine, session = self.worker_engine(PORT)
+        outcome = Engine._step(w)
+        original = outcome[0].selected_receipt
+        self.assertIsNotNone(original)
+        self.harvest(engine, outcome)
+        ids = {original.receipt_id}
+        for n in range(1, 22):
+            ident = f"{n:032x}"
+            if ident not in ids and len(ids) < 21:
+                engine.selected_history.save(replace(original, receipt_id=ident))
+                ids.add(ident)
+        self.assertEqual(len(ids), 21)
+        view = DiagnosticView(engine.store, lambda: self.now, key=b"fixture",
+                              selected_history=engine.selected_history,
+                              selected_controllers=("w1",))
+        before = list(session.calls)
+        first = view.selected_history_page("w1", "D07", 1000, 1001)
+        self.assertEqual(len(first["rows"]), 20)
+        self.assertEqual(first["next_cursor"], {"received_at": 1000,
+                                               "receipt_id": sorted(ids)[19]})
+        cursor = first["next_cursor"]
+        tail = view.selected_history_page("w1", "D07", 1000, 1001,
+                            after=(cursor["received_at"], cursor["receipt_id"]))
+        self.assertEqual(len(tail["rows"]), 1)
+        self.assertIsNone(tail["next_cursor"])
+        self.assertEqual(tail["rows"][0], first["rows"][0])
+        self.assertFalse(first["snapshot"])
+        self.assertEqual(view.selected_history_page("w1", "D04", 1000, 1001)["rows"], [])
+        self.assertEqual(session.calls, before)
+
     def test_private_receipt_query_bounds_and_cursor(self):
         _, engine, _ = self.worker_engine(PORT)
         ledger = engine.selected_history
