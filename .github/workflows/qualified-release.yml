@@ -1,0 +1,118 @@
+name: AWQM explicit qualified release
+on:
+  push:
+    branches:
+      - feature/unified-launcher
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version tag, e.g. v0.50.0
+        required: true
+        type: string
+      run_id:
+        description: Successful full qualification run ID
+        required: true
+        type: string
+      source_sha:
+        description: Exact qualified 40-character source commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: awqm-explicit-qualified-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.ref == 'refs/heads/feature/unified-launcher' && (github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'AWQM release request: ')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_REQUEST: ${{ github.event_name == 'workflow_dispatch' && format('AWQM release request: {0} {1} {2}', inputs.version, inputs.run_id, inputs.source_sha) || github.event.head_commit.message }}
+    steps:
+      - name: Verify exact source, full qualification and artifact provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_REQUEST" =~ ^AWQM\ release\ request:\ (v[0-9]+\.[0-9]+\.[0-9]+)\ ([0-9]+)\ ([0-9a-f]{40})$ ]]
+          tag="${BASH_REMATCH[1]}"
+          run_id="${BASH_REMATCH[2]}"
+          sha="${BASH_REMATCH[3]}"
+          repo="$GITHUB_REPOSITORY"
+          gh api "repos/$repo/compare/$sha...$GITHUB_SHA" > compare.json
+          jq -e --arg sha "$sha" '.merge_base_commit.sha == $sha' compare.json >/dev/null
+          version="$(gh api "repos/$repo/contents/VERSION.txt?ref=$sha" --jq '.content' | base64 -d | tr -d '\r\n')"
+          [[ "$tag" == "v$version" ]]
+          gh api "repos/$repo/actions/runs/$run_id" > run.json
+          jq -e --arg sha "$sha" --arg repo "$repo" '.head_sha == $sha and .head_branch == "feature/unified-launcher" and .head_repository.full_name == $repo and .path == ".github/workflows/windows-build.yml" and .status == "completed" and .conclusion == "success"' run.json >/dev/null
+          attempt="$(jq -r '.run_attempt' run.json)"
+          gh api "repos/$repo/actions/runs/$run_id/attempts/$attempt/jobs?per_page=100" > jobs.json
+          jq -e --arg sha "$sha" --argjson attempt "$attempt" '
+            .total_count == 6 and
+            ([.jobs[].name] | sort) == (["windows","browser-ui","dependency-audit","service-lifecycle","installed-app","standard-user-launch"] | sort) and
+            all(.jobs[]; .head_sha == $sha and .run_attempt == $attempt and .status == "completed" and .conclusion == "success")
+          ' jobs.json >/dev/null
+          gh api "repos/$repo/actions/runs/$run_id/artifacts?per_page=100" > artifacts.json
+          jq -e --arg sha "$sha" --argjson rid "$run_id" '
+            [.artifacts[] | select(.name == "AWQM-unified-installer")] |
+            length == 1 and all(.[]; .expired == false and .workflow_run.id == $rid and .workflow_run.head_sha == $sha and (.digest | test("^sha256:[0-9a-f]{64}$")))
+          ' artifacts.json >/dev/null
+          artifact_id="$(jq -r '.artifacts[] | select(.name == "AWQM-unified-installer") | .id' artifacts.json)"
+          artifact_digest="$(jq -r '.artifacts[] | select(.name == "AWQM-unified-installer") | .digest | sub("^sha256:";"")' artifacts.json)"
+          gh api "repos/$repo/actions/artifacts/$artifact_id/zip" > installer.zip
+          printf '%s  installer.zip\n' "$artifact_digest" | sha256sum --check --strict
+          python3 - <<'PY'
+          import pathlib, zipfile
+          with zipfile.ZipFile("installer.zip") as z:
+              assert z.namelist() == ["AWQM.exe"], "Expected exactly one installer"
+              assert 1_000_000 < z.getinfo("AWQM.exe").file_size < 200_000_000
+              assert z.testzip() is None
+              payload = z.read("AWQM.exe")
+              assert payload[:2] == b"MZ"
+              pathlib.Path("AWQM.exe").write_bytes(payload)
+          PY
+          sha256sum AWQM.exe > SHA256SUMS.txt
+          {
+            printf 'TAG=%s\n' "$tag"
+            printf 'SOURCE_SHA=%s\n' "$sha"
+            printf 'QUALIFIED_RUN=%s\n' "$run_id"
+          } >> "$GITHUB_ENV"
+
+      - name: Create draft, verify asset, publish and verify public download
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          # Never overwrite an existing tag or release. API failures are fatal.
+          gh api --paginate "repos/$repo/releases?per_page=100" --jq '.[].tag_name' > release-tags.txt
+          gh api --paginate "repos/$repo/git/matching-refs/tags/$TAG?per_page=100" --jq '.[].ref' > git-tags.txt
+          if grep -Fxq "$TAG" release-tags.txt || grep -Fxq "refs/tags/$TAG" git-tags.txt; then
+            echo "Tag or release already exists; refusing overwrite." >&2
+            exit 1
+          fi
+          digest="$(cut -d ' ' -f1 SHA256SUMS.txt)"
+          printf '## Windows x64 검증용 릴리즈\n\n단일 AWQM.exe: 최초 설치, 재실행 및 업데이트 통합.\n\n소스 커밋: %s\n\n전체 GitHub Actions 검증(6개 작업 통과): https://github.com/%s/actions/runs/%s\n\nSHA-256: %s\n\n실제 사내 WLC/AAA, 대상 Windows 11 환경과 72시간 연속 운영은 별도 현장 검증 대상입니다. v1.0.0 전체 명세 완료나 운영 적합성을 보증하지 않습니다.\n' "$SOURCE_SHA" "$repo" "$QUALIFIED_RUN" "$digest" > release-notes.md
+          gh release create "$TAG" AWQM.exe --repo "$repo" --target "$SOURCE_SHA" --title "AWQM $TAG - Windows x64" --notes-file release-notes.md --draft --prerelease --latest=false
+          gh release view "$TAG" --repo "$repo" --json isDraft,assets,tagName > draft.json
+          jq -e --arg tag "$TAG" '.isDraft == true and .tagName == $tag and ([.assets[].name] == ["AWQM.exe"])' draft.json >/dev/null
+          mkdir verified-draft
+          gh release download "$TAG" --repo "$repo" --pattern AWQM.exe --dir verified-draft
+          (cd verified-draft && sha256sum --check --strict ../SHA256SUMS.txt)
+          gh release edit "$TAG" --repo "$repo" --draft=false --prerelease --latest=false
+          gh api "repos/$repo/git/ref/tags/$TAG" | jq -e --arg sha "$SOURCE_SHA" '.object.type == "commit" and .object.sha == $sha' >/dev/null
+          gh api "repos/$repo/releases/tags/$TAG" > published.json
+          jq -e --arg tag "$TAG" --arg digest "sha256:$digest" '.draft == false and .tag_name == $tag and (.assets | length == 1) and all(.assets[]; .name == "AWQM.exe" and .state == "uploaded" and .digest == $digest)' published.json >/dev/null
+          url="$(jq -r '.assets[0].browser_download_url' published.json)"
+          [[ "$url" == "https://github.com/$repo/releases/download/$TAG/AWQM.exe" ]]
+          mkdir verified-public
+          curl --fail --silent --show-error --location --retry 3 --max-time 180 "$url" -o verified-public/AWQM.exe
+          (cd verified-public && sha256sum --check --strict ../SHA256SUMS.txt)
+          printf '## Published and verified\n\n- Download: %s\n- SHA-256: %s\n- Qualified source: %s\n' "$url" "$digest" "$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
