@@ -76,34 +76,50 @@ class ClientProvenanceTests(unittest.TestCase):
         expanded = replace(initial, inventory=inv + [dict(inv[0], ip=second_ip, mac="02:00:00:00:00:11")],
                            active=anchors + [dict(anchors[0], ip=second_ip)],
                            radios=summaries + [dict(r, ip=second_ip) for r in summaries])
-        ambiguous, unresolved = merge_radios([expanded])
-        self.assertEqual((len(ambiguous), len(unresolved)), (4, 0))
-        clients = LiveClients({"w1": ClientApproval("tag", 900, 1900, True, "ct")}, key=b"fixture",
-                              station_approvals={"w1": StationApproval("ct", 900, 1800, "station")})
-        claims = {MAC: claim}
-        def stats(t, age, sent, retries):
-            stamp = AssociationStamp(claim["ap_name"], BSS, SSID, 2, 1, age, t)
-            return Reading("show ap debug client-stats", "success", t,
-                           {"before": stamp, "after": stamp, "counters": {"sent": sent, "retried": retries}},
-                           generation=1, target=MAC)
-        self.assertEqual(clients.ingest(detail, "w1", initial, assoc, bss, original, quality, claims, 1010), 1)
-        for args in ((1010, 471, 1000, 100), (1040, 501, 1200, 170)):
-            self.assertEqual(clients.ingest(stats(*args), "w1", initial, assoc, bss, original, quality, claims, args[0]), 1)
-        self.assertEqual(clients.publish(original, [initial], quality, claims, 1040)[0]["station_retry"], 35)
-        with self.subTest(path="station"):
-            self.assertEqual(clients.ingest(stats(1070, 531, 1400, 240), "w1", expanded, assoc, bss,
-                                            ambiguous, quality, claims, 1070), 0)
-        with tempfile.TemporaryDirectory() as directory:
-            store = Store(directory, mode="diagnostic")
-            view = DiagnosticView(store, lambda: 1070)
-            published = clients.publish(ambiguous, [expanded], quality, claims, 1070)
-            view.publish({}, client_views=published, client_enabled=True)
-            with self.subTest(path="published_client_api"):
-                self.assertEqual(view.clients_page()["total"], 0)
-        # Removing the duplicate cannot revive the old attachment without new detail.
-        self.assertEqual(clients.publish(original, [initial], quality, claims, 1071), [])
-        refresh = replace(detail, observed_at=1072)
-        self.assertEqual(clients.ingest(refresh, "w1", initial, assoc, bss, original, quality, claims, 1072), 1)
-        row = clients.publish(original, [initial], quality, claims, 1072)[0]
-        self.assertIsNone(row["station_retry"])
-        self.assertIsNone(row["candidate"])
+        merged, unresolved = merge_radios([expanded])
+        self.assertEqual(merged, [])
+        self.assertEqual(len(unresolved), 4)
+        self.assertEqual({r["reason"] for r in unresolved},
+                         {"local AP identity ambiguous or missing"})
+        # Independently exercise the downstream defense even if an upstream
+        # caller supplies otherwise valid physical Radio rows with duplicate
+        # display names (e.g. older or independently constructed observations).
+        second, issues = merge_radios([replace(expanded, inventory=expanded.inventory[1:],
+                                               active=expanded.active[1:], radios=expanded.radios[len(summaries):])])
+        self.assertEqual(issues, [])
+        self.assertEqual(len(second), 2)
+        legacy = original + second
+        self.assertEqual(len(legacy), 4)
+        self.assertEqual(len({r.ap_id for r in legacy}), 2)
+        self.assertEqual(len({r.ap_name for r in legacy}), 1)
+        for label, ambiguous in (("merged_withheld", merged), ("downstream_duplicate", legacy)):
+            with self.subTest(identity_path=label):
+                clients = LiveClients({"w1": ClientApproval("tag", 900, 1900, True, "ct")}, key=b"fixture",
+                                      station_approvals={"w1": StationApproval("ct", 900, 1800, "station")})
+                claims = {MAC: claim}
+                def stats(t, age, sent, retries):
+                    stamp = AssociationStamp(claim["ap_name"], BSS, SSID, 2, 1, age, t)
+                    return Reading("show ap debug client-stats", "success", t,
+                                   {"before": stamp, "after": stamp, "counters": {"sent": sent, "retried": retries}},
+                                   generation=1, target=MAC)
+                self.assertEqual(clients.ingest(detail, "w1", initial, assoc, bss, original, quality, claims, 1010), 1)
+                for args in ((1010, 471, 1000, 100), (1040, 501, 1200, 170)):
+                    self.assertEqual(clients.ingest(stats(*args), "w1", initial, assoc, bss, original, quality, claims, args[0]), 1)
+                self.assertEqual(clients.publish(original, [initial], quality, claims, 1040)[0]["station_retry"], 35)
+                with self.subTest(path="station"):
+                    self.assertEqual(clients.ingest(stats(1070, 531, 1400, 240), "w1", expanded, assoc, bss,
+                                                    ambiguous, quality, claims, 1070), 0)
+                with tempfile.TemporaryDirectory() as directory:
+                    store = Store(directory, mode="diagnostic")
+                    view = DiagnosticView(store, lambda: 1070)
+                    published = clients.publish(ambiguous, [expanded], quality, claims, 1070)
+                    view.publish({}, client_views=published, client_enabled=True)
+                    with self.subTest(path="published_client_api"):
+                        self.assertEqual(view.clients_page()["total"], 0)
+                # Removing the duplicate cannot revive the old attachment without new detail.
+                self.assertEqual(clients.publish(original, [initial], quality, claims, 1071), [])
+                refresh = replace(detail, observed_at=1072)
+                self.assertEqual(clients.ingest(refresh, "w1", initial, assoc, bss, original, quality, claims, 1072), 1)
+                row = clients.publish(original, [initial], quality, claims, 1072)[0]
+                self.assertIsNone(row["station_retry"])
+                self.assertIsNone(row["candidate"])
