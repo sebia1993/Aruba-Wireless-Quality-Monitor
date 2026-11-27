@@ -335,6 +335,76 @@ class SelectedHistoryTests(unittest.TestCase):
         self.assertEqual(engine.selected_handoff, {})
         self.assertEqual(len([c for c in session.calls if c[0] == PORT]), 1)
 
+    def test_fresh_frame_io_failure_stages_accepted_receipt_before_freeze(self):
+        w, engine, session = self.worker_engine(PORT)
+        engine.next_tick["w1"] = self.now
+        with patch.object(w, "snapshot", side_effect=OSError("private frame failure")):
+            engine.pulse()
+            future = engine.inflight["w1"]
+            with self.assertRaises(OSError):
+                future.result(timeout=10)
+            with patch.object(engine.selected_history, "save") as save:
+                result = engine.pulse()
+                save.assert_not_called()
+        self.assertEqual(result["storage_error"], "OSError")
+        self.assertEqual(result["controllers"]["w1"]["status"], "worker_error")
+        self.assertNotIn("private frame failure", json.dumps(result))
+        staged = engine.selected_history.pending()
+        self.assertEqual(set(staged), {"w1"})
+        self.assertEqual(engine.selected_pending, staged)
+        self.assertEqual(engine.selected_handoff, {})
+        self.assertEqual(engine.inflight, {})
+        self.assertEqual(engine.published_radios, ())
+        self.assertEqual(self.rows(engine.store), [])
+        before = list(session.calls)
+        # A later pulse and orderly shutdown do not implicitly recover.
+        with patch.object(engine.selected_history, "stage") as stage, \
+                patch.object(engine.selected_history, "save") as save:
+            self.assertEqual(engine.pulse()["storage_error"], "OSError")
+            with self.assertRaisesRegex(RuntimeError, "selected history shutdown incomplete"):
+                engine.close()
+            stage.assert_not_called()
+            save.assert_not_called()
+        reopened = Store(engine.store.root, mode="diagnostic")
+        restarted = Engine([w], reopened, clock=lambda: self.now, wall=lambda: self.now,
+                           selected_history=True)
+        self.addCleanup(restarted.close)
+        restarted.paused = True
+        receipt = staged["w1"]
+        self.assertEqual(restarted.selected_pending, staged)
+        self.assertIsNone(restarted.pulse()["storage_error"])
+        self.assertEqual(self.rows(reopened), [(receipt.receipt_id, receipt.payload)])
+        self.assertEqual(restarted.selected_history.pending(), {})
+        self.assertEqual(restarted.published_radios, ())
+        self.assertEqual(session.calls, before)
+
+    def test_fresh_frame_io_failure_respects_critical_disk_and_existing_error(self):
+        for cmd, prior in ((PORT, None), (RF, "OperationalError")):
+            with self.subTest(prior=prior):
+                w, engine, _ = self.worker_engine(cmd)
+                engine.next_tick["w1"] = self.now
+                with patch.object(w, "snapshot", side_effect=OSError("private frame failure")):
+                    engine.pulse()
+                    future = engine.inflight["w1"]
+                    with self.assertRaises(OSError):
+                        future.result(timeout=10)
+                engine.error = prior
+                with patch("awqm.engine.shutil.disk_usage",
+                           return_value=SimpleNamespace(free=4*10**9, total=100*10**9)), \
+                        patch.object(engine.selected_history, "stage") as stage, \
+                        patch.object(engine.selected_history, "save") as save:
+                    self.assertEqual(engine.pulse()["storage_error"], prior or "disk_protection")
+                    stage.assert_not_called()
+                    save.assert_not_called()
+                self.assertEqual(set(engine.selected_pending), {"w1"})
+                self.assertEqual(engine.selected_history.pending(), {})
+                self.assertEqual(self.rows(engine.store), [])
+                self.assertEqual(engine.inflight, {})
+                engine.paused = True
+                engine.recover_storage()
+                self.assertIsNone(engine.pulse()["storage_error"])
+                self.assertEqual(len(self.rows(engine.store)), 1)
+
     def test_close_after_snapshot_failure_still_archives_receipt(self):
         w, engine, session = self.worker_engine(PORT)
         with patch.object(w, "snapshot", side_effect=RuntimeError("private snapshot detail")):

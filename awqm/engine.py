@@ -183,6 +183,7 @@ class Engine:
         try:
             if self.closed:raise RuntimeError("engine closed")
             now=self.clock()
+            worker_storage_error=None
             for name,f in list(self.inflight.items()):
                 if not f.done():continue
                 del self.inflight[name]
@@ -221,7 +222,7 @@ class Engine:
                     # Avoid a hot failure loop.
                     self.next_tick[name]=now+15
                     if isinstance(exc, (sqlite3.Error,OSError)):
-                        self.error=type(exc).__name__
+                        worker_storage_error=type(exc).__name__
             # Harvest even when the worker is still assembling its snapshot,
             # or that assembly failed. A future removed above has already
             # offered its receipt; no later dispatch can overtake this transfer.
@@ -229,9 +230,17 @@ class Engine:
                 self._take_selected_handoff()
                 if not self.error:
                     try:
-                        self._persist_selected()
+                        # A fresh worker/frame failure must not prevent the first
+                        # durable stage of an already accepted receipt. Do not
+                        # archive, resume dispatch or retry a latched storage error.
+                        if worker_storage_error:
+                            self._stage_selected()
+                        else:
+                            self._persist_selected()
                     except (ValueError,TypeError,KeyError,RuntimeError,sqlite3.Error,OSError) as exc:
                         self.error=type(exc).__name__
+            if worker_storage_error:
+                self.error=self.error or worker_storage_error
             maintenance_blocked=self._maintenance_step()
             active=[]
             inventory_tables=[]
@@ -413,14 +422,20 @@ class Engine:
     def job_status(self,controller):
         w=self.workers[controller]
         return [asdict(j) for j in w.jobs.list(w.wall())]
-    def _persist_selected(self):
-        """Stage bounded receipts before archive commit; retry exact IDs only."""
+    def _stage_selected(self):
+        """First durable handoff; existing disk, bounds and single writer apply."""
         for receipt in self.selected_pending.values():
             space=shutil.disk_usage(self.store.root)
             if disk_level(space.free,space.total)=="critical":
                 self.error="disk_protection"
                 return
             self.selected_history.stage(receipt)
+
+    def _persist_selected(self):
+        """Stage bounded receipts before archive commit; retry exact IDs only."""
+        self._stage_selected()
+        if self.error:
+            return
         for name,receipt in list(self.selected_pending.items()):
             space=shutil.disk_usage(self.store.root)
             if disk_level(space.free,space.total)=="critical":
