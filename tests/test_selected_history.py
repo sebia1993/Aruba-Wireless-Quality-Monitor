@@ -139,6 +139,88 @@ class SelectedHistoryTests(unittest.TestCase):
                 self.assertEqual(len([c for c in session.calls if c[0] == cmd]), 1)
                 engine.close()
 
+    @staticmethod
+    def selected_path(worker, command):
+        return {PORT: worker.ap_ports, RF: worker.rf_summary,
+                ARM: worker.arm_history, STATS: worker.radio_stats}[command]
+
+    def test_selected_approval_change_during_cli_withholds_receipt(self):
+        for cmd in sorted(COMMANDS):
+            with self.subTest(command=cmd):
+                w, engine, session = self.worker_engine(cmd)
+                path = self.selected_path(w, cmd)
+                original_run = session.run
+                original_approval = path.approval
+
+                def renew_during_cli(name, *args, **kwargs):
+                    raw = original_run(name, *args, **kwargs)
+                    if name == cmd:
+                        # Same Radio tag, AP identity and still valid now;
+                        # only the selected approval lifetime changes.
+                        path.approval = replace(original_approval, valid_until=1800)
+                    return raw
+
+                with patch.object(session, "run", side_effect=renew_during_cli):
+                    outcome = Engine._step(w)
+                self.assertEqual(outcome[0].status, "withheld")
+                self.assertIsNone(outcome[0].selected_receipt)
+                self.assertEqual(path.project(w, KEY, self.now)["rows"], [])
+                self.assertIsNone(self.harvest(engine, outcome)["storage_error"])
+                self.assertEqual(self.rows(engine.store), [])
+                self.assertEqual(len([c for c in session.calls if c[0] == cmd]), 1)
+                engine.close()
+
+    def test_selected_approval_renewal_withdraws_live_not_archived_evidence(self):
+        for cmd in sorted(COMMANDS):
+            with self.subTest(command=cmd):
+                w, engine, session = self.worker_engine(cmd)
+                path = self.selected_path(w, cmd)
+                outcome = Engine._step(w)
+                self.assertEqual(outcome[0].status, "success")
+                self.assertIsNone(self.harvest(engine, outcome)["storage_error"])
+                old_rows = self.rows(engine.store)
+                self.assertEqual(len(old_rows), 1)
+                self.assertTrue(path.project(w, KEY, self.now)["rows"])
+                original_radio = w.field_approval
+                # Still valid for the selected approval and current cached
+                # evidence, but not identical to the approval at collection.
+                w.field_approval = replace(original_radio, valid_until=1950)
+                self.assertEqual(path.project(w, KEY, self.now)["rows"], [])
+                w.field_approval = original_radio
+                self.assertEqual(path.project(w, KEY, self.now)["rows"], [])
+                self.assertEqual(self.rows(engine.store), old_rows)
+                receipt = json.loads(old_rows[0][1])
+                self.assertIsNone(receipt["counter_epoch"])
+                self.assertIsNone(receipt["measurement_start"])
+                self.assertFalse(receipt["observation"]["field_validated"])
+                self.assertEqual(len([c for c in session.calls if c[0] == cmd]), 1)
+                engine.close()
+
+    def test_selected_target_withdrawal_cannot_resurrect_cached_result(self):
+        for cmd in sorted(COMMANDS):
+            with self.subTest(command=cmd):
+                w, engine, session = self.worker_engine(cmd)
+                path = self.selected_path(w, cmd)
+                outcome = Engine._step(w)
+                self.assertEqual(outcome[0].status, "success")
+                self.assertIsNone(self.harvest(engine, outcome)["storage_error"])
+                saved = self.rows(engine.store)
+                original = path.approval
+                self.assertTrue(path.project(w, KEY, self.now)["rows"])
+                # A different valid target scope, not a cache-only filter.
+                path.approval = replace(original,
+                                        targets=(("OTHER-AP", "f" * 64),))
+                self.assertEqual(path.project(w, KEY, self.now)["rows"], [])
+                self.assertEqual(path.records, {})
+                if cmd == ARM:
+                    self.assertEqual(path.previous, {})
+                    self.assertEqual(path.changed, {})
+                path.approval = original
+                self.assertEqual(path.project(w, KEY, self.now)["rows"], [])
+                self.assertEqual(self.rows(engine.store), saved)
+                self.assertEqual(len([c for c in session.calls if c[0] == cmd]), 1)
+                engine.close()
+
     def test_disabled_and_denied_do_not_capture(self):
         w, engine, _ = self.worker_engine(PORT, enabled=False)
         self.assertIsNone(Engine._step(w)[0].selected_receipt)

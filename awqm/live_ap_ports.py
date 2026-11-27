@@ -110,7 +110,9 @@ class ApPorts:
     def context(self, worker, target, key, now):
         a, radio = self.approval, worker.field_approval
         if (not worker.live_detail or worker.schedule.mode != "standard" or not radio
-                or radio.controller != worker.controller or not a.permits(radio.tag, now, now)):
+                or radio.controller != worker.controller or target not in a.targets
+                or not radio.approved_at <= a.approved_at <= now < a.valid_until <= radio.valid_until
+                or not a.permits(radio.tag, now, now)):
             return None
         name, binding = target
         if current_ap_binding(worker, name, now) != binding:
@@ -129,7 +131,21 @@ class ApPorts:
         # automatically to a different controller on failover or rename.
         if row["switch_ip"] != radio.ip:
             return None
-        return (worker.generation, row["ip"])
+        # Private context, never projected or persisted verbatim. Keep both
+        # exact immutable approvals and the worker instance/generation; a
+        # renewed approval with the same Radio tag is not the old context.
+        # Subclasses preserve the first two tuple slots and append Radio
+        # descriptors. This is NOT an attested measurement/counter epoch.
+        return ((worker.instance_id, worker.generation, radio, a), row["ip"])
+
+    def _prune_unapproved(self, *mappings):
+        # RadioStats uses (AP name, binding, Radio ID), other paths use
+        # (AP name, binding). Remove withdrawn evidence without changing
+        # collection cooldowns or the private archived receipts.
+        for mapping in (self.records, *mappings):
+            for target in tuple(mapping):
+                if target[:2] not in self.approval.targets:
+                    mapping.pop(target, None)
 
     def select(self, worker, key, now, monotonic):
         if monotonic < self.next_round or self.command in worker.detail_disabled:
@@ -157,6 +173,7 @@ class ApPorts:
         self.records.clear()
 
     def project(self, worker, key, now):
+        self._prune_unapproved()
         rows = []
         for target in self.approval.targets:
             record = self.records.get(target)

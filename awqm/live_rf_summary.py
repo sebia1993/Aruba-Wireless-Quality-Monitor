@@ -76,6 +76,7 @@ class RFSummary(ApPorts):
             "channels": rows})
 
     def project(self, worker, key, now):
+        self._prune_unapproved()
         rows = []
         for target in self.approval.targets:
             record = self.records.get(target)

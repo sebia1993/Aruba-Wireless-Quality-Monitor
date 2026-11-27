@@ -60,6 +60,7 @@ class RadioStats(RFSummary):
             "ignored_row_count": result["ignored_row_count"]})
 
     def project(self, worker, key, now):
+        self._prune_unapproved()
         rows = []
         for target, record in sorted(self.records.items()):
             if (COMMAND in worker.detail_disabled or self.context(worker, target, key, now) != record[0]

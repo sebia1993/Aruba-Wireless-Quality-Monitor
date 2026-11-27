@@ -62,6 +62,7 @@ class ARMHistory(ApPorts):
         An incomplete or conflicting anchor breaks continuity; a missing
         Radio, a band change, and a reconnect do not imply a channel change.
         """
+        self._prune_unapproved(self.previous, self.changed)
         for target in self.approval.targets:
             context = self.context(worker, target, key, now)
             if context is None:
@@ -135,6 +136,7 @@ class ARMHistory(ApPorts):
         self.changed.clear()
 
     def project(self, worker, key, now):
+        self._prune_unapproved(self.previous, self.changed)
         rows = []
         for target in self.approval.targets:
             record = self.records.get(target)
