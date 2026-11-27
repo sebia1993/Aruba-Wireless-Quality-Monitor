@@ -405,6 +405,98 @@ class SelectedHistoryTests(unittest.TestCase):
                 self.assertIsNone(engine.pulse()["storage_error"])
                 self.assertEqual(len(self.rows(engine.store)), 1)
 
+    def test_close_fresh_frame_io_failure_stages_only_and_replays_on_restart(self):
+        for cmd, failure in ((PORT, OSError), (RF, sqlite3.OperationalError)):
+            with self.subTest(cmd=cmd):
+                w, engine, session = self.worker_engine(cmd)
+                with patch.object(w, "snapshot", side_effect=failure("private frame failure")):
+                    future = engine.pool.submit(Engine._step, w, False, engine._offer_selected)
+                    engine.inflight["w1"] = future
+                    with self.assertRaises(failure):
+                        future.result(timeout=10)
+                receipt = engine.selected_handoff["w1"]
+                before = list(session.calls)
+                status = Path(self.root.name) / ("close-io-" + failure.__name__ + ".json")
+                stop = Event()
+                with patch.object(engine.selected_history, "save") as save:
+                    with self.assertRaisesRegex(RuntimeError, "^selected history shutdown incomplete$"):
+                        with service_lifetime(stop, status, lambda: self.now) as resources:
+                            resources.callback(engine.close)
+                    save.assert_not_called()
+                self.assertEqual(json.loads(status.read_text())["state"], "failed")
+                self.assertTrue(stop.is_set())
+                self.assertEqual(engine.error, failure.__name__)
+                self.assertEqual(engine.selected_history.pending(), {"w1": receipt})
+                self.assertEqual(engine.selected_pending, {"w1": receipt})
+                self.assertEqual(engine.selected_handoff, {})
+                self.assertEqual(self.rows(engine.store), [])
+                self.assertIsNone(w.session)
+                self.assertEqual(engine.published_radios, ())
+                reopened = Store(engine.store.root, mode="diagnostic")
+                restarted = Engine([w], reopened, clock=lambda: self.now,
+                                   wall=lambda: self.now, selected_history=True)
+                self.addCleanup(restarted.close)
+                restarted.paused = True
+                self.assertEqual(restarted.selected_pending, {"w1": receipt})
+                self.assertIsNone(restarted.pulse()["storage_error"])
+                self.assertEqual(self.rows(reopened), [(receipt.receipt_id, receipt.payload)])
+                self.assertEqual(restarted.selected_history.pending(), {})
+                self.assertEqual(restarted.published_radios, ())
+                self.assertEqual(session.calls, before)
+
+    def test_close_fresh_frame_io_failure_never_bypasses_storage_protection(self):
+        for cmd, reason in ((PORT, "disk"), (RF, "prior"), (ARM, "stage")):
+            with self.subTest(reason=reason):
+                w, engine, _ = self.worker_engine(cmd)
+                with patch.object(w, "snapshot", side_effect=OSError("private frame failure")):
+                    future = engine.pool.submit(Engine._step, w, False, engine._offer_selected)
+                    engine.inflight["w1"] = future
+                    with self.assertRaises(OSError):
+                        future.result(timeout=10)
+                receipt = engine.selected_handoff["w1"]
+                if reason == "prior":
+                    engine.error = "OperationalError"
+                space = SimpleNamespace(free=(4 if reason == "disk" else 80)*10**9,
+                                        total=100*10**9)
+                with patch("awqm.engine.shutil.disk_usage", return_value=space), \
+                        patch.object(engine.selected_history, "stage",
+                                     side_effect=sqlite3.OperationalError) as stage, \
+                        patch.object(engine.selected_history, "save") as save:
+                    with self.assertRaisesRegex(RuntimeError, "^selected history shutdown incomplete$"):
+                        engine.close()
+                    save.assert_not_called()
+                    if reason == "stage":
+                        stage.assert_called_once_with(receipt)
+                    else:
+                        stage.assert_not_called()
+                self.assertEqual(engine.error, "disk_protection" if reason == "disk"
+                                 else "OperationalError")
+                self.assertEqual(engine.selected_pending, {"w1": receipt})
+                self.assertEqual(engine.selected_history.pending(), {})
+                self.assertEqual(self.rows(engine.store), [])
+                self.assertIsNone(w.session)
+                self.assertEqual(engine.published_radios, ())
+
+    def test_close_conflicting_fallback_receipt_freezes_storage(self):
+        w, engine, _ = self.worker_engine(PORT)
+        outcome = Engine._step(w)
+        receipt = outcome[0].selected_receipt
+        other = replace(receipt, receipt_id="f"*32 if receipt.receipt_id != "f"*32 else "0"*32)
+        engine.selected_pending["w1"] = receipt
+        future = Future()
+        future.set_result((replace(outcome[0], selected_receipt=other), *outcome[1:]))
+        engine.inflight["w1"] = future
+        with patch.object(engine.selected_history, "stage") as stage, \
+                patch.object(engine.selected_history, "save") as save:
+            with self.assertRaisesRegex(RuntimeError, "^selected history shutdown incomplete$"):
+                engine.close()
+            stage.assert_not_called()
+            save.assert_not_called()
+        self.assertEqual(engine.error, "selected_history_conflict")
+        self.assertEqual(engine.selected_pending, {"w1": receipt})
+        self.assertEqual(self.rows(engine.store), [])
+        self.assertIsNone(w.session)
+
     def test_close_after_snapshot_failure_still_archives_receipt(self):
         w, engine, session = self.worker_engine(PORT)
         with patch.object(w, "snapshot", side_effect=RuntimeError("private snapshot detail")):

@@ -452,6 +452,7 @@ class Engine:
         still require explicit recovery; never bypass critical disk protection.
         """
         incomplete = None
+        worker_storage_error = None
         for name, future in list(self.inflight.items()):
             del self.inflight[name]
             if future.cancelled():
@@ -462,17 +463,27 @@ class Engine:
                     receipt = reading.selected_receipt
                     previous = self.selected_pending.get(name)
                     if previous is not None and previous != receipt:
+                        self.error = "selected_history_conflict"
                         raise RuntimeError("conflicting pending selected receipt")
                     self.selected_pending[name] = receipt
             except Exception as exc:
                 # Do not expose a worker exception, raw CLI or private payload.
                 incomplete = type(exc).__name__
+                if isinstance(exc, (sqlite3.Error, OSError)):
+                    worker_storage_error = incomplete
         self._take_selected_handoff()
         if self.selected_pending and not self.error:
             try:
-                self._persist_selected()
+                # Match pulse's fail-closed behavior on fresh worker I/O failure:
+                # make the first durable stage possible, but do not archive.
+                if worker_storage_error:
+                    self._stage_selected()
+                else:
+                    self._persist_selected()
             except (ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error, OSError) as exc:
                 self.error = type(exc).__name__
+        if worker_storage_error:
+            self.error = self.error or worker_storage_error
         if incomplete is not None or self.selected_pending or self.selected_handoff:
             self.error = self.error or incomplete or "selected_history_pending"
             raise RuntimeError("selected history shutdown incomplete") from None
