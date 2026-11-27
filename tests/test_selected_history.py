@@ -592,7 +592,8 @@ class SelectedHistoryTests(unittest.TestCase):
                     self.assertEqual(row["port_detail"], [
                         {"port":0,"admin":"enabled","oper":"up","speed_mbps":2500,
                          "duplex":"full","tx_packets":"0","tx_bytes":"18446744073709551615",
-                         "rx_packets":None,"rx_bytes":"300"}])
+                         "rx_packets":None,"rx_bytes":"300",
+                         "counter_boundary_hint":"not_assessed"}])
                 else:
                     self.assertNotIn("port_detail", row)
                 if ident == "D03":

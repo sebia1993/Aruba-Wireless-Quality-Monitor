@@ -219,8 +219,13 @@ class DiagnosticHTTPTests(unittest.TestCase):
                                  {"port":0,"admin":"enabled","oper":"up","speed_mbps":2500,
                                   "duplex":"full","tx_packets":"0","tx_bytes":"18446744073709551615",
                                   "rx_packets":None,"rx_bytes":"300","stp":"PRIVATE-STP"}]}}
-                for receipt_id in ("1"*32,"2"*32):
-                    archive.save(Receipt(receipt_id,"w1",PORT,t,json.dumps(payload)))
+                # Preserve the first legacy receipt and exercise a current
+                # explicit boundary hint through the authenticated paged API.
+                archive.save(Receipt("1"*32,"w1",PORT,t,json.dumps(payload)))
+                explicit_payload={**payload,"observation":{**payload["observation"],
+                    "ports":[{**payload["observation"]["ports"][0],
+                              "counter_boundary_hint":"reported_decrease"}]}}
+                archive.save(Receipt("2"*32,"w1",PORT,t,json.dumps(explicit_payload)))
                 old_at=t-31*86400
                 old_payload={**payload,"received_at":old_at,
                              "observation":{**payload["observation"],"received_at":old_at}}
@@ -264,7 +269,8 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 self.assertEqual(page["rows"][0]["port_detail"], [
                     {"port":0,"admin":"enabled","oper":"up","speed_mbps":2500,
                      "duplex":"full","tx_packets":"0","tx_bytes":"18446744073709551615",
-                     "rx_packets":None,"rx_bytes":"300"}])
+                     "rx_packets":None,"rx_bytes":"300",
+                     "counter_boundary_hint":"not_assessed"}])
                 self.assertNotIn(private_binding,raw.decode())
                 self.assertNotIn("PRIVATE-",raw.decode())
                 self.assertNotIn("observation",raw.decode())
@@ -276,7 +282,15 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 tail=history_path+"&limit=1&"+urlencode({"after_time":cursor["received_at"],"after_id":cursor["receipt_id"]})
                 status,_,raw=req("GET",tail,headers=admin_h)
                 self.assertEqual(status,200)
-                self.assertIsNone(json.loads(raw)["next_cursor"])
+                next_page=json.loads(raw)
+                self.assertIsNone(next_page["next_cursor"])
+                self.assertEqual(next_page["rows"][0]["port_detail"], [
+                    {**page["rows"][0]["port_detail"][0],
+                     "counter_boundary_hint":"reported_decrease"}])
+                self.assertIsNone(next_page["rows"][0]["counter_epoch"])
+                self.assertFalse(next_page["rows"][0]["sample_time_verified"])
+                self.assertNotIn(private_binding,raw.decode())
+                self.assertNotIn("PRIVATE-",raw.decode())
                 arm_payload={**payload,"command":ARM,"observation":{
                     "ap_name":"PRIVATE-ARM","received_at":t,"field_validated":False,
                     "sample_time_verified":False,"target_verified":False,
