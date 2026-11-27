@@ -368,22 +368,25 @@ class SelectedHistory:
                 ON selected_detail_receipts(controller,command,received_at,receipt_id);
             """)
 
-    def query(self, controller, command, start, end, *, limit=20, after=None):
+    def query(self, controller, command, start, end, *, limit=20, after=None, not_before=0):
         """Private bounded receipt-time query; caller must authorize disclosure.
 
         Not an observation-time query, a coverage statement or a public API.
         Keyset order is ascending (received_at, receipt_id), with [start,end).
         Separate requests are not a database snapshot: concurrent late inserts
-        before the cursor may be missed. No count, raw CLI or device access.
+        before the cursor may be missed. An internal disclosure floor can further
+        restrict the validated requested window without invalidating its cursor.
+        No count, raw CLI or device access.
         """
         if (type(controller) is not str or not 1 <= len(controller) <= 128
                 or type(command) is not str or command not in COMMANDS
                 or type(start) is not int or type(end) is not int
                 or not 0 <= start < end <= MAX_TIMESTAMP
                 or end - start > MAX_QUERY_SECONDS
-                or type(limit) is not int or not 1 <= limit <= MAX_QUERY_ROWS):
+                or type(limit) is not int or not 1 <= limit <= MAX_QUERY_ROWS
+                or type(not_before) is not int or not 0 <= not_before <= MAX_TIMESTAMP):
             raise ValueError("invalid selected history query")
-        params = [controller, command, start, end]
+        params = [controller, command, max(start, not_before), end]
         where = "controller=? AND command=? AND received_at>=? AND received_at<?"
         if after is not None:
             if (type(after) is not tuple or len(after) != 2

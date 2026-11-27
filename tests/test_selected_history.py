@@ -698,6 +698,55 @@ class SelectedHistoryTests(unittest.TestCase):
         self.assertEqual(view.selected_history_page("w1", "D04", 1000, 1001)["rows"], [])
         self.assertEqual(session.calls, before)
 
+    def test_admin_disclosure_floor_rolls_forward_without_deleting_receipts(self):
+        from awqm.diagnostic_view import DiagnosticView
+        from awqm.selected_history import MAX_QUERY_SECONDS
+        w, engine, session = self.worker_engine(PORT)
+        outcome = Engine._step(w)
+        receipt = outcome[0].selected_receipt
+        self.harvest(engine, outcome)
+        ledger = engine.selected_history
+        # A later, distinct receipt, with matching private provenance.
+        data = json.loads(receipt.payload)
+        data["received_at"] = data["observation"]["received_at"] = 1001
+        later = replace(receipt, receipt_id="f"*32 if receipt.receipt_id != "f"*32 else "0"*32,
+                        received_at=1001, payload=json.dumps(data))
+        ledger.save(later)
+        now = [1000 + MAX_QUERY_SECONDS]
+        view = DiagnosticView(engine.store, lambda: now[0], key=b"fixture",
+                              selected_history=ledger, selected_controllers=("w1",))
+        before = list(session.calls)
+        first = view.selected_history_page("w1", "D07", 999, 1002, limit=1)
+        self.assertEqual(first["disclosure_floor"], 1000)
+        self.assertTrue(first["disclosure_limited"])
+        self.assertEqual([r["received_at"] for r in first["rows"]], [1000])
+        cursor = first["next_cursor"]
+        now[0] += 1
+        tail = view.selected_history_page("w1", "D07", 999, 1002, limit=1,
+                                after=(cursor["received_at"], cursor["receipt_id"]))
+        self.assertEqual([r["received_at"] for r in tail["rows"]], [1001])
+        self.assertIsNone(tail["next_cursor"])
+        now[0] += 1
+        old = view.selected_history_page("w1", "D07", 999, 1002)
+        self.assertEqual(old["rows"], [])
+        self.assertTrue(old["disclosure_limited"])
+        self.assertIsNone(old["next_cursor"])
+        # A wholly expired query still validates its original cursor.
+        with self.assertRaises(ValueError):
+            view.selected_history_page("w1", "D07", 999, 1002, after=(998,"a"*32))
+        self.assertEqual(ledger.query("w1", PORT, 999, 1002)[0], (receipt, later))
+        self.assertEqual(session.calls, before)
+        self.assertEqual(len(self.rows(engine.store)), 2)
+        # Restored core history is subject to the same disclosure floor.
+        backup = engine.store.backup(Path(self.root.name) / "history-age-backup")
+        restored = Store(backup, mode="diagnostic")
+        restored_view = DiagnosticView(restored, lambda: now[0],
+            selected_history=SelectedHistory(restored), selected_controllers=("w1",))
+        self.assertEqual(restored_view.selected_history_page("w1", "D07", 999, 1002)["rows"], [])
+        now[0] = float("nan")
+        with self.assertRaisesRegex(RuntimeError, "selected history clock unavailable"):
+            view.selected_history_page("w1", "D07", 999, 1002)
+
     def test_private_receipt_query_bounds_and_cursor(self):
         _, engine, _ = self.worker_engine(PORT)
         ledger = engine.selected_history
@@ -711,6 +760,9 @@ class SelectedHistoryTests(unittest.TestCase):
             (("w1", PORT, 0, 1), {"limit": True}),
             (("w1", PORT, 0, 1), {"limit": 21}),
             (("w1", PORT, 0, 1), {"limit": 0}),
+            (("w1", PORT, 0, 1), {"not_before": True}),
+            (("w1", PORT, 0, 1), {"not_before": -1}),
+            (("w1", PORT, 0, 1), {"not_before": 10**20}),
             (("w1", PORT, 0, 1), {"after": (1, "a"*32)}),
             (("w1", PORT, 0, 1), {"after": (0, "bad")}),
             (("w1", PORT, 0, 1), {"after": (False, "a"*32)}),

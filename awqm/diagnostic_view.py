@@ -8,7 +8,7 @@ import hashlib,hmac,secrets,re
 from copy import deepcopy
 from threading import RLock
 from .reporting import csv_report,html_report,WINDOWS,timestamp
-from .selected_history import COMMAND_IDS, receipt_summary
+from .selected_history import COMMAND_IDS, MAX_QUERY_SECONDS, MAX_TIMESTAMP, receipt_summary
 
 # The live merger assigns site:wired-MAC and appends the physical Radio ID.
 # Never group legacy or malformed identities by display name or IP.
@@ -193,12 +193,22 @@ class DiagnosticView:
         if not self.store.lock.acquire(blocking=False):
             raise RuntimeError("storage busy")
         try:
+            # A restored backup or a manually crafted old query must not
+            # reopen expired receipt history. Re-evaluate on every page.
+            try:
+                now=int(self.clock())
+            except (TypeError, ValueError, OverflowError):
+                raise RuntimeError("selected history clock unavailable") from None
+            if not 0 <= now <= MAX_TIMESTAMP:
+                raise RuntimeError("selected history clock unavailable")
+            floor=max(0,now-MAX_QUERY_SECONDS)
             page,cursor=self.selected_history.query(controller,COMMAND_IDS[command_id],
-                                                    start,end,limit=limit,after=after)
+                                                    start,end,limit=limit,after=after,not_before=floor)
         finally:
             self.store.lock.release()
         return {"enabled":True,"controller":controller,"command_id":command_id,
                 "time_basis":"receipt_time","snapshot":False,
+                "disclosure_floor":floor,"disclosure_limited":start<floor,
                 "rows":[receipt_summary(row,self.token) for row in page],
                 "next_cursor":None if cursor is None else
                     {"received_at":cursor[0],"receipt_id":cursor[1]}}

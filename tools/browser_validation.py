@@ -435,6 +435,8 @@ def browser_test(output):
                         with page.expect_response(lambda r: "/api/admin/selected-history?" in r.url) as first:
                             history.get_by_role("button",name="정밀 이력 조회").click()
                         require(first.value.status==200,"selected history request failed")
+                        expect(history).to_contain_text("조회 허용 하한:")
+                        expect(history).to_contain_text("서버 기준 최근 30일")
                         expect(history.locator("tbody tr")).to_have_count(20)
                         expect(history.get_by_text("미검증 · 측정 시각/Counter Epoch/완전성 미확인",exact=True)).to_have_count(20)
                         expect(history).not_to_contain_text("PRIVATE-HISTORY")

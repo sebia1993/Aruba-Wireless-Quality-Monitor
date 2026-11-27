@@ -211,6 +211,21 @@ class DiagnosticHTTPTests(unittest.TestCase):
                                   "rx_packets":None,"rx_bytes":"300","stp":"PRIVATE-STP"}]}}
                 for receipt_id in ("1"*32,"2"*32):
                     archive.save(Receipt(receipt_id,"w1",PORT,t,json.dumps(payload)))
+                old_at=t-31*86400
+                old_payload={**payload,"received_at":old_at,
+                             "observation":{**payload["observation"],"received_at":old_at}}
+                archive.save(Receipt("4"*32,"w1",PORT,old_at,json.dumps(old_payload)))
+                old_path="/api/admin/selected-history?"+urlencode(
+                    {"controller":"w1","command":"D07","start":old_at,"end":old_at+1})
+                status,headers,raw=req("GET",old_path,headers=admin_h)
+                self.assertEqual(status,200)
+                self.assertEqual(headers["Cache-Control"],"no-store")
+                old_page=json.loads(raw)
+                self.assertEqual(old_page["rows"],[])
+                self.assertTrue(old_page["disclosure_limited"])
+                self.assertIsNone(old_page["next_cursor"])
+                self.assertNotIn("ap_token",raw.decode())
+                self.assertEqual(len(archive.query("w1",PORT,old_at,old_at+1)[0]),1)
                 status,headers,raw=req("GET",history_path+"&limit=1",headers=admin_h)
                 self.assertEqual(status,200)
                 self.assertEqual(headers["Cache-Control"],"no-store")
