@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from contextlib import contextmanager
 
 POLICY="balanced-radio-v1"
+PRIOR_OBSERVATION_DAYS=30
 REVIEW_VERDICTS=frozenset(("supported","not_supported","inconclusive"))
 REASONS=frozenset(("radio_evidence","other_evidence","insufficient_evidence","conflicting_evidence"))
 IDENT=re.compile(r"^[0-9a-f]{32}$")
@@ -50,6 +51,9 @@ class Incidents:
             CREATE UNIQUE INDEX IF NOT EXISTS rf_incident_open_context
               ON rf_incidents(radio_id,context) WHERE ended_at IS NULL;
             CREATE INDEX IF NOT EXISTS rf_incident_recent ON rf_incidents(last_at DESC,incident_id);
+            CREATE INDEX IF NOT EXISTS rf_incident_prior_resolved
+              ON rf_incidents(radio_id,context,controller,band,ended_at DESC,incident_id)
+              WHERE state='RESOLVED' AND persistent_at IS NOT NULL;
             CREATE TABLE IF NOT EXISTS rf_incident_events(
               incident_id TEXT NOT NULL, revision INTEGER NOT NULL, at INTEGER NOT NULL,
               state TEXT NOT NULL, evidence TEXT NOT NULL,
@@ -232,6 +236,36 @@ class Incidents:
                 item["review_current"]=bool(review and review[4]==item["revision"])
                 result.append(item)
         return {"rows":result,"total":total,"page":page,"size":size,"scope":"locally_attested_radio","service_impact":"unverified"}
+    @staticmethod
+    def _prior_resolved_observation(c,ident,first_at):
+        """Bounded historical relation, never a claim of common cause/outage.
+
+        Match private Radio identity, full observation context, controller and
+        band, not a display name. Require an earlier persistent episode with
+        an explicit policy resolution; context loss and transient closures are
+        not recovery. No internal identity/context is returned.
+        """
+        row=c.execute("""SELECT p.incident_id,p.first_at,p.persistent_at,p.ended_at
+            FROM rf_incidents AS n JOIN rf_incidents AS p
+              ON p.radio_id=n.radio_id AND p.context=n.context
+              AND p.controller=n.controller AND p.band=n.band
+            WHERE n.incident_id=? AND p.incident_id<>n.incident_id
+              AND p.state='RESOLVED' AND p.persistent_at IS NOT NULL
+              AND p.ended_at>=? AND p.ended_at<?
+              AND p.ended_at=p.last_at AND p.first_at>=0
+              AND p.first_at<=p.persistent_at AND p.persistent_at<=p.ended_at
+            ORDER BY p.ended_at DESC,p.incident_id LIMIT 1""",
+            (ident,max(0,first_at-PRIOR_OBSERVATION_DAYS*86400),first_at)).fetchone()
+        if row is None:return None
+        prior,start,persistent,end=row
+        if not isinstance(prior,str) or not IDENT.fullmatch(prior):
+            raise ValueError("invalid prior incident ID")
+        if any(type(t) is not int for t in (start,persistent,end)):
+            raise ValueError("invalid prior incident times")
+        return {"incident_id":prior,"first_at":start,"persistent_at":persistent,
+                "ended_at":end,"gap_seconds":first_at-end,
+                "relation":"same_observation_context","service_impact":"unverified"}
+
     def detail(self,ident):
         if not isinstance(ident,str) or not IDENT.fullmatch(ident):raise ValueError("invalid incident ID")
         with self.transaction() as c:
@@ -248,6 +282,8 @@ class Incidents:
                 WHERE incident_id=? ORDER BY at DESC,rowid DESC LIMIT 100""",(ident,)).fetchall()
             item["reviews"]=[dict(zip(("revision","at","verdict","reason","candidate"),r)) for r in reviews]
             item["reviews_truncated"]=c.execute("SELECT COUNT(*) FROM rf_incident_reviews WHERE incident_id=?",(ident,)).fetchone()[0]>len(reviews)
+            item["prior_observation_window_days"]=PRIOR_OBSERVATION_DAYS
+            item["prior_resolved_observation"]=self._prior_resolved_observation(c,ident,item["first_at"])
             item["service_impact"]="unverified"
             return item
     def review(self,ident,revision,request_id,user,verdict,reason,candidate):

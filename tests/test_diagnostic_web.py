@@ -104,6 +104,13 @@ class DiagnosticHTTPTests(unittest.TestCase):
             from awqm.quality_ledger import QualityLedger
             from awqm.aos8 import ControllerSnapshot
             s=Store(p/"data",mode="diagnostic");ledger=QualityLedger(s)
+            from dataclasses import replace
+            for at in (t-1440,t-1260,t-1080,t-900,t-720,t-540):
+                prior_radio=replace(radio(at),utilization=90 if at<=t-1080 else 20)
+                s.save(prior_radio)
+                prior_snap=ControllerSnapshot("w1",at,[],[],[],field_tag="test-attestation",
+                    field_until=t+3600,field_connection="test-session",field_profile="safe")
+                prior_quality=ledger.evaluate([prior_radio],[prior_snap],at,{prior_radio.radio_id:at})
             for at in (t-360,t-180,t):
                 r=radio(at);s.save(r)
                 snap=ControllerSnapshot("w1",at,[],[],[],field_tag="test-attestation",
@@ -343,7 +350,17 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 ident=incident["incident_id"]
                 status,_,raw=req("GET","/api/incident?"+urlencode({"id":ident}),headers=h)
                 self.assertEqual(status,200)
-                self.assertEqual(json.loads(raw)["service_impact"],"unverified")
+                detail=json.loads(raw)
+                self.assertEqual(detail["service_impact"],"unverified")
+                self.assertEqual(detail["prior_observation_window_days"],30)
+                prior=detail["prior_resolved_observation"]
+                self.assertEqual(prior["ended_at"],t-540)
+                self.assertEqual(prior["gap_seconds"],180)
+                self.assertNotEqual(prior["incident_id"],ident)
+                self.assertEqual(prior["service_impact"],"unverified")
+                self.assertNotIn("test-session",raw.decode())
+                self.assertNotIn(r.radio_id,raw.decode())
+                self.assertEqual(req("GET","/api/incident?"+urlencode({"id":prior["incident_id"]}))[0],401)
                 rid_query=urlencode({"id":ident})
                 self.assertEqual(req("GET","/api/incident/summary?"+rid_query)[0],401)
                 status,_,raw=req("GET","/api/incident/summary?"+rid_query,headers=h)

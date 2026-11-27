@@ -31,3 +31,8 @@ testing was performed by the developer.
 ## Incident export
 
 Authenticated operators can export the current incident detail as HTML, CSV, or a Korean weekly-report summary (□ / - / *). The report labels observation time separately from service-outage time, retains evidence revision and review decision, and explicitly states that actual equipment action and service impact are unverified. Reviewer IDs and internal Radio MACs are excluded; CSV formula prefixes and HTML text are escaped. A truncated timeline/review is labeled. Downloads and summary requests are audited.
+
+
+## Previous resolved observation (bounded recurrence context)
+
+The authenticated, audited incident detail now shows at most one preceding persistent incident with explicit RF policy resolution in the 30 days before the selected incident's first observation. It requires the same private Radio identity, exact approval/connection/epoch context, controller and band, and a strictly earlier consistent closure time. Transient closures, context loss, unresolved episodes, changed context, overlapping observations and records outside the window do not qualify. The response returns only the previous incident ID and observed times/gap, not private Radio/context values. The browser provides a separate prior-detail action under the existing authenticated endpoint and the weekly summary labels the relation. No matching record is not proof of a first occurrence. This is bounded retrospective observation context, not a recurrence count, common cause, common infrastructure or verified actual service recovery. No historical evidence is changed, no extra SSH or new permissions. Grouping across APs and full recurrence lifecycle remain open. Exact-candidate CI required.

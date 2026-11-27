@@ -94,8 +94,17 @@ def fixture(root):
         rid=ap+":"+str(n-1) if n in (1,2) else ident
         rows.append(Radio(rid,ap,f"DEMO-BROWSER-{n:04d}","WLC-1","5GHz",44,
                           now,40,5,-94,2,source="aos8-cli-unvalidated",epoch="fixture-1"))
-    store.save_batch(rows)
     ledger=QualityLedger(store)
+    # Earlier policy-resolved episode on the same private Radio/context;
+    # distinct fixture display alias avoids duplicate current-name buttons.
+    for offset in (-1080,-900,-720,-540,-360,-180):
+        old=replace(rows[-1],ap_name="FIXTURE-PRIOR-RF",observed_at=now+offset,
+                    utilization=85 if offset<=-720 else 20)
+        store.save(old)
+        old_snap=ControllerSnapshot(old.controller,old.observed_at,[],[],[],field_tag="fixture",
+                            field_until=now+3600,field_connection="fixture",field_profile="safe")
+        ledger.evaluate([old],[old_snap],old.observed_at,{old.radio_id:old.observed_at})
+    store.save_batch(rows)
     risk=replace(rows[-1],utilization=85,observed_at=now+1)
     store.save(risk)
     rows[-1]=risk
@@ -370,6 +379,9 @@ def browser_test(output):
                                     incident_page.get_by_role("button",name="상세 다시 조회").click()
                                 expect(incident_page.get_by_role("link",name="CSV 보고서")).to_be_visible()
                                 expect(incident_page.get_by_text("Radio 혼잡 관측",exact=True).first).to_be_visible()
+                                expect(incident_page.get_by_text("이전 동일 관측 문맥 정상화 이력",exact=True)).to_be_visible()
+                                expect(incident_page.get_by_text("동일 원인·서비스 장애·실제 정상화 여부는 미확인입니다.",exact=False)).to_be_visible()
+                                expect(incident_page.get_by_role("button",name="이전 정상화 이력 상세")).to_be_visible()
                             finally:
                                 incident_page.close()
                             result["scenarios"][f"{width}x{height}-{theme}-detail-pages"]="pass"

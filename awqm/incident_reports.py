@@ -37,6 +37,9 @@ def summary(detail):
     if e.get("client_correlation"):
         a=e["client_correlation"]
         lines.insert(-1,f'  * RF03 과거 집계 근거 : {time_label(a["interval_end"])} / 후보 단말 {a["candidate_count"]}대, 비교 단말 최소 {a["min_comparable"]}대 / 저하 단말 최소 {a["min_degraded"]}대 (낮은 신뢰도, 단말 원인 미확정)')
+    prior=detail.get("prior_resolved_observation")
+    if prior:
+        lines.insert(-1,f'  * 동일 관측 문맥 이전 RF 정책 정상화 : {time_label(prior["ended_at"])} / 이번 최초 관측까지 {prior["gap_seconds"]}초 (동일 원인 및 서비스 영향 미확인)')
     reviews=detail.get("reviews",[])
     if reviews:
         r=reviews[0]

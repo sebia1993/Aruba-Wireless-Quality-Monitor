@@ -46,7 +46,46 @@ class IncidentTests(unittest.TestCase):
             page=i.list(start=0,end=3000,status="closed")
             self.assertEqual(page["total"],1);self.assertFalse(page["rows"][0]["review_current"])
             self.assertEqual(len(Incidents(s).detail(ident)["reviews"]),2)
-            self.assertNotEqual(feed(s,l,2260)["incident_id"],ident)
+            new=feed(s,l,2260)["incident_id"]
+            self.assertNotEqual(new,ident)
+            prior=i.detail(new)["prior_resolved_observation"]
+            self.assertEqual(prior,{"incident_id":ident,"first_at":1000,"persistent_at":1360,
+                "ended_at":2080,"gap_seconds":180,"relation":"same_observation_context",
+                "service_impact":"unverified"})
+            self.assertEqual(i.detail(new)["prior_observation_window_days"],30)
+            self.assertIsNone(i.detail(ident)["prior_resolved_observation"])
+            self.assertNotIn("02:00:00:00:00:01",json.dumps(prior))
+            self.assertEqual(Incidents(s).detail(new)["prior_resolved_observation"],prior)
+            from awqm.incident_reports import summary
+            self.assertIn("동일 관측 문맥 이전 RF 정책 정상화",summary(i.detail(new)))
+
+    def test_prior_observation_requires_resolved_persistent_context_and_window(self):
+        with tempfile.TemporaryDirectory() as root:
+            s=Store(root,mode="diagnostic");l=QualityLedger(s);i=l.incidents
+            transient=feed(s,l,1000)["incident_id"]
+            feed(s,l,1180,20)
+            self.assertEqual(i.detail(transient)["state"],"TRANSIENT")
+            first=feed(s,l,1360)["incident_id"]
+            self.assertIsNone(i.detail(first)["prior_resolved_observation"])
+            for at in (1540,1720):feed(s,l,at)
+            for at in (1900,2080,2260):feed(s,l,at,20)
+            self.assertEqual(i.detail(first)["state"],"RESOLVED")
+            # Exact inclusive 30-day floor, no claim of service continuity.
+            boundary=2260+30*86400
+            # Fixture approval expires at 10000. Exercise the bound using
+            # actual committed observations with an explicitly extended fixture.
+            def later(at,connection="session"):
+                radio=observation(at);s.save(radio)
+                snapshot=replace(snap(at,connection=connection),field_until=at+3600)
+                return l.evaluate([radio],[snapshot],at,{radio.radio_id:at})[radio.radio_id]["incident_id"]
+            new=later(boundary)
+            self.assertEqual(i.detail(new)["prior_resolved_observation"]["incident_id"],first)
+            other=later(boundary+1,connection="different")
+            self.assertIsNone(i.detail(other)["prior_resolved_observation"])
+            self.assertEqual(i.detail(new)["state"],"CONTEXT_LOST")
+            beyond=later(boundary+2,connection="session")
+            self.assertIsNone(i.detail(beyond)["prior_resolved_observation"])
+            self.assertEqual(i.detail(first)["state"],"RESOLVED")
     def test_context_and_stale(self):
         with tempfile.TemporaryDirectory() as root:
             s=Store(root,mode="diagnostic");l=QualityLedger(s);i=l.incidents

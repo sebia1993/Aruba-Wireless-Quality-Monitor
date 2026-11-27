@@ -280,6 +280,24 @@ async function openIncident(id){
       table(["근거 기록 시각","Radio 관측 시각","상태","사용률","간섭률","NF","후보"],d.timeline.map(x=>[
         kst(x.at),kst(x.evidence.observed_at),incidentLabels[x.state]||x.state,x.evidence.utilization,
         x.evidence.interference,x.evidence.noise,x.evidence.candidates.map(c=>candidateLabels[c.code]||c.code).join(" / ")])));
+    const prior=d.prior_resolved_observation;
+    if(prior){
+      const days=d.prior_observation_window_days;
+      if(days!==30||prior.relation!=="same_observation_context"||prior.service_impact!=="unverified"||
+          !/^[0-9a-f]{32}$/.test(prior.incident_id)||prior.incident_id===id||
+          ![prior.first_at,prior.persistent_at,prior.ended_at,prior.gap_seconds,d.first_at].every(Number.isSafeInteger)||
+          prior.first_at<0||prior.first_at>prior.persistent_at||prior.persistent_at>prior.ended_at||
+          prior.gap_seconds<=0||prior.gap_seconds>days*86400||d.first_at-prior.ended_at!==prior.gap_seconds)
+        throw new Error("invalid prior incident relation");
+      const previous=el("button","이전 정상화 이력 상세");
+      previous.addEventListener("click",()=>openIncident(prior.incident_id));
+      out.append(el("h4","이전 동일 관측 문맥 정상화 이력"),
+        el("p","이전 관측 "+kst(prior.first_at)+" · RF 정책 정상화 "+kst(prior.ended_at)+
+          " · 이번 최초 관측까지 "+prior.gap_seconds+"초"),
+        el("p","과거 관측의 연결 정보입니다. 동일 원인·서비스 장애·실제 정상화 여부는 미확인입니다."),previous);
+    }else if(d.prior_observation_window_days===30&&prior===null){
+      out.append(el("p","이전 30일 동일 관측 문맥의 정상화 이력 미확인 (최초 장애라는 의미 아님)"));
+    }
     const exports=el("div",null,"pager"),copy=el("button","주간보고 요약 복사"),copyText=el("textarea");
     copyText.hidden=true;copyText.readOnly=true;copyText.rows=10;copyText.setAttribute("aria-label","주간보고 요약");
     copy.addEventListener("click",async()=>{
