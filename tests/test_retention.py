@@ -195,6 +195,58 @@ class RetentionTests(unittest.TestCase):
                 self.assertEqual(_incident_reference_holds(db,{target,unrelated}),{target,unrelated})
                 self.assertEqual(_incident_reference_holds(db,set()),set())
 
+    def test_restore_checks_historical_incident_relationships(self):
+        with tempfile.TemporaryDirectory() as root:
+            p=Path(root);store,ledger=prepare(p)
+            old=ledger.incidents.list(start=T-1,end=T+86400)["rows"][0]["incident_id"]
+            for i,u in enumerate((90,90,90,20,20,20),6):
+                t=T+i*180;r=sample(t,u);store.save(r)
+                snap=ControllerSnapshot("w1",t,[],[],[],field_tag="fixture",field_until=T+86400,
+                    field_connection="session",field_profile="safe")
+                ledger.evaluate([r],[snap],t,{r.radio_id:t})
+            new=ledger.incidents.list(start=T-1,end=T+86400)["rows"][0]["incident_id"]
+            with store.lock,store._db(store.root/"core.db") as db:
+                payload=db.execute("SELECT evidence FROM rf_incident_events WHERE incident_id=? AND revision=1",(new,)).fetchone()[0]
+                evidence=json.loads(payload)
+                self.assertEqual(evidence["repeat_observation"]["prior_incident_id"],old)
+                # Synthetic peer claim in an old revision exercises the same
+                # stored contract as record_neighbors, not real RF evidence.
+                evidence["neighbor_evidence"]=[{"peer_incident_id":old,"peer_incident_revision":1}]
+                db.execute("UPDATE rf_incident_events SET evidence=? WHERE incident_id=? AND revision=1",
+                           (json.dumps(evidence),new))
+            backup=verified_backup(store,p/"matching",include_aggregates=False)
+            restored=restore_new(backup,p/"restored")
+            with readonly(restored/"core.db") as db:
+                self.assertEqual(json.loads(db.execute("SELECT evidence FROM rf_incident_events WHERE incident_id=? AND revision=1",(new,)).fetchone()[0]),evidence)
+            missing="0"*32 if old!="0"*32 and new!="0"*32 else "f"*32
+            cases=(
+                ("missing-prior",{"repeat_observation":{**evidence["repeat_observation"],"prior_incident_id":missing}}, "repeat incident target unavailable"),
+                ("wrong-prior-time",{"repeat_observation":{**evidence["repeat_observation"],"prior_ended_at":0}}, "repeat incident target unavailable"),
+                ("missing-peer-revision",{"neighbor_evidence":[{"peer_incident_id":old,"peer_incident_revision":99999}]}, "peer incident revision unavailable"),
+                ("missing-peer-target",{"neighbor_evidence":[{"peer_incident_id":missing,"peer_incident_revision":1}]}, "peer incident revision unavailable"),
+                ("partial-peer",{"neighbor_evidence":[{"peer_incident_id":old}]}, "peer incident reference invalid"),
+            )
+            for name,change,error in cases:
+                with self.subTest(name=name):
+                    with store.lock,store._db(store.root/"core.db") as db:
+                        db.execute("UPDATE rf_incident_events SET evidence=? WHERE incident_id=? AND revision=1",
+                                   (json.dumps({**evidence,**change}),new))
+                    src=verified_backup(store,p/name,include_aggregates=False)
+                    before=(src/"core.db").read_bytes()
+                    verify(src)  # file hash and SQLite integrity alone pass
+                    destination=p/("restore-"+name)
+                    with self.assertRaisesRegex(ValueError,error):
+                        restore_new(src,destination)
+                    self.assertFalse(destination.exists())
+                    self.assertEqual((src/"core.db").read_bytes(),before)
+                    self.assertEqual(list(p.glob(".awqm-restore-*")),[])
+
+    def test_restore_without_incident_ledger_remains_supported(self):
+        with tempfile.TemporaryDirectory() as root:
+            p=Path(root);store=Store(p/"data",mode="diagnostic")
+            backup=verified_backup(store,p/"backup",include_aggregates=False)
+            self.assertTrue((restore_new(backup,p/"restored")/"core.db").is_file())
+
     def test_late_arrival_or_corruption_is_held(self):
         with tempfile.TemporaryDirectory() as root:
             p=Path(root);s,l=prepare(p);backup=p/"backup";backup.mkdir()

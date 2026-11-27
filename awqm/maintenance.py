@@ -89,6 +89,64 @@ def verify(source):
         finally:c.close()
     return m
 
+def _validate_restored_incident_links(path):
+    """Check stored relationship targets before publishing a restored directory.
+
+    Hash/SQLite integrity does not establish logical relationship integrity.
+    Older stores without an incident ledger remain supported. Read only the
+    copied core, never modify the backup or repair historical evidence.
+    """
+    from .incidents import IDENT
+    db = sqlite3.connect(path.resolve().as_uri()+"?mode=ro&immutable=1", uri=True)
+    try:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        required = {"rf_incidents", "rf_incident_events"}
+        if not tables & required:
+            return
+        if not required <= tables:
+            raise ValueError("restore incident relationship schema incomplete")
+        for source, payload in db.execute("""SELECT incident_id,evidence FROM rf_incidents
+                UNION ALL SELECT incident_id,evidence FROM rf_incident_events"""):
+            try:
+                evidence = json.loads(payload)
+            except (ValueError, TypeError, RecursionError) as exc:
+                raise ValueError("restore incident relationship evidence invalid") from exc
+            if not isinstance(evidence, dict):
+                raise ValueError("restore incident relationship evidence invalid")
+            repeat = evidence.get("repeat_observation")
+            if repeat is not None:
+                if not isinstance(repeat, dict):
+                    raise ValueError("restore repeat incident reference invalid")
+                target = repeat.get("prior_incident_id")
+                ended = repeat.get("prior_ended_at")
+                if (not isinstance(target, str) or not IDENT.fullmatch(target)
+                        or target == source or type(ended) is not int):
+                    raise ValueError("restore repeat incident reference invalid")
+                if db.execute("SELECT ended_at FROM rf_incidents WHERE incident_id=?", (target,)).fetchone() != (ended,):
+                    raise ValueError("restore repeat incident target unavailable")
+            neighbors = evidence.get("neighbor_evidence", [])
+            if not isinstance(neighbors, list):
+                raise ValueError("restore peer incident evidence invalid")
+            for item in neighbors:
+                if not isinstance(item, dict):
+                    raise ValueError("restore peer incident evidence invalid")
+                if "peer_incident_id" not in item and "peer_incident_revision" not in item:
+                    continue
+                target = item.get("peer_incident_id")
+                revision = item.get("peer_incident_revision")
+                if (not isinstance(target, str) or not IDENT.fullmatch(target)
+                        or target == source or type(revision) is not int or revision < 1
+                        or revision > 9223372036854775807):
+                    raise ValueError("restore peer incident reference invalid")
+                if not db.execute("""SELECT 1 FROM rf_incidents i
+                    JOIN rf_incident_events e ON e.incident_id=i.incident_id
+                    WHERE i.incident_id=? AND i.evidence_rev>=? AND e.revision=?""",
+                    (target, revision, revision)).fetchone():
+                    raise ValueError("restore peer incident revision unavailable")
+    finally:
+        db.close()
+
+
 def restore_new(source,destination):
     """Restore to a NEW local directory; never replace an existing database."""
     src=Path(source).resolve();dst=Path(destination).resolve()
@@ -102,6 +160,8 @@ def restore_new(source,destination):
         for name in m["files"]:
             shutil.copyfile(src/name,stage/name)
             if digest(stage/name)!=m["sha256"][name]:raise ValueError("backup changed during restore")
+        if m["mode"] == "diagnostic":
+            _validate_restored_incident_links(stage/"core.db")
         # A backup without raw data cannot recreate historical partitions
         # from isolated late-arriving records. Mark those days retired.
         restored=Store(stage,mode=m["mode"])
