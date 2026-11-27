@@ -9,7 +9,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from itertools import zip_longest
 from .service_config import safe_path
-from .storage import DAY,day_for,day_start
+from .storage import AGG_COLUMNS,DAY,day_for,day_start
 
 POLICY={"version":1,"enabled":True,"authorized":True,"policy":"balanced-7-30-365-v1"}
 
@@ -99,7 +99,7 @@ def _incident_evidence(c,backup,start,end):
         return "quality_event_backup_mismatch"
     return None
 
-def _backup_day(backup,day,state,verified_files):
+def _backup_day(store,backup,day,state,verified_files):
     start=day_start(day);end=start+86400
     with readonly(backup/"core.db") as c:
         saved=c.execute("SELECT revision,completed_revision,raw_count FROM aggregate_manifest WHERE day=?",(day,)).fetchone()
@@ -108,10 +108,20 @@ def _backup_day(backup,day,state,verified_files):
         name=f"radio_{label}_{day[:6]}.db"
         if name not in verified_files:return False
         p=backup/name
-        if not p.is_file():return False
-        with readonly(p) as c:
+        live=store.root/name
+        if not p.is_file() or not live.is_file():return False
+        # A matching manifest revision and observation total are necessary,
+        # but cannot establish equality of the actual aggregate evidence.
+        # The caller holds store.lock and the day's completed revision must
+        # be current. Read the live WAL-aware database, not an immutable view.
+        columns=",".join(AGG_COLUMNS)
+        query=f"""SELECT {columns} FROM radio_aggregate
+            WHERE bucket>=? AND bucket<?
+            ORDER BY bucket,radio_id,epoch,band,channel,source"""
+        with readonly(p) as c,store._db(live) as current:
             n=c.execute("SELECT COALESCE(SUM(observed),0) FROM radio_aggregate WHERE bucket>=? AND bucket<?",(start,end)).fetchone()[0]
             if n!=state[2]:return False
+            if not _same_rows(current,c,query,(start,end)):return False
     return True
 
 class Retention:
@@ -145,7 +155,7 @@ class Retention:
                         state=c.execute("SELECT revision,completed_revision,raw_count FROM aggregate_manifest WHERE day=?",(day,)).fetchone()
                         if not state or state[0]!=state[1] or state[2] is None:
                             reason="aggregates_incomplete"
-                        elif not _backup_day(backup,day,state,verified_files):reason="aggregate_backup_behind"
+                        elif not _backup_day(self.store,backup,day,state,verified_files):reason="aggregate_backup_behind"
                         else:reason=_incident_evidence(c,b,day_start(day),day_start(day)+86400)
                         if reason:
                             if len(result["raw_held"])<31:result["raw_held"][day]=reason

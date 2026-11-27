@@ -6,7 +6,7 @@ from awqm.quality_ledger import QualityLedger
 from awqm.aos8 import ControllerSnapshot
 from awqm.model import Radio
 from awqm.maintenance import verified_backup,verify,restore_new
-from awqm.retention import Retention,load_retention,POLICY
+from awqm.retention import Retention,load_retention,POLICY,readonly
 from awqm.audit import AuditLog
 
 DAY="20261101";T=day_start(DAY)+3600
@@ -110,6 +110,36 @@ class RetentionTests(unittest.TestCase):
                 # is subsequently preserved by a new verified backup.
                 current = verified_backup(store, backups / "aggregate-current-evidence")
                 self.assertEqual(retention.run(now, current.name)["raw_deleted"], [DAY])
+
+    def test_same_aggregate_count_different_content_holds_raw(self):
+        # A valid backup of different aggregate content must not authorize
+        # retirement, even if the manifest and observation totals agree.
+        cases = (("5m", "utilization_sum=COALESCE(utilization_sum,0)+1"),
+                 ("1h", "source=source||'-different'"))
+        for resolution, change in cases:
+            with self.subTest(resolution=resolution), tempfile.TemporaryDirectory() as root:
+                p = Path(root)
+                store, ledger = prepare(p)
+                backups = p / "backups"
+                path = store.root / f"radio_{resolution}_{DAY[:6]}.db"
+                with store.lock, store._db(path) as db:
+                    self.assertGreater(db.execute(f"UPDATE radio_aggregate SET {change}").rowcount, 0)
+                old = verified_backup(store, backups / "aggregate-different-content")
+                verify(old)
+                # Rebuild from unchanged raw records, without changing revision.
+                store.aggregate_day(DAY, day_start("20261102"))
+                with store._db(path) as db, readonly(old / path.name) as archived:
+                    query = "SELECT SUM(observed) FROM radio_aggregate"
+                    self.assertEqual(db.execute(query).fetchone(), archived.execute(query).fetchone())
+                retention = Retention(store, backups)
+                now = day_start("20261112")
+                result = retention.run(now, old.name)
+                self.assertEqual(result["raw_deleted"], [])
+                self.assertEqual(result["raw_held"][DAY], "aggregate_backup_behind")
+                self.assertTrue((store.root / f"radio_{DAY}.db").is_file())
+                current = verified_backup(store, backups / "aggregate-matching-content")
+                self.assertEqual(retention.run(now, current.name)["raw_deleted"], [DAY])
+                self.assertTrue(old.is_dir())
 
     def test_late_arrival_or_corruption_is_held(self):
         with tempfile.TemporaryDirectory() as root:
