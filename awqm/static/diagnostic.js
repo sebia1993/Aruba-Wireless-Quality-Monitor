@@ -319,7 +319,29 @@ async function openIncident(id){
     const revision=selectOptions(d.timeline.map(x=>String(x.revision)),Object.fromEntries(d.timeline.map(x=>[String(x.revision),"근거 #"+x.revision+" · "+kst(x.at)+" · "+(incidentLabels[x.state]||x.state)])),String(d.revision));
     const candidate=el("select"),basis=el("p"),verdict=selectOptions(["inconclusive","supported","not_supported"],verdictLabels,"inconclusive"),reason=selectOptions(["insufficient_evidence","radio_evidence","other_evidence","conflicting_evidence"],{insufficient_evidence:"자료 부족",radio_evidence:"Radio 관측 근거",other_evidence:"별도 운영자 확인",conflicting_evidence:"상충 자료"},"insufficient_evidence");
     function updateCandidates(){const ev=d.timeline.find(x=>String(x.revision)===revision.value);candidate.replaceChildren();for(const c of ev.evidence.candidates){const o=el("option",candidateLabels[c.code]||c.code);o.value=c.code;candidate.append(o);}basis.textContent=ev.evidence.candidates.map(c=>(candidateLabels[c.code]||c.code)+" · "+c.basis.join(", ")+" · "+c.limit).join(" / ")+(ev.evidence.client_correlation?" · RF03 과거 집계 "+kst(ev.evidence.client_correlation.interval_end)+" / 후보 "+ev.evidence.client_correlation.candidate_count+"대 / 비교 최소 "+ev.evidence.client_correlation.min_comparable+"대, 저하 최소 "+ev.evidence.client_correlation.min_degraded+"대":"")+(ev.evidence.neighbor_evidence?" · 인접 후보 "+ev.evidence.neighbor_evidence.map(n=>(n.ap_name||"미확인")+" "+n.channel+"CH / "+n.overlap_mhz+"MHz").join(", "):"");}
-    revision.addEventListener("change",updateCandidates);updateCandidates();
+    const peerLinks=el("div");
+    function updatePeerLinks(){
+      peerLinks.replaceChildren();
+      const ev=d.timeline.find(x=>String(x.revision)===revision.value);
+      const links=new Map();
+      for(const n of ev.evidence.neighbor_evidence||[]){
+        if(typeof n.peer_incident_id!=="string"||!/^[0-9a-f]{32}$/.test(n.peer_incident_id)||
+            n.peer_incident_id===id||!Number.isSafeInteger(n.peer_incident_revision)||n.peer_incident_revision<1||
+            !["RF05","RF06"].includes(n.candidate))continue;
+        if(!links.has(n.peer_incident_id))links.set(n.peer_incident_id,n);
+      }
+      if(!links.size)return;
+      peerLinks.append(el("h4","동시 RF 위험 관측 관계 후보"),
+        el("p","과거 인접 Radio 근거의 연결입니다. 공통 원인·공통 인프라·서비스 장애 확정 또는 자동 그룹화가 아닙니다."));
+      for(const [peer,n] of links){
+        const button=el("button","관련 RF 관측 상세 · "+(n.ap_name||"미확인")+" · 근거 #"+n.peer_incident_revision);
+        button.addEventListener("click",()=>openIncident(peer));
+        peerLinks.append(button);
+      }
+    }
+    function updateRevision(){updateCandidates();updatePeerLinks();}
+    revision.addEventListener("change",updateRevision);updateRevision();
+    out.append(peerLinks);
     const save=el("button","운영자 검증 기록"),message=el("p");let attempt=null;
     save.addEventListener("click",async()=>{
       if(expired||incidentPanel!==ticket||save.disabled)return;

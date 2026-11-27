@@ -123,8 +123,39 @@ class Incidents:
         c.execute("""UPDATE rf_incidents SET last_at=?,persistent_at=?,ended_at=?,state=?,evidence_rev=?,evidence=?
             WHERE incident_id=?""",(t,persistent,ended,status,rev,payload,ident))
         return ident
-    def record_neighbors(self,r,quality,at,matches):
-        """Append a separately timed, bounded candidate evidence revision."""
+    @staticmethod
+    def _linked_neighbor_incident(c,source_ident,source_radio,at,match,claim):
+        """Resolve the exact attested peer at the serialized writer boundary."""
+        if claim is None:return None
+        target,context,ident,until=claim
+        if (not isinstance(ident,str) or not IDENT.fullmatch(ident)
+            or ident==source_ident or target.radio_id==source_radio.radio_id
+            or target.ap_id==source_radio.ap_id or not target.valid or target.utilization<75
+            or target.band!=source_radio.band or target.band!=match["band"]
+            or target.ap_name!=match["ap_name"] or target.channel!=match["channel"]
+            or target.observed_at!=match["target_radio_at"]
+            or match["discovery"]!="active"
+            or match["candidate"] not in ("RF05","RF06")
+            or match["relation"]!=("same_block" if match["candidate"]=="RF05" else "overlapping_block")
+            or type(match["overlap_mhz"]) is not int or match["overlap_mhz"]<=0
+            or type(match["neighbor_at"]) is not int
+            or not 0<=at-match["neighbor_at"]<=90
+            or abs(match["neighbor_at"]-source_radio.observed_at)>30
+            or not 0<=at-target.observed_at<=90 or abs(target.observed_at-source_radio.observed_at)>30
+            or type(until) is not int or at>=until):
+            return None
+        row=c.execute("""SELECT i.evidence_rev FROM rf_incidents AS i
+            JOIN radio_quality_latest AS q ON q.radio_id=i.radio_id AND q.context=i.context
+            WHERE i.incident_id=? AND i.radio_id=? AND i.context=?
+            AND i.controller=? AND i.band=? AND i.state='PERSISTENT'
+            AND i.ended_at IS NULL AND i.persistent_at<=i.last_at
+            AND i.last_at=? AND q.observed_at=i.last_at""",
+            (ident,target.radio_id,context,target.controller,target.band,target.observed_at)).fetchone()
+        if not row or type(row[0]) is not int or row[0]<1:return None
+        return {"peer_incident_id":ident,"peer_incident_revision":row[0]}
+
+    def record_neighbors(self,r,quality,at,matches,*,source_context=None,peer_claims=None):
+        """Append bounded evidence; private attested peer claims are never copied."""
         ident=quality.get("incident_id")
         if not ident or not IDENT.fullmatch(ident) or quality.get("status")!="PERSISTENT" or quality.get("observed_at")!=r.observed_at:
             return False
@@ -132,8 +163,10 @@ class Incidents:
             return False
         if any(x.get("candidate") not in ("RF05","RF06") or x.get("confidence")!="medium" for x in matches):
             return False
+        if peer_claims is not None and (not isinstance(peer_claims,(list,tuple)) or len(peer_claims)!=len(matches)):
+            raise ValueError("invalid neighbor incident claims")
         with self.store.lock,self.store._db(self.store.root/"core.db") as c:
-            row=c.execute("SELECT state,last_at,evidence_rev,evidence,ended_at FROM rf_incidents WHERE incident_id=? AND radio_id=?",(ident,r.radio_id)).fetchone()
+            row=c.execute("SELECT state,last_at,evidence_rev,evidence,ended_at,context FROM rf_incidents WHERE incident_id=? AND radio_id=?",(ident,r.radio_id)).fetchone()
             if not row or row[0]!="PERSISTENT" or row[1]!=r.observed_at or row[4] is not None:return False
             old=json.loads(row[3])
             evidence=evidence_for(r,SimpleNamespace(status="PERSISTENT"),quality.get("score"))
@@ -144,6 +177,11 @@ class Incidents:
                 evidence["candidates"].extend(c for c in old["candidates"] if c["code"]=="RF03")
             evidence["neighbor_observed_at"]=at
             evidence["neighbor_evidence"]=[{k:x[k] for k in ("ap_name","band","channel","width","snr","discovery","neighbor_at","target_radio_at","relation","overlap_mhz","candidate","confidence")} for x in matches]
+            if (peer_claims is not None and source_context==row[5] and r.utilization>=75
+                and type(quality.get("valid_until")) is int and at<quality["valid_until"]):
+                for match,claim in zip(evidence["neighbor_evidence"],peer_claims):
+                    link=self._linked_neighbor_incident(c,ident,r,at,match,claim)
+                    if link:match.update(link)
             for code in sorted({x["candidate"] for x in matches}):
                 evidence["candidates"].append({"code":code,"label":"Aligned neighbor contention candidate",
                     "confidence":"medium","basis":["verified_receiving_radio_scope","direct_ota_observation",

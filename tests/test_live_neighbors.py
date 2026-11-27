@@ -83,7 +83,13 @@ class LiveNeighborTests(unittest.TestCase):
             d=l.incidents.detail(old["incident_id"])
             self.assertEqual(d["revision"],old["revision"]+1)
             self.assertIn("RF05",[c["code"] for c in d["evidence"]["candidates"]])
-            self.assertEqual(d["evidence"]["neighbor_evidence"][0]["ap_name"],"AP2")
+            peer=q[r[1].radio_id]["incident_id"]
+            link=d["evidence"]["neighbor_evidence"][0]
+            self.assertEqual(link["ap_name"],"AP2")
+            self.assertEqual(link["peer_incident_id"],peer)
+            self.assertEqual(link["peer_incident_revision"],l.incidents.detail(peer)["revision"])
+            self.assertNotIn(r[1].radio_id,json.dumps(d))
+            self.assertNotIn("session-w2",json.dumps(d))
             self.assertNotIn(B2,json.dumps(d))
             l.incidents.review(d["incident_id"],d["revision"],"review","op","supported","radio_evidence","RF05")
             n.ingest(read,"w1",s[0],ix,q,1365)
@@ -93,7 +99,38 @@ class LiveNeighborTests(unittest.TestCase):
             result=v.neighbors(v.token(r[0].radio_id))
             self.assertEqual(result["rows"][0]["candidate"],"RF05")
             self.assertNotIn(r[1].radio_id,json.dumps(result));self.assertNotIn(B2,json.dumps(result))
+            related=l.incidents.detail(peer)
+            self.assertEqual(related["incident_id"],peer)
+            self.assertEqual(related["state"],"PERSISTENT")
             now[0]=1386;self.assertFalse(v.neighbors(v.token(r[0].radio_id))["available"])
+
+    def test_neighbor_link_requires_exact_persistent_peer_context(self):
+        with tempfile.TemporaryDirectory() as root:
+            st=Store(root,mode="diagnostic");l=QualityLedger(st)
+            for t in (1000,1180,1360):
+                r,s,f,q=data(t);st.save_batch(r)
+                q=l.evaluate(r,s,t,{x.radio_id:t for x in r})
+            n=LiveNeighbors(approvals(),l.incidents,key=b"fixture")
+            ix=n.index(r,s,f,1360)
+            source=q[r[0].radio_id]["incident_id"];peer=q[r[1].radio_id]["incident_id"]
+            read=Reading(COMMAND,"success",1365,[neighbor(1360)],generation=1,target=B1)
+            # Wrong incident ID cannot be linked by display name.
+            wrong={k:dict(v) for k,v in q.items()}
+            wrong[r[1].radio_id]["incident_id"]=source
+            n.ingest(read,"w1",s[0],ix,wrong,1365)
+            d=l.incidents.detail(source)
+            self.assertNotIn("peer_incident_id",d["evidence"]["neighbor_evidence"][0])
+            # A real peer ID with stale connection context cannot be linked
+            # after its context changed in the committed ledger.
+            target=replace(r[1],observed_at=1370)
+            new_snap=replace(s[1],observed_at=1370,field_connection="replacement")
+            st.save(target)
+            l.evaluate([target],[new_snap],1370,{target.radio_id:1370})
+            n.ingest(replace(read,observed_at=1370),"w1",s[0],ix,q,1370)
+            self.assertNotIn("peer_incident_id",l.incidents.detail(source)["evidence"]["neighbor_evidence"][0])
+            self.assertEqual(l.incidents.detail(peer)["state"],"CONTEXT_LOST")
+            self.assertEqual(l.incidents.detail(source)["state"],"PERSISTENT")
+
     def test_worker_query_gate(self):
         from awqm.fixture_session import FixtureSession
         from awqm.client import bss_table

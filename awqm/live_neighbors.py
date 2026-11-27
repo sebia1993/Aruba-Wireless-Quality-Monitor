@@ -156,6 +156,7 @@ class LiveNeighbors:
             return
         a=self.approvals[controller]
         values=[]
+        peer_claims={}
         for n in reading.data:
             second=index.get(n["bssid"]);stamp=a.timestamp(n["last_update_raw"])
             result={"relation":"unknown","overlap_mhz":None,"candidate":None,"confidence":"unavailable",
@@ -171,6 +172,11 @@ class LiveNeighbors:
                     target_until=min(other.field_until,self.approvals[r.controller].valid_until)
                     result=candidate(first,r,block,b,n,now,neighbor_at=stamp,mapping_verified=True,field_validated=True,
                                      first_persistent=True,second_persistent=self.eligible(r,other,quality.get(r.radio_id),now))
+                    q=quality.get(r.radio_id,{})
+                    if (result["candidate"] in ("RF05","RF06") and q.get("incident_id")
+                        and type(q.get("valid_until")) is int and now<q["valid_until"]):
+                        peer_claims[r.radio_id]=(r,other.field_tag+"|"+other.field_connection+"|"+r.epoch,
+                                                  q["incident_id"],min(target_until,q["valid_until"]))
             values.append({"neighbor_id":self.token(n["bssid"]),"ap_name":name,"band":n["band"],"channel":n["primary_channel"],
                            "width":n["width_candidate"],"snr":n["snr"],"discovery":n["discovery"],"neighbor_at":stamp,
                            "target_radio_at":target_at,"target_id":target_id,"target_context":target_context,"target_until":target_until,
@@ -180,10 +186,13 @@ class LiveNeighbors:
         selected=values[:100]
         self.rows[first.radio_id]={"radio_at":first.observed_at,"context":s.field_connection,
             "observed_at":reading.observed_at,"until":min(a.valid_until,s.field_until),"rows":selected,"truncated":len(values)>100}
+        candidates=[x for x in selected if x["candidate"] in ("RF05","RF06")][:20]
         matches=[{k:x[k] for k in ("ap_name","band","channel","width","snr","discovery","neighbor_at","target_radio_at","relation","overlap_mhz","candidate","confidence")}
-                 for x in selected if x["candidate"] in ("RF05","RF06")][:20]
+                 for x in candidates]
         if matches and self.incidents:
-            self.incidents.record_neighbors(first,quality[first.radio_id],reading.observed_at,matches)
+            source_context=s.field_tag+"|"+s.field_connection+"|"+first.epoch
+            self.incidents.record_neighbors(first,quality[first.radio_id],reading.observed_at,matches,
+                source_context=source_context,peer_claims=[peer_claims.get(x["target_id"]) for x in candidates])
         if len(self.rows)>100:
             keep=sorted(self.rows,key=lambda k:self.rows[k]["observed_at"],reverse=True)[:100]
             self.rows={k:self.rows[k] for k in keep}
