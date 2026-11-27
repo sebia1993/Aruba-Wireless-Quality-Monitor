@@ -174,7 +174,7 @@ class ClusterMonitor:
                           "resources":resource_observations(frames.get(target),now)})
         loads={}
         for kind,cmd in (("ap",AP_LOAD),("client",CLIENT_LOAD)):
-            valid=[]
+            valid=[];unaligned=0
             for source,address in self.targets.items():
                 r=self._fresh(frames,source,cmd,now,150)
                 if not r or source not in memberships:continue
@@ -184,16 +184,22 @@ class ClusterMonitor:
                 if set(rows)!=set(self.reverse) or rows[address]["type"]!="self":continue
                 if any(x["type"]!=("self" if a==address else "peer") for a,x in rows.items()):continue
                 mapped={self.reverse[a]:(x["active"],x["standby"]) for a,x in rows.items()}
-                valid.append((r.observed_at,source,mapped))
+                # Independent freshness limits do not establish a common
+                # cluster context for the load and membership observations.
+                if abs(r.observed_at-member_at)>30:
+                    unaligned+=1;continue
+                valid.append((r.observed_at,source,mapped,member_at))
             if not valid:
-                loads[kind]={"status":"unknown","source":None,"observed_at":None,"rows":[],"active_total":None,"standby_total":None}
+                loads[kind]={"status":"time_unaligned" if unaligned else "unknown","source":None,"observed_at":None,"membership_at":None,"rows":[],"active_total":None,"standby_total":None}
                 continue
             valid.sort(key=lambda x:(x[0],x[1]==self.representative),reverse=True)
-            at,source,mapped=valid[0]
-            aligned=[x for x in valid[1:] if at-x[0]<=30]
+            at,source,mapped,member_at=valid[0]
+            # All four observation times must fit one 30s window for
+            # cross-checking. Pairwise load freshness alone is insufficient.
+            aligned=[x for x in valid[1:] if max(at,member_at,x[0],x[3])-min(at,member_at,x[0],x[3])<=30]
             conflict=any(x[2]!=mapped for x in aligned)
             loads[kind]={"status":"conflicting_observations" if conflict else "crosschecked" if aligned else "single_source",
-                         "source":source,"observed_at":at,"rows":[] if conflict else
+                         "source":source,"observed_at":at,"membership_at":member_at,"rows":[] if conflict else
                             [{"controller":k,"active":a,"standby":s} for k,(a,s) in sorted(mapped.items())],
                          "active_total":None if conflict else sum(x[0] for x in mapped.values()),
                          "standby_total":None if conflict else sum(x[1] for x in mapped.values())}

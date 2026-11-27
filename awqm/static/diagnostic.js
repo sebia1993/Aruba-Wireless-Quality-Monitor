@@ -473,8 +473,8 @@ function clusterPanel(d){
   const cores=d.nodes.flatMap(r=>(r.resources?.datapath?.data?.rows||[]).map(x=>[r.controller,x.id,x.type,x.percent_1s,x.percent_4s]));
   if(cores.length){const detail=el("details");detail.append(el("summary","Datapath CPU별 상세 (64초 값 제외)"),table(["WLC","CPU ID","유형","1초 %","4초 %"],cores));c.append(detail);}
   for(const [key,title] of [["ap","AP"],["client","Client"]]){
-    const l=d.load[key],status={unknown:"미확인",single_source:"단일 출처",crosschecked:"교차 확인",conflicting_observations:"관측값 상충"}[l.status]||l.status;
-    c.append(el("p",title+" 전체 Active "+(l.active_total??"미확인")+" / Standby "+(l.standby_total??"미확인")+" · "+status+" · "+(l.source||"—")+" · "+kst(l.observed_at)));
+    const l=d.load[key],status={unknown:"미확인",time_unaligned:"Load·멤버십 시각 불일치",single_source:"단일 출처",crosschecked:"교차 확인",conflicting_observations:"관측값 상충"}[l.status]||l.status;
+    c.append(el("p",title+" 전체 Active "+(l.active_total??"미확인")+" / Standby "+(l.standby_total??"미확인")+" · "+status+" · "+(l.source||"—")+" · Load "+kst(l.observed_at)+" · 멤버십 "+kst(l.membership_at)));
   }
   if(d.links.length)c.append(table(["관측 WLC","대상 WLC","연결 상태","연결 유형","시각"],d.links.map(r=>[r.from,r.to,r.state,r.link,kst(r.observed_at)])));
   return c;

@@ -102,6 +102,55 @@ class ClusterParserTests(unittest.TestCase):
             self.assertNotIn("192.0.2.",json.dumps(data))
             self.assertEqual(data["service_impact"],"unverified")
 
+    def test_load_requires_aligned_membership_context(self):
+        m=ClusterMonitor(IPS)
+        for delta in (-31,-30,30,31):
+            with self.subTest(delta=delta):
+                f=frame("w1",1000)
+                f["readings"][MEMBERSHIP]=replace(f["readings"][MEMBERSHIP],observed_at=1000+delta)
+                r=m.report({"w1":f},max(1000,1000+delta))
+                for kind,total in (("ap",40),("client",300)):
+                    result=r["load"][kind]
+                    if abs(delta)<=30:
+                        self.assertEqual(result["status"],"single_source")
+                        self.assertEqual(result["active_total"],total)
+                        self.assertEqual(result["membership_at"],1000+delta)
+                    else:
+                        self.assertEqual(result["status"],"time_unaligned")
+                        self.assertIsNone(result["active_total"])
+                        self.assertIsNone(result["standby_total"])
+                        self.assertEqual(result["rows"],[])
+                self.assertEqual(r["service_impact"],"unverified")
+
+    def test_load_crosscheck_requires_common_context_window(self):
+        m=ClusterMonitor(IPS)
+        frames={"w1":frame("w1",1000),"w2":frame("w2",1010,counts=(20,25))}
+        # Both loads individually align with membership, but the four times
+        # span 40s: the earlier count cannot contradict the newer one.
+        frames["w1"]["readings"][MEMBERSHIP]=replace(frames["w1"]["readings"][MEMBERSHIP],observed_at=970)
+        r=m.report(frames,1010)
+        self.assertEqual(r["load"]["ap"]["status"],"single_source")
+        self.assertEqual(r["load"]["ap"]["active_total"],45)
+        self.assertEqual(r["load"]["ap"]["source"],"w2")
+        # Exact 30s common-window boundary admits the conflict.
+        frames["w1"]["readings"][MEMBERSHIP]=replace(frames["w1"]["readings"][MEMBERSHIP],observed_at=980)
+        self.assertEqual(m.report(frames,1010)["load"]["ap"]["status"],"conflicting_observations")
+        # Unaligned newest source is excluded; older valid observation survives.
+        frames["w2"]["readings"][MEMBERSHIP]=replace(frames["w2"]["readings"][MEMBERSHIP],observed_at=979)
+        r=m.report(frames,1010)
+        self.assertEqual(r["load"]["ap"]["source"],"w1")
+        self.assertEqual(r["load"]["ap"]["active_total"],40)
+        self.assertEqual(r["load"]["client"]["status"],"single_source")
+        from awqm.diagnostic_view import DiagnosticView
+        with tempfile.TemporaryDirectory() as root:
+            view=DiagnosticView(Store(root,mode="diagnostic"),lambda:1010)
+            view.publish({"cluster":r},[])
+            data=view.page()["cluster"]
+            self.assertEqual(data["load"]["ap"]["membership_at"],980)
+            self.assertEqual(data["load"]["ap"]["active_total"],40)
+            self.assertNotIn("192.0.2.",json.dumps(data))
+            self.assertEqual(data["service_impact"],"unverified")
+
     def test_representative_handover(self):
         m=ClusterMonitor(IPS);frames={k:frame(k) for k in IPS}
         self.assertEqual(m.choose(frames,1000),"w1")
