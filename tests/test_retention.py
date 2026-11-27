@@ -141,6 +141,60 @@ class RetentionTests(unittest.TestCase):
                 self.assertEqual(retention.run(now, current.name)["raw_deleted"], [DAY])
                 self.assertTrue(old.is_dir())
 
+    def test_incident_reference_holds_expired_target_from_old_revision(self):
+        # Use the actual ledger to create and close a repeated RF observation.
+        # A later revision need not carry its creation-time relationship.
+        with tempfile.TemporaryDirectory() as root:
+            p=Path(root);store,ledger=prepare(p)
+            old=ledger.incidents.list(start=T-1,end=T+86400)["rows"][0]["incident_id"]
+            for i,u in enumerate((90,90,90,20,20,20),6):
+                t=T+i*180;r=sample(t,u);store.save(r)
+                snap=ControllerSnapshot("w1",t,[],[],[],field_tag="fixture",field_until=T+86400,
+                    field_connection="session",field_profile="safe")
+                ledger.evaluate([r],[snap],t,{r.radio_id:t})
+            rows=ledger.incidents.list(start=T-1,end=T+86400)["rows"]
+            self.assertEqual(len(rows),2)
+            new=rows[0]["incident_id"]
+            self.assertNotEqual(new,old)
+            self.assertEqual(ledger.incidents.detail(new)["repeat_observation"]["prior_incident_id"],old)
+            store.aggregate_day(DAY,day_start("20261102"))
+            backups=p/"backup"
+            dst=verified_backup(store,backups/"aggregate-fixture")
+            retention=Retention(store,backups)
+            self.assertEqual(retention.run(day_start("20261112"),dst.name)["raw_deleted"],[DAY])
+            # Only the older incident has crossed the 365-day threshold.
+            result=retention.run(T+365*86400+1000,dst.name)
+            self.assertEqual(result["incidents_deleted"],0)
+            self.assertEqual(ledger.incidents.detail(new)["repeat_observation"]["prior_incident_id"],old)
+            self.assertEqual(ledger.incidents.detail(old)["state"],"RESOLVED")
+            # Both are now eligible; retire the referencing source first.
+            self.assertEqual(retention.run(T+367*86400,dst.name)["incidents_deleted"],1)
+            with store._db(store.root/"core.db") as db:
+                self.assertEqual(db.execute("SELECT incident_id FROM rf_incidents").fetchall(),[(old,)])
+            self.assertEqual(retention.run(T+367*86400,dst.name)["incidents_deleted"],1)
+
+    def test_incident_reference_scan_peer_and_invalid_evidence(self):
+        from awqm.retention import _incident_reference_holds
+        # Isolate the scan against the actual schema. Peer links can live in
+        # either the latest snapshot or an older revision, not necessarily both.
+        with tempfile.TemporaryDirectory() as root:
+            store,ledger=prepare(Path(root))
+            target=ledger.incidents.list(start=T-1,end=T+86400)["rows"][0]["incident_id"]
+            other="f"*32 if target!="f"*32 else "e"*32
+            unrelated="a"*32 if target!="a"*32 else "b"*32
+            peer=json.dumps({"neighbor_evidence":[{"peer_incident_id":target,"peer_incident_revision":1}]})
+            with store.lock,store._db(store.root/"core.db") as db:
+                db.execute("""INSERT INTO rf_incidents SELECT ?,radio_id,context,ap_name,controller,band,
+                    first_at,last_at,persistent_at,ended_at,state,evidence_rev,?
+                    FROM rf_incidents WHERE incident_id=?""",(other,peer,target))
+                self.assertEqual(_incident_reference_holds(db,{target,unrelated}),{target})
+                db.execute("UPDATE rf_incidents SET evidence='{}' WHERE incident_id=?",(other,))
+                db.execute("INSERT INTO rf_incident_events VALUES(?,?,?,?,?)",(other,1,T,"RESOLVED",peer))
+                self.assertEqual(_incident_reference_holds(db,{target,unrelated}),{target})
+                db.execute("UPDATE rf_incident_events SET evidence='invalid' WHERE incident_id=?",(other,))
+                self.assertEqual(_incident_reference_holds(db,{target,unrelated}),{target,unrelated})
+                self.assertEqual(_incident_reference_holds(db,set()),set())
+
     def test_late_arrival_or_corruption_is_held(self):
         with tempfile.TemporaryDirectory() as root:
             p=Path(root);s,l=prepare(p);backup=p/"backup";backup.mkdir()

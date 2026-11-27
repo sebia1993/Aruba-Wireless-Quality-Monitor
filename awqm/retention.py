@@ -124,6 +124,33 @@ def _backup_day(store,backup,day,state,verified_files):
             if not _same_rows(current,c,query,(start,end)):return False
     return True
 
+def _incident_reference_holds(c,candidate_ids):
+    """Preserve targets of stored incident relationships, including old revisions.
+
+    A referenced target is held even when its source is also eligible this
+    pass: the source may be removed first, never leaving a dangling link.
+    Unknown/malformed evidence cannot prove that a target is unreferenced.
+    Stream rows under the existing writer lock; do not materialize the ledger.
+    """
+    if not candidate_ids:return set()
+    held=set()
+    for source,payload in c.execute("""SELECT incident_id,evidence FROM rf_incidents
+        UNION ALL SELECT incident_id,evidence FROM rf_incident_events"""):
+        try:
+            evidence=json.loads(payload)
+        except (ValueError,TypeError,RecursionError):
+            return set(candidate_ids)
+        if not isinstance(evidence,dict):return set(candidate_ids)
+        pending=[evidence]
+        while pending:
+            item=pending.pop()
+            if isinstance(item,dict):pending.extend(item.values())
+            elif isinstance(item,list):pending.extend(item)
+            elif isinstance(item,str) and item!=source and item in candidate_ids:
+                held.add(item)
+        if held==candidate_ids:break
+    return held
+
 class Retention:
     def __init__(self,store,backup_root,audit_path=None):
         if store.mode!="diagnostic":raise ValueError("diagnostic retention only")
@@ -199,8 +226,11 @@ class Retention:
                         FROM rf_incidents i WHERE i.ended_at IS NOT NULL AND i.last_at<? AND i.ended_at<?
                         AND NOT EXISTS(SELECT 1 FROM rf_incident_reviews r WHERE r.incident_id=i.incident_id AND r.at>=?)
                         ORDER BY i.ended_at LIMIT 500""",(cutoff,cutoff,cutoff)).fetchall()
-                    for ident,rid,ctx,first,last,ended in candidates:
-                        if any(d<max(last,ended)+1 and d+86400>first for d in retained_days):continue
+                    eligible=[row for row in candidates
+                              if not any(d<max(row[4],row[5])+1 and d+86400>row[3] for d in retained_days)]
+                    referenced=_incident_reference_holds(c,{row[0] for row in eligible})
+                    for ident,rid,ctx,first,last,ended in eligible:
+                        if ident in referenced:continue
                         c.execute("DELETE FROM rf_incident_reviews WHERE incident_id=?",(ident,))
                         c.execute("DELETE FROM rf_incident_events WHERE incident_id=?",(ident,))
                         c.execute("DELETE FROM radio_quality_events WHERE radio_id=? AND context=? AND observed_at BETWEEN ? AND ?",(rid,ctx,first,last))
