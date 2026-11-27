@@ -163,14 +163,37 @@ class Incidents:
             or not 0<=at-target.observed_at<=90 or abs(target.observed_at-source_radio.observed_at)>30
             or type(until) is not int or at>=until):
             return None
-        row=c.execute("""SELECT i.evidence_rev FROM rf_incidents AS i
+        row=c.execute("""SELECT i.evidence_rev,i.evidence,e.at,e.state,e.evidence,q.state,q.score
+            FROM rf_incidents AS i
             JOIN radio_quality_latest AS q ON q.radio_id=i.radio_id AND q.context=i.context
+            JOIN rf_incident_events AS e ON e.incident_id=i.incident_id AND e.revision=i.evidence_rev
             WHERE i.incident_id=? AND i.radio_id=? AND i.context=?
             AND i.controller=? AND i.band=? AND i.state='PERSISTENT'
             AND i.ended_at IS NULL AND i.persistent_at<=i.last_at
             AND i.last_at=? AND q.observed_at=i.last_at""",
             (ident,target.radio_id,context,target.controller,target.band,target.observed_at)).fetchone()
         if not row or type(row[0]) is not int or row[0]<1:return None
+        # last_at advances on every observation, while a reviewable evidence
+        # revision advances only on material changes. Never present an older
+        # revision as the evidence for the current simultaneous RF sample.
+        # The immutable event must also agree with the current snapshot and
+        # must already have existed at the source observation time.
+        if (type(row[2]) is not int or not target.observed_at<=row[2]<=at
+            or row[3]!="PERSISTENT" or row[1]!=row[4]):
+            return None
+        try:
+            evidence=json.loads(row[1]);state=json.loads(row[5])
+        except (TypeError,ValueError):
+            return None
+        if (not isinstance(evidence,dict) or not isinstance(state,dict)
+            or state.get("status")!="PERSISTENT" or state.get("last_at")!=target.observed_at
+            or state.get("epoch")!=context or state.get("open_incident") is not True
+            or evidence.get("observed_at")!=target.observed_at
+            or evidence.get("risk_status")!="PERSISTENT" or evidence.get("policy")!=POLICY
+            or evidence.get("complete") is not True or evidence.get("quality_score")!=row[6]
+            or any(evidence.get(k)!=getattr(target,k) for k in
+                   ("band","channel","utilization","interference","noise"))):
+            return None
         return {"peer_incident_id":ident,"peer_incident_revision":row[0]}
 
     def record_neighbors(self,r,quality,at,matches,*,source_context=None,peer_claims=None):

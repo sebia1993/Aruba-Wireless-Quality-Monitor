@@ -131,6 +131,55 @@ class LiveNeighborTests(unittest.TestCase):
             self.assertEqual(l.incidents.detail(peer)["state"],"CONTEXT_LOST")
             self.assertEqual(l.incidents.detail(source)["state"],"PERSISTENT")
 
+    def test_neighbor_link_requires_current_immutable_evidence_revision(self):
+        with tempfile.TemporaryDirectory() as root:
+            st=Store(root,mode="diagnostic");l=QualityLedger(st)
+            n=LiveNeighbors(approvals(),l.incidents,key=b"fixture")
+            for t in (1000,1180,1360,1420,1480):
+                r,s,f,_=data(t)
+                if t==1480:r[1]=replace(r[1],interference=35)
+                st.save_batch(r);q=l.evaluate(r,s,t,{x.radio_id:t for x in r})
+                if t<1360:continue
+                source=q[r[0].radio_id]["incident_id"]
+                peer=q[r[1].radio_id]["incident_id"]
+                ix=n.index(r,s,f,t)
+                read=Reading(COMMAND,"success",t+5,[neighbor(t)],generation=1,target=B1)
+                n.ingest(read,"w1",s[0],ix,q,t+5)
+                d=l.incidents.detail(source)
+                link=d["evidence"]["neighbor_evidence"][0]
+                self.assertEqual(link["candidate"],"RF05")
+                target=l.incidents.detail(peer)
+                if t==1420:
+                    # Unchanged persistent quality advanced last_at but not
+                    # the immutable evidence revision for the peer.
+                    self.assertEqual(target["last_at"],t)
+                    self.assertEqual(target["evidence"]["observed_at"],1360)
+                    self.assertNotIn("peer_incident_id",link)
+                    self.assertNotIn("peer_incident_revision",link)
+                else:
+                    self.assertEqual(target["evidence"]["observed_at"],t)
+                    self.assertEqual(link["peer_incident_id"],peer)
+                    self.assertEqual(link["peer_incident_revision"],target["revision"])
+            self.assertNotIn(r[1].radio_id,json.dumps(d))
+            self.assertNotIn(B2,json.dumps(d))
+            self.assertTrue(any(e["evidence"].get("neighbor_evidence",[{}])[0].get("peer_incident_id")==peer
+                                for e in d["timeline"] if e["evidence"].get("neighbor_evidence")))
+            # A future or inconsistent event must not be used as a current
+            # reference. Corruption is injected only into the temporary DB.
+            with st.lock,st._db(st.root/"core.db") as c:
+                c.execute("UPDATE rf_incident_events SET at=? WHERE incident_id=? AND revision=?",
+                          (1490,peer,target["revision"]))
+            n.ingest(read,"w1",s[0],ix,q,1485)
+            d=l.incidents.detail(source)
+            self.assertNotIn("peer_incident_id",d["evidence"]["neighbor_evidence"][0])
+            with st.lock,st._db(st.root/"core.db") as c:
+                c.execute("UPDATE rf_incident_events SET at=?,evidence=? WHERE incident_id=? AND revision=?",
+                          (1480,"{}",peer,target["revision"]))
+            n.ingest(replace(read,observed_at=1486),"w1",s[0],ix,q,1486)
+            d=l.incidents.detail(source)
+            self.assertNotIn("peer_incident_revision",d["evidence"]["neighbor_evidence"][0])
+            self.assertIn("RF05",[x["code"] for x in d["evidence"]["candidates"]])
+
     def test_worker_query_gate(self):
         from awqm.fixture_session import FixtureSession
         from awqm.client import bss_table
