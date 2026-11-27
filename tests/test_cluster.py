@@ -63,6 +63,45 @@ class ClusterParserTests(unittest.TestCase):
         self.assertEqual(m.report(frames,1000)["nodes"][1]["state"],"unknown")
         self.assertIsNone(m.report(frames,1000)["load"]["ap"]["active_total"])
         self.assertIsNone(m.report(frames,1200)["load"]["client"]["active_total"])
+    def test_membership_alignment_is_not_just_freshness(self):
+        m=ClusterMonitor(IPS)
+        for peer_at,peer_state,expected,aligned in (
+            (970,"CONNECTED","connected_observed",1),
+            (970,"DISCONNECTED","peer_disagreement",1),
+            (969,"CONNECTED","time_unaligned",0),
+            (969,"DISCONNECTED","time_unaligned",0),
+            (1030,"DISCONNECTED","peer_disagreement",1),
+            (1031,"DISCONNECTED","time_unaligned",0),
+        ):
+            with self.subTest(peer_at=peer_at,peer_state=peer_state):
+                frames={"w1":frame("w1",1000),"w2":frame("w2",peer_at,peer_state=peer_state)}
+                report=m.report(frames,max(1000,peer_at))
+                node=report["nodes"][0]
+                self.assertEqual(node["state"],expected)
+                self.assertEqual(node["aligned_peer_observations"],aligned)
+                self.assertEqual(node["peer_observations"],1)
+                self.assertEqual(node["self_state"],"CONNECTED")
+                link=next(x for x in report["links"] if x["from"]=="w2" and x["to"]=="w1")
+                self.assertEqual((link["state"],link["observed_at"]),(peer_state,peer_at))
+                self.assertEqual(report["service_impact"],"unverified")
+        peer_only=m.report({"w2":frame("w2",1000,peer_state="DISCONNECTED")},1000)["nodes"][0]
+        self.assertIsNone(peer_only["aligned_peer_observations"])
+        self.assertEqual(peer_only["state"],"peer_issue_observed")
+
+    def test_membership_alignment_survives_diagnostic_view(self):
+        from awqm.diagnostic_view import DiagnosticView
+        frames={"w1":frame("w1",1000),"w2":frame("w2",969,peer_state="DISCONNECTED")}
+        report=ClusterMonitor(IPS).report(frames,1000)
+        with tempfile.TemporaryDirectory() as root:
+            view=DiagnosticView(Store(root,mode="diagnostic"),lambda:1000)
+            view.publish({"cluster":report},[])
+            data=view.page()["cluster"]
+            self.assertEqual(data["nodes"][0]["state"],"time_unaligned")
+            self.assertEqual(data["nodes"][0]["aligned_peer_observations"],0)
+            self.assertEqual(data["nodes"][0]["peer_observations"],1)
+            self.assertNotIn("192.0.2.",json.dumps(data))
+            self.assertEqual(data["service_impact"],"unverified")
+
     def test_representative_handover(self):
         m=ClusterMonitor(IPS);frames={k:frame(k) for k in IPS}
         self.assertEqual(m.choose(frames,1000),"w1")

@@ -145,23 +145,32 @@ class ClusterMonitor:
         for target,address in self.targets.items():
             own=memberships.get(target)
             self_state=own[1][address]["state"] if own else None
-            peers=[]
+            peers=[];aligned=[]
             for observer,(at,rows) in memberships.items():
                 if observer==target or address not in rows:continue
                 r=rows[address]
                 if r["type"]!="peer":continue
                 peers.append(r["state"])
+                if own and abs(at-own[0])<=30:aligned.append(r["state"])
                 links.append({"from":observer,"to":target,"state":r["state"],"link":r["link"],"observed_at":at})
-            if self_state=="CONNECTED" and peers and all(v=="CONNECTED" for v in peers):status="connected_observed"
-            elif self_state=="CONNECTED" and not peers:status="self_only"
-            elif self_state=="CONNECTED" and any(v!="CONNECTED" for v in peers):status="peer_disagreement"
+            # Freshness alone does not make separate snapshots simultaneous.
+            # Keep every directional observation, but do not cross-check
+            # self against a peer outside the approved 30-second window.
+            if self_state=="CONNECTED":
+                if not peers:status="self_only"
+                elif not aligned:status="time_unaligned"
+                elif any(v!="CONNECTED" for v in aligned):status="peer_disagreement"
+                else:status="connected_observed"
+            elif self_state:
+                status="self_issue_observed"
             elif any(v!="CONNECTED" for v in peers):status="peer_issue_observed"
-            elif self_state and self_state!="CONNECTED":status="self_issue_observed"
             elif peers:status="peer_only"
             else:status="unknown"
             nodes.append({"controller":target,"cpu":cpu_rows[target],"state":status,
                           "role":own[1][address]["role"] if own else None,
-                          "self_state":self_state,"peer_observations":len(peers),"observed_at":own[0] if own else None,
+                          "self_state":self_state,"peer_observations":len(peers),
+                          "aligned_peer_observations":len(aligned) if own else None,
+                          "observed_at":own[0] if own else None,
                           "resources":resource_observations(frames.get(target),now)})
         loads={}
         for kind,cmd in (("ap",AP_LOAD),("client",CLIENT_LOAD)):
