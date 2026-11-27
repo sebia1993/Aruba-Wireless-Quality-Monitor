@@ -896,6 +896,30 @@ function searchGroup(parent,kind,title,query,end){
   }
   load(1);
 }
+function selectedHistoryCapacityPanel(value){
+  const root=el("div");root.id="selected-history-capacity";
+  root.append(el("h3","정밀 이력 저장 용량"));
+  if(value?.enabled===false){
+    root.append(el("p","정밀 이력 보존 비활성 · 기존 저장량은 미확인"));return root;
+  }
+  const keys=["archive_rows","archive_row_limit","archive_payload_bytes","archive_payload_byte_limit",
+    "restricted_archive_rows","durable_pending_rows","durable_pending_limit","disclosure_days"];
+  const states={full:"저장 한도 도달",limited:"저장 한도 임박",within_limits:"논리 저장 한도 내"};
+  if(value?.available!==true||keys.some(k=>!Number.isSafeInteger(value[k])||value[k]<0)||
+    value.archive_row_limit<1||value.archive_payload_byte_limit<1||value.durable_pending_limit<1||
+    value.disclosure_days<1||value.disclosure_days>30||
+    value.restricted_archive_rows>value.archive_rows||value.durable_pending_rows>value.durable_pending_limit||
+    !Object.hasOwn(states,value.archive_capacity)){
+    root.append(el("p","정밀 이력 저장 용량 미확인"));return root;
+  }
+  root.append(el("p",states[value.archive_capacity]),
+    el("p","저장 이력 "+value.archive_rows+" / "+value.archive_row_limit+"건"),
+    el("p","논리 Payload "+value.archive_payload_bytes+" / "+value.archive_payload_byte_limit+" bytes"),
+    el("p","최근 "+value.disclosure_days+"일 조회 범위 밖에 보존된 이력 "+value.restricted_archive_rows+"건"),
+    el("p","디스크 저장 대기 "+value.durable_pending_rows+" / "+value.durable_pending_limit+"건"),
+    el("p","DB 파일의 실제 크기, 디스크 여유 공간, 메모리 대기 건수 및 수집 정상 여부를 의미하지 않습니다. 조회 제한 이력도 저장 용량에 포함되며 자동 삭제되지 않습니다."));
+  return root;
+}
 function maintenancePanel(value){
   const root=el("div");
   root.append(el("h3","DB 백업 및 데이터 보존"));
@@ -927,7 +951,7 @@ function render(){
   }
   if(view==="clients"){loadClients();return;}
   if(view==="history"){loadIncidents();return;}
-  if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)),maintenancePanel(a.maintenance));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out,operationsPanel(),jobsPanel(),associationPanel());if($("role").textContent.trim()==="권한: admin")c.append(selectedHistoryPanel());return;}
+  if(view==="admin"){const b=el("button","관리자 상태 조회"),out=el("div");b.addEventListener("click",async()=>{try{const a=await request("/api/admin/status");out.replaceChildren(el("p","인증서 잔여 "+a.certificate_days+"일"+(a.certificate_warning?" · 갱신 확인 필요":"")),el("p","감사 기록 "+a.audit.events+"건 · 최근 "+kst(a.audit.last_event_at)),maintenancePanel(a.maintenance),selectedHistoryCapacityPanel(a.selected_history_capacity));}catch(e){if(!expired)out.textContent="관리자 권한 필요 또는 조회 불가";}});c.append(el("p","조회 전용 서비스 상태입니다. 장비 설정 및 자동 정밀 분석은 이 화면에서 변경할 수 없습니다."),b,out,operationsPanel(),jobsPanel(),associationPanel());if($("role").textContent.trim()==="권한: admin")c.append(selectedHistoryPanel());return;}
   if(!snapshot){c.append(el("p","자료 확인 중"));return;}
   if(view==="overview"){const k=el("div",null,"kpis");k.append(metric("관측 WLC",snapshot.coherent_controllers==null?null:snapshot.coherent_controllers+" / "+snapshot.expected_controllers),metric("저장된 Radio",snapshot.inventory_radios),metric("현재 매핑 Radio",snapshot.mapped_radios),metric("활성 단말 관측",snapshot.active_clients));c.append(k,el("p","최근 게시: "+kst(snapshot.published_at)+" · "+(snapshot.available?"관측 자료 제공":"현재 관측 확인 불가")),clusterPanel(snapshot.cluster));}
   c.append(table(["AP","WLC","대역","채널","사용률 %","간섭률 %","NF dBm","품질 점수","위험 관측","관측 시각 KST","수집 상태"],snapshot.rows.map(r=>{const b=el("button",r.ap_name);b.addEventListener("click",()=>openHistory(r));const cell=el("div");cell.append(b);if(r.incident_id){const i=el("button","위험 이력");i.addEventListener("click",()=>openIncident(r.incident_id));cell.append(i);}return [cell,r.controller,r.band,r.channel,r.utilization,r.interference,r.noise,r.quality_score==null?"미검증":r.quality_score,r.risk_status==="UNKNOWN"?"미확인":r.risk_status,kst(r.observed_at),r.freshness==="observed"?(r.quality==="local_operator_attested"?"최근 관측 · 현장 승인 지표":"최근 관측 · 미검증"):"오래됨 / 확인 불가"];})));

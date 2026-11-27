@@ -201,6 +201,9 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 status,_,raw=req("GET",history_path,headers=admin_h)
                 self.assertEqual(status,200)
                 self.assertEqual(json.loads(raw),{"enabled":False,"rows":[],"next_cursor":None})
+                status,_,raw=req("GET","/api/admin/status",headers=admin_h)
+                self.assertEqual(status,200)
+                self.assertEqual(json.loads(raw)["selected_history_capacity"],{"enabled":False,"available":False})
                 from awqm.selected_history import SelectedHistory, Receipt, PORT, ARM
                 archive=SelectedHistory(s)
                 view.selected_history=archive
@@ -308,6 +311,16 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 status,_,raw=req("GET","/api/admin/status",headers=admin_h)
                 self.assertEqual(status,200)
                 self.assertEqual(json.loads(raw)["maintenance"],{"available":True,"retention_enabled":False,"policy_editable":False})
+                capacity=json.loads(raw)["selected_history_capacity"]
+                self.assertTrue(capacity["available"])
+                self.assertEqual(capacity["archive_rows"],5)
+                self.assertEqual(capacity["restricted_archive_rows"],1)
+                self.assertEqual(capacity["durable_pending_rows"],0)
+                self.assertEqual(capacity["archive_capacity"],"within_limits")
+                self.assertNotIn("PRIVATE-",raw.decode())
+                self.assertNotIn(private_binding,raw.decode())
+                with patch.object(audit,"record",side_effect=OSError):
+                    self.assertEqual(req("GET","/api/admin/status",headers=admin_h)[0],503)
                 status,_,raw=req("GET","/api/admin/collection",headers=admin_h)
                 self.assertEqual(status,200);self.assertEqual(json.loads(raw)["desired"]["revision"],0)
                 op_form={"csrf":auth.session(admin_token).csrf,"target":"all","action":"pause","revision":"0"}

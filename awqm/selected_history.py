@@ -421,6 +421,43 @@ class SelectedHistory:
         cursor = (page[-1].received_at, page[-1].receipt_id) if len(rows) > limit else None
         return page, cursor
 
+    def capacity(self, disclosure_floor):
+        """Bounded metadata-only archive pressure, not filesystem usage.
+
+        No payloads, identities, deletion, or implicit retention decision.
+        The pending count describes durable queue entries only, not memory
+        handoffs. The caller must authorize disclosure.
+        """
+        if type(disclosure_floor) is not int or not 0 <= disclosure_floor <= MAX_TIMESTAMP:
+            raise ValueError("invalid selected disclosure floor")
+        with self.store.lock, self.store._db(self.store.root / "core.db") as db:
+            count, size, restricted, invalid = db.execute("""
+                SELECT COUNT(*), COALESCE(SUM(CASE WHEN
+                    typeof(payload_bytes)='integer' AND payload_bytes BETWEEN 1 AND ?
+                    THEN payload_bytes ELSE 0 END),0),
+                    COALESCE(SUM(received_at < ?),0),
+                    COALESCE(SUM(CASE WHEN
+                        typeof(payload_bytes)='integer' AND payload_bytes BETWEEN 1 AND ?
+                        AND typeof(received_at)='integer' AND received_at BETWEEN 0 AND ?
+                        THEN 0 ELSE 1 END),0)
+                FROM (SELECT payload_bytes,received_at FROM selected_detail_receipts LIMIT ?)
+                """,(MAX_RECEIPT,disclosure_floor,MAX_RECEIPT,MAX_TIMESTAMP,MAX_ROWS+1)).fetchone()
+            pending=db.execute("""SELECT COUNT(*) FROM
+                (SELECT 1 FROM selected_detail_pending LIMIT ?)""",(MAX_PENDING+1,)).fetchone()[0]
+        if invalid or count>MAX_ROWS or pending>MAX_PENDING:
+            raise RuntimeError("selected history capacity unavailable")
+        if count>=MAX_ROWS or size>=MAX_BYTES:
+            state="full"
+        elif MAX_BYTES-size<MAX_RECEIPT or count>=MAX_ROWS-1:
+            state="limited"
+        else:
+            state="within_limits"
+        return {"archive_rows":count,"archive_row_limit":MAX_ROWS,
+                "archive_payload_bytes":size,"archive_payload_byte_limit":MAX_BYTES,
+                "restricted_archive_rows":restricted,
+                "durable_pending_rows":pending,"durable_pending_limit":MAX_PENDING,
+                "archive_capacity":state}
+
     @staticmethod
     def _values(receipt):
         if not isinstance(receipt, Receipt) or receipt.command not in COMMANDS:

@@ -305,6 +305,7 @@ def handler_for(view,auth,audit,cfg,manual=None,operations=None,stop=None,http_d
                         "certificate_warning":remaining<=30,"field_validated":False,
                         "automatic_detail":view.client_enabled,"raw_client_identity_storage":False,
                         "pseudonymous_association_history":view.association_history is not None,
+                        "selected_history_capacity":view.selected_history_capacity(),
                         "maintenance":maintenance_status() if maintenance_status else {"available":False}})
                 else:self._send(404)
             except (ValueError,TypeError,OverflowError):self._json(400,{"error":"invalid_request"})

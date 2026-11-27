@@ -441,6 +441,11 @@ def browser_test(output):
                         page.locator('[data-view="admin"]').click()
                         page.get_by_role("button",name="관리자 상태 조회",exact=True).click()
                         expect(page.get_by_text("감사 기록",exact=False)).to_be_visible()
+                        capacity=page.locator("#selected-history-capacity")
+                        expect(capacity).to_contain_text("저장 이력 24 / 50000건")
+                        expect(capacity).to_contain_text("조회 범위 밖에 보존된 이력 0건")
+                        expect(capacity).to_contain_text("디스크 저장 대기 0 / 4건")
+                        expect(capacity).not_to_contain_text("PRIVATE-HISTORY")
                         require(verified_get(context,url,"/api/admin/status",cert)[0]==200,
                                 "admin endpoint unavailable")
                         history=page.locator("#selected-history")

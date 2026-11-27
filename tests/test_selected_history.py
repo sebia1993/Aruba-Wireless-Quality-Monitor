@@ -270,6 +270,54 @@ class SelectedHistoryTests(unittest.TestCase):
         self.assertEqual(session.calls, before)
         self.assertFalse(w.retain_selected_history)
 
+    def test_archive_capacity_reports_restricted_and_durable_pending_without_deletion(self):
+        from awqm.diagnostic_view import DiagnosticView
+        w, engine, session = self.worker_engine(PORT)
+        receipt = Engine._step(w)[0].selected_receipt
+        archive = engine.selected_history
+        self.assertTrue(archive.stage(receipt))
+        view = DiagnosticView(engine.store, lambda: self.now, selected_history=archive,
+                              selected_controllers=("w1",), selected_disclosure_days=1)
+        status = view.selected_history_capacity()
+        self.assertTrue(status["available"])
+        self.assertEqual(status["archive_rows"], 0)
+        self.assertEqual(status["durable_pending_rows"], 1)
+        archive.save(receipt)
+        self.now += 86401
+        status = view.selected_history_capacity()
+        self.assertEqual(status["archive_rows"], 1)
+        self.assertEqual(status["archive_payload_bytes"], len(receipt.payload.encode("utf-8")))
+        self.assertEqual(status["restricted_archive_rows"], 1)
+        self.assertEqual(status["durable_pending_rows"], 0)
+        self.assertEqual(status["archive_capacity"], "within_limits")
+        self.assertNotIn(receipt.receipt_id, json.dumps(status))
+        self.assertNotIn(AP, json.dumps(status))
+        with patch("awqm.selected_history.MAX_ROWS", 2):
+            self.assertEqual(view.selected_history_capacity()["archive_capacity"], "limited")
+        with patch("awqm.selected_history.MAX_ROWS", 1):
+            self.assertEqual(view.selected_history_capacity()["archive_capacity"], "full")
+        with patch("awqm.selected_history.MAX_BYTES", status["archive_payload_bytes"]):
+            self.assertEqual(view.selected_history_capacity()["archive_capacity"], "full")
+        self.assertEqual(self.rows(engine.store), [(receipt.receipt_id, receipt.payload)])
+        self.assertEqual(len([c for c in session.calls if c[0] == PORT]), 1)
+
+    def test_archive_capacity_invalid_metadata_and_disabled_are_not_empty(self):
+        from awqm.diagnostic_view import DiagnosticView
+        w, engine, _ = self.worker_engine(PORT)
+        archive = engine.selected_history
+        receipt = Engine._step(w)[0].selected_receipt
+        archive.save(receipt)
+        view = DiagnosticView(engine.store, lambda: self.now, selected_history=archive,
+                              selected_controllers=("w1",))
+        with patch.object(archive, "capacity", side_effect=sqlite3.OperationalError("private")):
+            self.assertEqual(view.selected_history_capacity(), {"enabled":True,"available":False})
+        with engine.store.lock, engine.store._db(engine.store.root / "core.db") as db:
+            db.execute("UPDATE selected_detail_receipts SET payload_bytes=-1")
+        self.assertEqual(view.selected_history_capacity(), {"enabled":True,"available":False})
+        self.assertEqual(self.rows(engine.store), [(receipt.receipt_id, receipt.payload)])
+        view.selected_history=None
+        self.assertEqual(view.selected_history_capacity(), {"enabled":False,"available":False})
+
     def test_pending_conflict_capacity_and_atomic_ack(self):
         w, engine, _ = self.worker_engine(PORT)
         receipt = Engine._step(w)[0].selected_receipt

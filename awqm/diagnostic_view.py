@@ -4,7 +4,7 @@ The writer publishes snapshots; browser refresh does not trigger SSH. Radio
 identifiers contain wired MACs internally and are replaced by opaque tokens.
 No client MAC, username, SSID or raw CLI data is included in this interface.
 """
-import hashlib,hmac,secrets,re
+import hashlib,hmac,secrets,re,sqlite3
 from copy import deepcopy
 from threading import RLock
 from .reporting import csv_report,html_report,WINDOWS,timestamp
@@ -186,6 +186,26 @@ class DiagnosticView:
             try:mac=rid.split(":",1)[1].rsplit(":",1)[0]
             except IndexError:raise ReservationRejected("physical_ap_identity_unavailable") from None
             return {**{k:row[k] for k in ("controller","ap_name","observed_at")},"binding":bind_ap(mac)}
+    def selected_history_capacity(self):
+        """Admin-only caller; unavailable is distinct from empty or disabled."""
+        archive=self.selected_history
+        if archive is None:
+            return {"enabled":False,"available":False}
+        if not self.store.lock.acquire(blocking=False):
+            return {"enabled":True,"available":False}
+        try:
+            now=int(self.clock())
+            if not 0 <= now <= MAX_TIMESTAMP:
+                raise ValueError("selected history clock unavailable")
+            days=validate_disclosure_days(self.selected_disclosure_days)
+            floor=max(0,now-days*86400)
+            return {"enabled":True,"available":True,"disclosure_days":days,
+                    **archive.capacity(floor)}
+        except (ValueError,TypeError,OverflowError,RuntimeError,OSError,sqlite3.Error):
+            return {"enabled":True,"available":False}
+        finally:
+            self.store.lock.release()
+
     def selected_history_page(self,controller,command_id,start,end,limit=20,after=None):
         # HTTP handler authorizes and audits before invoking this internal
         # read model. No operation changes, queue admission or SSH.
