@@ -8,7 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from awqm.collector import command
-from awqm.live_radio_stats import COMMAND, CONTRACT, CHECKS, load_stats_approvals
+from awqm.live_radio_stats import (COMMAND, CONTRACT, CHECKS, load_stats_approvals,
+                                  counter_boundary_hint)
 from awqm.jobs import DETAIL_COMMANDS
 from awqm.worker import ControllerWorker, DETAIL_PARSERS
 from awqm.engine import Engine
@@ -167,6 +168,72 @@ class RadioStatsWorkerTests(unittest.TestCase):
         self.assertTrue(w.protection_frame()["radio_stats_evidence"]["rows"])
         w.close()
         self.assertFalse(w.protection_frame()["radio_stats_evidence"]["rows"])
+
+    def test_counter_boundary_hint_exact_and_missing(self):
+        old = {"radio_resets":0, "tx_timeouts":2**64-1, "rx_crc_errors":1}
+        self.assertEqual(counter_boundary_hint(old, old), "no_boundary_observed")
+        self.assertEqual(counter_boundary_hint(old, {**old, "tx_timeouts":2**64-2}),
+                         "reported_decrease")
+        self.assertEqual(counter_boundary_hint(old, {**old, "radio_resets":1}),
+                         "reported_reset_increase")
+        self.assertEqual(counter_boundary_hint(old, {**old, "rx_crc_errors":None}),
+                         "not_assessed")
+        self.assertEqual(counter_boundary_hint(old, {**old, "radio_resets":1,
+                                                    "rx_crc_errors":0}),
+                         "reported_decrease")
+        self.assertEqual(counter_boundary_hint(old, {**old, "radio_resets":1,
+                                                    "tx_timeouts":None}),
+                         "reported_reset_increase")
+
+    def test_counter_boundary_context_gap_and_failed_attempt(self):
+        for mode in ("same", "renewed", "late", "failure", "reset"):
+            with self.subTest(mode=mode):
+                self.now=1000
+                self.session=Session()
+                self.session.responses[COMMAND]=FIXTURE.replace("TX Timeouts 4","TX Timeouts 18446744073709551615")
+                w=self.worker()
+                path=w.radio_stats
+                first=w.tick()
+                self.assertEqual((first.command,first.status),(COMMAND,"success"))
+                self.assertEqual(path.project(w,KEY,self.now)["rows"][0]["counter_boundary_hint"],
+                                 "not_assessed")
+                # The normal shared scheduler first investigates Radio 1;
+                # then Radio 0's own cooldown becomes due.
+                self.refresh(w,60)
+                cmd="show ap radio-summary"
+                self.change(w,cmd,data=[{**x,"utilization":90} for x in w.latest[cmd].data])
+                self.assertEqual(w.tick().status,"success")
+                self.assertEqual(self.calls()[-1][1],(AP,1))
+                self.refresh(w,61 if mode=="late" else 60)
+                if mode=="renewed":
+                    path.approval=replace(path.approval,valid_until=1850)
+                self.session.responses[COMMAND]=(
+                    FIXTURE+"invalid row\n" if mode=="failure" else
+                    FIXTURE.replace("Total Radio Resets 0","Total Radio Resets 1")
+                           .replace("TX Timeouts 4","TX Timeouts 18446744073709551615")
+                    if mode=="reset" else FIXTURE.replace("TX Timeouts 4","TX Timeouts 18446744073709551614"))
+                second=w.tick()
+                self.assertEqual(self.calls()[-1][1],(AP,0))
+                if mode=="failure":
+                    self.assertEqual(second.status,"parse_error")
+                    self.assertFalse(any(row["requested_radio"]==0 for row in path.project(w,KEY,self.now)["rows"]))
+                    # Radio 0 has no prior live record after the failed attempt.
+                    self.refresh(w,120)
+                    self.session.responses[COMMAND]=FIXTURE
+                    self.assertEqual(w.tick().status,"success")
+                    self.refresh(w,60)
+                    self.assertEqual(w.tick().status,"success")
+                    row=next(row for row in path.project(w,KEY,self.now)["rows"] if row["requested_radio"]==0)
+                    self.assertEqual(row["counter_boundary_hint"],"not_assessed")
+                else:
+                    self.assertEqual(second.status,"success")
+                    row=next(row for row in path.project(w,KEY,self.now)["rows"] if row["requested_radio"]==0)
+                    expected={"same":"reported_decrease","reset":"reported_reset_increase",
+                              "renewed":"not_assessed","late":"not_assessed"}[mode]
+                    self.assertEqual(row["counter_boundary_hint"],expected)
+                    self.assertFalse(row["counter_epoch_verified"])
+                    self.assertFalse(row["sample_time_verified"])
+                w.close()
 
     def test_parse_failure_permission_latch(self):
         w=self.worker()

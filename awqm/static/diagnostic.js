@@ -7,6 +7,14 @@ const detailRoute=/^#(radio|incident|client)\/([0-9a-f]{32})$/.exec(location.has
 const kst=t=>t==null?"미확인":new Date(t*1000).toLocaleString("ko-KR",{timeZone:"Asia/Seoul"});
 function el(tag,value,cls){const n=document.createElement(tag);if(value!=null)n.textContent=String(value);if(cls)n.className=cls;return n;}
 function table(headers,rows){const wrap=el("div",null,"table-wrap"),t=el("table"),head=el("thead"),tr=el("tr");for(const h of headers)tr.append(el("th",h));head.append(tr);t.append(head);const b=el("tbody");for(const row of rows){const r=el("tr");for(const value of row){const c=el("td");if(value instanceof Node)c.append(value);else c.textContent=value??"미확인";r.append(c);}b.append(r);}t.append(b);wrap.append(t);return wrap;}
+function radioBoundaryLabel(value){
+  const labels={not_assessed:"비교 미평가",reported_decrease:"보고 카운터 감소 · 비교 보류",
+    reported_reset_increase:"보고 Radio reset 증가 · 비교 보류",
+    no_boundary_observed:"비교 대상 보고값에서 경계 미관측"};
+  if(value===undefined)value="not_assessed";
+  if(typeof value!=="string"||!Object.hasOwn(labels,value))throw Error("invalid Radio boundary hint");
+  return "카운터 경계 참고: "+labels[value]+" (실제 Epoch 미검증)";
+}
 function metric(n,v){const b=el("div",null,"kpi");b.append(el("span",n),el("strong",v??"미확인"));return b;}
 function notice(s){$("notice").textContent=s;}
 function invalidate(){expired=true;closeUpdates();snapshot=null;selected=null;incidentPanel=null;submittedSearch="";refreshSearchClients=null;for(const id of ["search","global-query"]){$(id).value="";$(id).disabled=true;}document.body.classList.remove("detail-page");$("content").replaceChildren(el("p","인증 만료. 새로고침 후 다시 로그인하세요."));$("detail").hidden=true;$("detailBody").replaceChildren();notice("인증 세션 만료");}
@@ -519,6 +527,7 @@ function selectedHistoryPanel(){
         throw Error("invalid Radio history value");
       cell.append(el("div",label+": "+(value===null?"미확인":String(value))));
     }
+    cell.append(el("p",radioBoundaryLabel(row.counter_boundary_hint)));
     return cell;
   }
   function rfDetail(row){
@@ -810,6 +819,7 @@ function operationsPanel(){
         for(const item of evidence.rows){
           stats.append(el("h4",item.ap_name+" · 요청 Radio "+item.requested_radio+" · 수신 "+kst(item.received_at)),
             el("p","파싱 필드 "+item.observed_field_count+"개 · 미해석 행 "+item.ignored_row_count+"개"),
+            el("p",radioBoundaryLabel(item.counter_boundary_hint)),
             table(["보고 카운터","원시 값"],Object.entries(item.counters)),
             table(["보고 구간","원시 %"],Object.entries(item.radio_percentages)));
         }

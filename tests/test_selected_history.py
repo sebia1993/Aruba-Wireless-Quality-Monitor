@@ -667,6 +667,45 @@ class SelectedHistoryTests(unittest.TestCase):
                     view.selected_history_page("w1", ident, 1000, 1001)
                 engine.close()
 
+    def test_d03_boundary_hint_archived_from_actual_worker_and_legacy_safe(self):
+        from awqm.selected_history import receipt_summary
+        from awqm.diagnostic_view import DiagnosticView
+        w, engine, session = self.worker_engine(STATS)
+        session.responses[STATS]=FIXTURE.replace("TX Timeouts 4","TX Timeouts 18446744073709551615")
+        for elapsed in (0,60,60):
+            if elapsed:
+                self.now += elapsed
+                for cmd, reading in list(w.latest.items()):
+                    w.latest[cmd]=w.outcomes[cmd]=replace(reading,observed_at=self.now)
+                w.schedule.due={k:self.now+1000 for k in w.schedule.polls}
+                w.schedule.protection.cpu(20,self.now)
+                cmd="show ap radio-summary"
+                reading=w.latest[cmd]
+                w.latest[cmd]=w.outcomes[cmd]=replace(reading,data=[{**x,"utilization":90} for x in reading.data])
+            if self.now==1120:
+                session.responses[STATS]=FIXTURE.replace("TX Timeouts 4","TX Timeouts 18446744073709551614")
+            outcome=Engine._step(w)
+            self.assertEqual(outcome[0].status,"success")
+            receipt=outcome[0].selected_receipt
+            self.assertIsNotNone(receipt)
+            self.assertIsNone(self.harvest(engine,outcome)["storage_error"])
+        self.assertEqual([c[1] for c in session.calls if c[0]==STATS],[(AP,0),(AP,1),(AP,0)])
+        view=DiagnosticView(engine.store,lambda:self.now,key=b"fixture",
+                            selected_history=engine.selected_history,selected_controllers=("w1",))
+        rows=view.selected_history_page("w1","D03",1000,1121)["rows"]
+        self.assertEqual([r["counter_boundary_hint"] for r in rows],
+                         ["not_assessed","not_assessed","reported_decrease"])
+        self.assertTrue(all(r["counter_epoch"] is None and r["measurement_start"] is None
+                            and r["sample_time_verified"] is False for r in rows))
+        data=json.loads(receipt.payload)
+        self.assertEqual(data["observation"].pop("counter_boundary_hint"),"reported_decrease")
+        legacy=replace(receipt,payload=json.dumps(data))
+        self.assertEqual(receipt_summary(legacy,lambda _:"masked")["counter_boundary_hint"],"not_assessed")
+        for bad in (None,True,[],{},"verified_epoch","PRIVATE-HINT"):
+            data["observation"]["counter_boundary_hint"]=bad
+            with self.subTest(bad=bad), self.assertRaisesRegex(RuntimeError,"selected history record unavailable"):
+                receipt_summary(replace(receipt,payload=json.dumps(data)),lambda _:"masked")
+
     def test_d03_history_preserves_uint64_null_and_rejects_corrupt_values(self):
         from awqm.selected_history import receipt_summary
         w, engine, session = self.worker_engine(STATS)

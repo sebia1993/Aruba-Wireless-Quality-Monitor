@@ -9,6 +9,28 @@ CHECKS = frozenset(("documented_radio_statistics_subset", "advanced_command_scop
                     "physical_radio_id_argument", "wired_identity_and_active_anchor",
                     "switch_ip_owner", "read_only_permission", "selected_radio_investigation"))
 INTERVAL = 120
+# Fixed reported-value subset. Neither an increasing sequence nor a reported
+# reset counter establishes physical measurement time or counter epoch.
+BOUNDARY_COUNTERS = ("radio_resets", "tx_timeouts", "rx_crc_errors")
+BOUNDARY_HINTS = frozenset(("not_assessed", "reported_decrease",
+                            "reported_reset_increase", "no_boundary_observed"))
+
+
+def counter_boundary_hint(previous, current):
+    """Categorical hint only, using exact uint64 values, never deltas/rates."""
+    pairs = []
+    for name in BOUNDARY_COUNTERS:
+        old, new = previous[name], current[name]
+        if old is None or new is None:
+            continue
+        pairs.append((name, old, new))
+    if any(new < old for _, old, new in pairs):
+        return "reported_decrease"
+    if any(name == "radio_resets" and new > old for name, old, new in pairs):
+        return "reported_reset_increase"
+    if len(pairs) == len(BOUNDARY_COUNTERS):
+        return "no_boundary_observed"
+    return "not_assessed"
 
 
 def load_stats_approvals(cfg, radios, now=None):
@@ -19,6 +41,21 @@ def load_stats_approvals(cfg, radios, now=None):
 class RadioStats(RFSummary):
     command = COMMAND
     interval = INTERVAL
+
+    def __init__(self, approval):
+        super().__init__(approval)
+        self._previous = None
+
+    def begin(self, target, monotonic):
+        # Capture only the prior live record of this exact requested Radio.
+        # A failed attempt clears the live record and the next begin replaces
+        # this one-slot private comparison input. No retained second history.
+        self._previous = (target, self.records.get(target))
+        super().begin(target, monotonic)
+
+    def clear(self):
+        super().clear()
+        self._previous = None
 
     def candidates(self, worker, ap, key, now):
         base = super().context(worker, ap, key, now)
@@ -52,7 +89,16 @@ class RadioStats(RFSummary):
 
     def record(self, target, context, received, result):
         # Response does not echo target. Uint64 strings preserve precision.
+        previous, self._previous = self._previous, None
+        hint = "not_assessed"
+        if previous is not None and previous[0] == target and previous[1] is not None:
+            old_context, old_received, old = previous[1]
+            if old_context == context and 0 < received-old_received <= INTERVAL:
+                old_counts = {k: None if old["counters"][k] is None
+                              else int(old["counters"][k]) for k in BOUNDARY_COUNTERS}
+                hint = counter_boundary_hint(old_counts, result["counters"])
         self.records[target] = (context, received, {
+            "counter_boundary_hint": hint,
             "counters": {k: None if v is None else str(v)
                          for k, v in result["counters"].items()},
             "radio_percentages": dict(result["radio_percentages"]),

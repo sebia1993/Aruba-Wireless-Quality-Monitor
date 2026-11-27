@@ -13,7 +13,7 @@ from .service_config import safe_path
 from .ap_port_status import COMMAND as PORT
 from .arm_rf_summary import COMMAND as RF
 from .live_arm_history import COMMAND as ARM
-from .live_radio_stats import COMMAND as STATS
+from .live_radio_stats import COMMAND as STATS, BOUNDARY_HINTS
 
 COMMAND_IDS = {"D03": STATS, "D04": RF, "D07": PORT, "D08": ARM}
 COMMANDS = frozenset(COMMAND_IDS.values())
@@ -341,7 +341,13 @@ def receipt_summary(receipt, token):
             summary = {"requested_radio": integer(obs["requested_radio"], 0, 2),
                        "observed_field_count": integer(obs["observed_field_count"], 0, 4096),
                        "ignored_row_count": integer(obs["ignored_row_count"], 0, 4096)}
-            detail = {"radio_detail": _radio_history_detail(obs)}
+            # Older schema-1 receipts have no assessment; never reconstruct
+            # a comparison across archived receipts with unknown continuity.
+            hint = obs.get("counter_boundary_hint", "not_assessed")
+            if type(hint) is not str or hint not in BOUNDARY_HINTS:
+                raise ValueError("invalid historical Radio counter boundary hint")
+            detail = {"radio_detail": _radio_history_detail(obs),
+                      "counter_boundary_hint": hint}
         else:
             raise ValueError("invalid historical command")
         return {"ap_token": token("selected-history:" + binding),

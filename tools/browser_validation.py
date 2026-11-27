@@ -133,6 +133,7 @@ def fixture(root):
                    "observation":{"ap_name":"PRIVATE-HISTORY-RADIO","received_at":now,
                        "field_validated":False,"sample_time_verified":False,"requested_radio":1,
                        "observed_field_count":5,"ignored_row_count":0,
+                       "counter_boundary_hint":"reported_decrease",
                        "counters":{"radio_resets":"18446744073709551615","tx_timeouts":None,
                                    "rx_crc_errors":"0","private":"PRIVATE-HISTORY-VALUE"},
                        "radio_percentages":{"channel_busy_1s_percent":50,
@@ -487,6 +488,7 @@ def browser_test(output):
                         expect(history.get_by_text("Radio reset: 18446744073709551615",exact=True)).to_be_visible()
                         expect(history.get_by_text("TX timeout: 미확인",exact=True)).to_be_visible()
                         expect(history.get_by_text("RX CRC error: 0",exact=True)).to_be_visible()
+                        expect(history.get_by_text("카운터 경계 참고: 보고 카운터 감소 · 비교 보류 (실제 Epoch 미검증)",exact=True)).to_be_visible()
                         expect(history.get_by_text("채널 Busy 4초 %: 42.5",exact=True)).to_be_visible()
                         expect(history.get_by_text("채널 Busy 64초 %: 0",exact=True)).to_be_visible()
                         expect(history).not_to_contain_text("PRIVATE-HISTORY")
