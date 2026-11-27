@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from .service_config import safe_path
 from .ap_port_status import COMMAND as PORT
+from .live_ap_ports import PORT_BOUNDARY_HINTS
 from .arm_rf_summary import COMMAND as RF
 from .live_arm_history import COMMAND as ARM
 from .live_radio_stats import COMMAND as STATS, BOUNDARY_HINTS
@@ -213,9 +214,13 @@ def _port_history_detail(obs, ports):
                 or (speed is not None and (type(speed) is not int or not 1 <= speed <= 100000))
                 or duplex not in (None, "full", "half")):
             raise ValueError("invalid historical port field")
+        hint = row.get("counter_boundary_hint", "not_assessed")
+        if type(hint) is not str or hint not in PORT_BOUNDARY_HINTS:
+            raise ValueError("invalid historical port counter boundary hint")
         seen.add(port)
         rows.append({"port": port, "admin": admin, "oper": oper,
                      "speed_mbps": speed, "duplex": duplex,
+                     "counter_boundary_hint": hint,
                      **{key: _reported_uint64(row[key]) for key in D07_HISTORY_COUNTERS}})
     return rows
 

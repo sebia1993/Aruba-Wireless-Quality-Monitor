@@ -15,6 +15,14 @@ function radioBoundaryLabel(value){
   if(typeof value!=="string"||!Object.hasOwn(labels,value))throw Error("invalid Radio boundary hint");
   return "카운터 경계 참고: "+labels[value]+" (실제 Epoch 미검증)";
 }
+function portBoundaryLabel(value){
+  const labels={not_assessed:"비교 미평가",reported_decrease:"보고 포트 카운터 감소 · 비교 보류",
+    reported_port_context_changed:"보고 포트 문맥 변경 · 비교 보류",
+    no_boundary_observed:"비교 대상 포트 보고값에서 경계 미관측"};
+  if(value===undefined)value="not_assessed";
+  if(typeof value!=="string"||!Object.hasOwn(labels,value))throw Error("invalid port boundary hint");
+  return "포트 카운터 경계 참고: "+labels[value]+" (실제 Epoch 미검증)";
+}
 function metric(n,v){const b=el("div",null,"kpi");b.append(el("span",n),el("strong",v??"미확인"));return b;}
 function notice(s){$("notice").textContent=s;}
 function invalidate(){expired=true;closeUpdates();snapshot=null;selected=null;incidentPanel=null;submittedSearch="";refreshSearchClients=null;for(const id of ["search","global-query"]){$(id).value="";$(id).disabled=true;}document.body.classList.remove("detail-page");$("content").replaceChildren(el("p","인증 만료. 새로고침 후 다시 로그인하세요."));$("detail").hidden=true;$("detailBody").replaceChildren();notice("인증 세션 만료");}
@@ -597,7 +605,7 @@ function selectedHistoryPanel(){
       });
       cell.append(el("p","포트 "+r.port+" · Admin "+r.admin+" / Oper "+r.oper),
         el("div","속도: "+(r.speed_mbps===null?"미확인":r.speed_mbps+" Mbps")+" · Duplex: "+show(r.duplex)),
-        el("div",values.join(" · ")));
+        el("div",values.join(" · ")),el("div",portBoundaryLabel(r.counter_boundary_hint)));
     }
     return cell;
   }
@@ -765,8 +773,8 @@ function operationsPanel(){
         if(!evidence.rows.length)ports.append(el("p","현재 관측 없음 또는 대상 검증·수집 보호로 보류"));
         for(const item of evidence.rows){
           ports.append(el("h4",item.ap_name+" · 수신 "+kst(item.received_at)),
-            table(["포트","Admin","Oper","속도 Mbps","Duplex","STP","TX 패킷","TX Bytes","RX 패킷","RX Bytes"],
-              item.ports.map(p=>[p.port,p.admin,p.oper,p.speed_mbps,p.duplex,p.stp,p.tx_packets,p.tx_bytes,p.rx_packets,p.rx_bytes])));
+            table(["포트","Admin","Oper","속도 Mbps","Duplex","STP","TX 패킷","TX Bytes","RX 패킷","RX Bytes","카운터 경계 참고"],
+              item.ports.map(p=>[p.port,p.admin,p.oper,p.speed_mbps,p.duplex,p.stp,p.tx_packets,p.tx_bytes,p.rx_packets,p.rx_bytes,portBoundaryLabel(p.counter_boundary_hint)])));
         }
       }
       out.append(ports);

@@ -807,6 +807,46 @@ class SelectedHistoryTests(unittest.TestCase):
             project()
         engine.close()
 
+    def test_d07_boundary_hint_archived_from_actual_worker_and_legacy_safe(self):
+        from awqm.selected_history import receipt_summary
+        from awqm.diagnostic_view import DiagnosticView
+        w, engine, session = self.worker_engine(PORT)
+        baseline=session.responses[PORT]
+        alternate="02:00:00:00:00:09"
+        lower=baseline.replace("18446744073709551615","18446744073709551614")
+        for index, raw in enumerate((baseline,lower,lower.replace(MAC,alternate))):
+            if index:
+                self.now += 120
+                for cmd, reading in list(w.latest.items()):
+                    w.latest[cmd]=w.outcomes[cmd]=replace(reading,observed_at=self.now)
+                w.schedule.due={k:self.now+1000 for k in w.schedule.polls}
+                w.schedule.protection.cpu(20,self.now)
+            session.responses[PORT]=raw
+            outcome=Engine._step(w)
+            self.assertEqual(outcome[0].status,"success")
+            receipt=outcome[0].selected_receipt
+            self.assertIsNotNone(receipt)
+            self.assertNotIn(alternate,receipt.payload)
+            self.assertNotIn(MAC,receipt.payload)
+            self.assertIsNone(self.harvest(engine,outcome)["storage_error"])
+        view=DiagnosticView(engine.store,lambda:self.now,key=b"fixture",
+                            selected_history=engine.selected_history,selected_controllers=("w1",))
+        rows=view.selected_history_page("w1","D07",1000,1241)["rows"]
+        self.assertEqual([r["port_detail"][0]["counter_boundary_hint"] for r in rows],
+                         ["not_assessed","reported_decrease","reported_port_context_changed"])
+        self.assertTrue(all(r["counter_epoch"] is None and r["measurement_start"] is None
+                            and r["sample_time_verified"] is False for r in rows))
+        data=json.loads(receipt.payload)
+        row=data["observation"]["ports"][0]
+        self.assertEqual(row.pop("counter_boundary_hint"),"reported_port_context_changed")
+        legacy=replace(receipt,payload=json.dumps(data))
+        self.assertEqual(receipt_summary(legacy,lambda _:"masked")["port_detail"][0]["counter_boundary_hint"],
+                         "not_assessed")
+        for bad in (None,True,[],{},"verified_epoch","PRIVATE-HINT"):
+            row["counter_boundary_hint"]=bad
+            with self.subTest(bad=bad), self.assertRaisesRegex(RuntimeError,"selected history record unavailable"):
+                receipt_summary(replace(receipt,payload=json.dumps(data)),lambda _:"masked")
+
     def test_d07_history_preserves_reported_values_and_rejects_corruption(self):
         from awqm.selected_history import receipt_summary
         w, engine, _ = self.worker_engine(PORT)

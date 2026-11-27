@@ -122,7 +122,8 @@ def fixture(root):
                      "physical_uplink_verified":False,"ports":[
                          {"port":0,"admin":"enabled","oper":"up","speed_mbps":2500,
                           "duplex":"full","tx_packets":"0","tx_bytes":"18446744073709551615",
-                          "rx_packets":None,"rx_bytes":"300","stp":"PRIVATE-HISTORY-STP"}]
+                          "rx_packets":None,"rx_bytes":"300","stp":"PRIVATE-HISTORY-STP",
+                           "counter_boundary_hint":"reported_decrease"}]
                      + ([{"port":1,"admin":"disabled","oper":"down","speed_mbps":None,
                           "duplex":None,"tx_packets":None,"tx_bytes":None,
                           "rx_packets":"0","rx_bytes":None}] if n==20 else [])}}
@@ -477,6 +478,8 @@ def browser_test(output):
                         expect(history.get_by_text("포트 0 · Admin enabled / Oper up",exact=True)).to_be_visible()
                         expect(history.get_by_text("속도: 2500 Mbps · Duplex: full",exact=True)).to_be_visible()
                         expect(history.get_by_text("TX packets: 0 · TX bytes: 18446744073709551615 · RX packets: 미확인 · RX bytes: 300",exact=True)).to_be_visible()
+                        expect(history.get_by_text("포트 카운터 경계 참고: 보고 포트 카운터 감소 · 비교 보류 (실제 Epoch 미검증)",exact=True)).to_be_visible()
+                        expect(history.get_by_text("포트 카운터 경계 참고: 비교 미평가 (실제 Epoch 미검증)",exact=True)).to_be_visible()
                         expect(history.get_by_text("포트 1 · Admin disabled / Oper down",exact=True)).to_be_visible()
                         expect(history.get_by_text("속도: 미확인 · Duplex: 미확인",exact=True)).to_be_visible()
                         expect(history).not_to_contain_text("PRIVATE-HISTORY")

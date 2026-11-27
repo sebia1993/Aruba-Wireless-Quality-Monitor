@@ -149,6 +149,60 @@ class PortWorkerTests(unittest.TestCase):
                 self.assertEqual(len(self.port_calls()),1)
             finally:engine.close()
 
+    def test_reported_port_boundary_identity_precision_and_failure(self):
+        w=self.worker()
+        baseline=response().replace(" N/A 300", " 10 300")
+        changed_mac="02:00:00:00:00:09"
+        first_mac=MAC
+        low=baseline.replace("18446744073709551615","18446744073709551614")
+        changed=low.replace(first_mac,changed_mac)
+        self.session.responses[COMMAND]=baseline
+        for index, (raw, expected) in enumerate((
+                (baseline, "not_assessed"),
+                (low, "reported_decrease"),
+                (low, "no_boundary_observed"),
+                (changed, "reported_port_context_changed"),
+                (changed.replace("2.5 Gb/s","1 Gb/s"), "reported_port_context_changed"),
+                (changed+"\ninvalid trailing row", None),
+                (changed, "not_assessed"))):
+            if index:
+                self.refresh(w)
+            self.session.responses[COMMAND]=raw
+            reading=w.tick()
+            frame=w.protection_frame()
+            rows=frame["ap_port_evidence"]["rows"]
+            if expected is None:
+                self.assertEqual(reading.status,"parse_error")
+                self.assertEqual(rows,[])
+                continue
+            self.assertEqual(reading.status,"success")
+            self.assertEqual(rows[0]["ports"][0]["counter_boundary_hint"],expected)
+            self.assertFalse(rows[0]["sample_time_verified"])
+            self.assertFalse(rows[0]["physical_uplink_verified"])
+            for private in (first_mac,changed_mac,bind_ap(changed_mac)):
+                self.assertNotIn(private,json.dumps(frame))
+        self.assertEqual(len(self.port_calls()),7)
+
+    def test_reported_port_boundary_unknown_on_missing_gap_or_approval_change(self):
+        w=self.worker()
+        # One counter is absent in the original fixture; monotonic remaining
+        # reported counts cannot establish an all-counter no-boundary hint.
+        self.assertEqual(w.tick().status,"success")
+        self.refresh(w)
+        self.assertEqual(w.tick().status,"success")
+        def hint():
+            return w.protection_frame()["ap_port_evidence"]["rows"][0]["ports"][0]["counter_boundary_hint"]
+        self.assertEqual(hint(),"not_assessed")
+        self.session.responses[COMMAND]=response().replace(" N/A 300"," 10 300")
+        self.refresh(w,121)
+        self.assertEqual(w.tick().status,"success")
+        self.assertEqual(hint(),"not_assessed")
+        self.refresh(w)
+        w.ap_ports.approval=replace(w.ap_ports.approval,valid_until=1800)
+        self.assertEqual(w.tick().status,"success")
+        self.assertEqual(hint(),"not_assessed")
+        self.assertEqual(len(self.port_calls()),4)
+
     def test_default_off_and_safe_mode(self):
         w=self.worker(enabled=False)
         self.assertIsNone(w.tick())

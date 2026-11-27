@@ -21,6 +21,31 @@ INTERVAL = 120
 ROUND_INTERVAL = 60
 PUBLIC_FIELDS = ("port", "admin", "oper", "speed_mbps", "duplex", "stp",
                  "tx_packets", "tx_bytes", "rx_packets", "rx_bytes")
+PORT_BOUNDARY_HINTS = frozenset(("not_assessed", "reported_decrease",
+                                 "reported_port_context_changed", "no_boundary_observed"))
+
+
+def _port_context(row):
+    # Private, exact reported port identity and link/configuration context.
+    # The binding and labels are never added to the public receipt projection.
+    return (bind_ap(row["port_mac"]), *(row[k] for k in
+            ("port_type", "forward_mode", "admin", "oper", "speed_mbps",
+             "duplex", "energy_efficient_ethernet", "poe", "stp")))
+
+
+def port_boundary_hint(old, current, old_context, context):
+    """Conservative comparison of reported uint64 values, never rates/epochs."""
+    if old_context != context:
+        return "reported_port_context_changed"
+    # Do not imply continuity for an inactive or ambiguous link.
+    if (current["admin"] != "enabled" or current["oper"] != "up"
+            or current["speed_mbps"] is None or current["duplex"] is None):
+        return "not_assessed"
+    pairs = [(int(old[k]), current[k]) for k in COUNTERS
+             if old[k] is not None and current[k] is not None]
+    if any(new < prior for prior, new in pairs):
+        return "reported_decrease"
+    return "no_boundary_observed" if len(pairs) == len(COUNTERS) else "not_assessed"
 
 
 @dataclass(frozen=True)
@@ -106,6 +131,7 @@ class ApPorts:
         self.next_round = float("-inf")
         self.next_ap = {}
         self.records = {}
+        self._port_previous = None
 
     def context(self, worker, target, key, now):
         a, radio = self.approval, worker.field_approval
@@ -161,16 +187,38 @@ class ApPorts:
     def begin(self, target, monotonic):
         self.next_round = monotonic + ROUND_INTERVAL
         self.next_ap[target] = monotonic + self.interval
+        if self.command == COMMAND:
+            self._port_previous = (target, self.records.get(target))
         self.records.pop(target, None)
 
     def record(self, target, context, received, result):
-        # Decimal strings preserve uint64 counters through browser JSON.
-        rows = tuple({k: str(row[k]) if k in COUNTERS and row[k] is not None else row[k]
-                      for k in PUBLIC_FIELDS} for row in result["rows"])
-        self.records[target] = (context, received, rows)
+        # One preceding still-retained D07 response; failed attempts consume
+        # the old live record, and next begin replaces this private slot.
+        previous, self._port_previous = self._port_previous, None
+        old_rows, old_contexts = {}, {}
+        if previous is not None and previous[0] == target and previous[1] is not None:
+            old_ap, old_at, old, contexts = previous[1]
+            if old_ap == context and 0 < received-old_at <= INTERVAL:
+                old_rows = {row["port"]: row for row in old}
+                old_contexts = contexts
+        rows, identities = [], {}
+        for row in result["rows"]:
+            number = row["port"]
+            identities[number] = _port_context(row)
+            hint = "not_assessed"
+            if number in old_rows:
+                hint = port_boundary_hint(old_rows[number], row,
+                                          old_contexts[number], identities[number])
+            clean = {k: str(row[k]) if k in COUNTERS and row[k] is not None else row[k]
+                     for k in PUBLIC_FIELDS}
+            clean["counter_boundary_hint"] = hint
+            rows.append(clean)
+        # Port identities are private memory only, not archived or displayed.
+        self.records[target] = (context, received, tuple(rows), identities)
 
     def clear(self):
         self.records.clear()
+        self._port_previous = None
 
     def project(self, worker, key, now):
         self._prune_unapproved()
