@@ -11,6 +11,7 @@ from contextlib import contextmanager
 
 POLICY="balanced-radio-v1"
 PRIOR_OBSERVATION_DAYS=30
+REPEAT_OBSERVATION_SECONDS=1800
 REVIEW_VERDICTS=frozenset(("supported","not_supported","inconclusive"))
 REASONS=frozenset(("radio_evidence","other_evidence","insufficient_evidence","conflicting_evidence"))
 IDENT=re.compile(r"^[0-9a-f]{32}$")
@@ -97,6 +98,24 @@ class Incidents:
             persistent=t if state.status=="PERSISTENT" else None
             c.execute("INSERT INTO rf_incidents VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (ident,r.radio_id,context,r.ap_name,r.controller,r.band,t,t,persistent,None,state.status,1,payload))
+            # Mark an independently observed new risk, not a second service
+            # outage. Freeze the relationship at creation, never backfill it
+            # from later history or replace the original incident.
+            prior=self._prior_resolved_observation(c,ident,t)
+            repeat=None
+            if prior and prior["gap_seconds"]<=REPEAT_OBSERVATION_SECONDS:
+                changed=c.execute("""SELECT 1 FROM radio_quality_events
+                    WHERE radio_id=? AND observed_at>? AND observed_at<=?
+                    AND context<>? LIMIT 1""",(r.radio_id,prior["ended_at"],t,context)).fetchone()
+                if not changed:
+                    repeat={"prior_incident_id":prior["incident_id"],
+                            "prior_ended_at":prior["ended_at"],
+                            "gap_seconds":prior["gap_seconds"],
+                            "relation":"repeat_rf_observation",
+                            "service_impact":"unverified"}
+            evidence["repeat_observation"]=repeat
+            payload=json.dumps(evidence,sort_keys=True,allow_nan=False)
+            c.execute("UPDATE rf_incidents SET evidence=? WHERE incident_id=?",(payload,ident))
             c.execute("INSERT INTO rf_incident_events VALUES(?,?,?,?,?)",(ident,1,t,state.status,payload))
             return ident
         ident,last,persistent,old_state,rev,old_evidence=old
@@ -304,6 +323,35 @@ class Incidents:
                 "ended_at":end,"gap_seconds":first_at-end,
                 "relation":"same_observation_context","service_impact":"unverified"}
 
+    @staticmethod
+    def _recorded_repeat_observation(c,ident,first_at):
+        """Read only revision one; old episodes have no recorded assessment."""
+        row=c.execute("""SELECT at,evidence FROM rf_incident_events
+            WHERE incident_id=? AND revision=1""",(ident,)).fetchone()
+        if row is None:
+            return False,None
+        evidence=json.loads(row[1])
+        if "repeat_observation" not in evidence:
+            return False,None
+        repeat=evidence["repeat_observation"]
+        if row[0]!=first_at or evidence.get("observed_at")!=first_at:
+            raise ValueError("invalid repeat observation event time")
+        if repeat is None:
+            return True,None
+        if (type(repeat) is not dict or set(repeat)!={"prior_incident_id","prior_ended_at",
+                "gap_seconds","relation","service_impact"}
+            or type(repeat["prior_incident_id"]) is not str
+            or not IDENT.fullmatch(repeat["prior_incident_id"])
+            or repeat["prior_incident_id"]==ident
+            or type(repeat["prior_ended_at"]) is not int or repeat["prior_ended_at"]<0
+            or type(repeat["gap_seconds"]) is not int
+            or not 0<repeat["gap_seconds"]<=REPEAT_OBSERVATION_SECONDS
+            or first_at-repeat["prior_ended_at"]!=repeat["gap_seconds"]
+            or repeat["relation"]!="repeat_rf_observation"
+            or repeat["service_impact"]!="unverified"):
+            raise ValueError("invalid recorded repeat observation")
+        return True,repeat
+
     def detail(self,ident):
         if not isinstance(ident,str) or not IDENT.fullmatch(ident):raise ValueError("invalid incident ID")
         with self.transaction() as c:
@@ -322,6 +370,8 @@ class Incidents:
             item["reviews_truncated"]=c.execute("SELECT COUNT(*) FROM rf_incident_reviews WHERE incident_id=?",(ident,)).fetchone()[0]>len(reviews)
             item["prior_observation_window_days"]=PRIOR_OBSERVATION_DAYS
             item["prior_resolved_observation"]=self._prior_resolved_observation(c,ident,item["first_at"])
+            item["repeat_observation_window_seconds"]=REPEAT_OBSERVATION_SECONDS
+            item["repeat_observation_assessed"],item["repeat_observation"]=self._recorded_repeat_observation(c,ident,item["first_at"])
             item["service_impact"]="unverified"
             return item
     def review(self,ident,revision,request_id,user,verdict,reason,candidate):

@@ -40,6 +40,9 @@ def summary(detail):
     prior=detail.get("prior_resolved_observation")
     if prior:
         lines.insert(-1,f'  * 동일 관측 문맥 이전 RF 정책 정상화 : {time_label(prior["ended_at"])} / 이번 최초 관측까지 {prior["gap_seconds"]}초 (동일 원인 및 서비스 영향 미확인)')
+    repeat=detail.get("repeat_observation")
+    if repeat:
+        lines.insert(-1,f'  * 30분 이내 반복 RF 위험 관측 : 이전 RF 정책 정상화 후 {repeat["gap_seconds"]}초 (별도 관측 사건, 동일 원인 및 서비스 장애 미확인)')
     reviews=detail.get("reviews",[])
     if reviews:
         r=reviews[0]

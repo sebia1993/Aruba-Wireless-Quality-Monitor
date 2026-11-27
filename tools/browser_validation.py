@@ -382,6 +382,9 @@ def browser_test(output):
                                 expect(incident_page.get_by_text("이전 동일 관측 문맥 정상화 이력",exact=True)).to_be_visible()
                                 expect(incident_page.get_by_text("동일 원인·서비스 장애·실제 정상화 여부는 미확인입니다.",exact=False)).to_be_visible()
                                 expect(incident_page.get_by_role("button",name="이전 정상화 이력 상세")).to_be_visible()
+                                expect(incident_page.get_by_role("heading",name="30분 이내 반복 RF 위험 관측")).to_be_visible()
+                                expect(incident_page.get_by_role("button",name="반복 관측의 이전 이력 상세")).to_be_visible()
+                                expect(incident_page.get_by_text("동일 원인 및 실제 서비스 장애는 미확인입니다.",exact=False)).to_be_visible()
                             finally:
                                 incident_page.close()
                             result["scenarios"][f"{width}x{height}-{theme}-detail-pages"]="pass"

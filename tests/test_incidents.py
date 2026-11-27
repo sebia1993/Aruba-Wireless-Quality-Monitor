@@ -59,6 +59,58 @@ class IncidentTests(unittest.TestCase):
             from awqm.incident_reports import summary
             self.assertIn("동일 관측 문맥 이전 RF 정책 정상화",summary(i.detail(new)))
 
+    def test_repeat_observation_recorded_once_at_creation_and_survives_lifecycle(self):
+        with tempfile.TemporaryDirectory() as root:
+            s=Store(root,mode="diagnostic");l=QualityLedger(s)
+            for t in (1000,1180,1360):
+                old=feed(s,l,t)["incident_id"]
+            for t in (1540,1720,1900):feed(s,l,t,20)
+            self.assertEqual(l.incidents.detail(old)["state"],"RESOLVED")
+            ident=feed(s,l,2080)["incident_id"]
+            self.assertNotEqual(ident,old)
+            expected={"prior_incident_id":old,"prior_ended_at":1900,"gap_seconds":180,
+                      "relation":"repeat_rf_observation","service_impact":"unverified"}
+            d=l.incidents.detail(ident)
+            self.assertTrue(d["repeat_observation_assessed"])
+            self.assertEqual(d["repeat_observation_window_seconds"],1800)
+            self.assertEqual(d["repeat_observation"],expected)
+            self.assertEqual(d["timeline"][0]["evidence"]["repeat_observation"],expected)
+            self.assertEqual(feed(s,l,2080)["incident_id"],ident)
+            self.assertEqual(l.incidents.detail(ident)["revision"],1)
+            for t in (2260,2440):feed(s,l,t)
+            for t in (2620,2800,2980):feed(s,l,t,20)
+            d=Incidents(Store(root,mode="diagnostic")).detail(ident)
+            self.assertEqual(d["state"],"RESOLVED")
+            self.assertEqual(d["repeat_observation"],expected)
+            self.assertEqual(d["timeline"][0]["evidence"]["repeat_observation"],expected)
+            self.assertNotIn("02:00:00:00:00:01",json.dumps(d))
+            from awqm.incident_reports import summary,incident_html
+            self.assertIn("30분 이내 반복 RF 위험 관측",summary(d))
+            self.assertIn("30분 이내 반복 RF 위험 관측",incident_html(d).decode("utf-8"))
+
+    def test_repeat_observation_boundary_and_intervening_context(self):
+        for gap,changed,eligible in ((1800,False,True),(1801,False,False),
+                                     (180,True,False)):
+            with self.subTest(gap=gap,changed=changed), tempfile.TemporaryDirectory() as root:
+                s=Store(root,mode="diagnostic");l=QualityLedger(s)
+                for t in (1000,1180,1360):
+                    old=feed(s,l,t)["incident_id"]
+                for t in (1540,1720,1900):feed(s,l,t,20)
+                self.assertEqual(l.incidents.detail(old)["state"],"RESOLVED")
+                self.assertTrue(l.incidents.detail(old)["repeat_observation_assessed"])
+                self.assertIsNone(l.incidents.detail(old)["repeat_observation"])
+                if changed:
+                    # A changed context even without a new incident prevents
+                    # a later return to the old context from counting as repeat.
+                    feed(s,l,1990,20,connection="replacement")
+                ident=feed(s,l,1900+gap)["incident_id"]
+                self.assertNotEqual(ident,old)
+                d=l.incidents.detail(ident)
+                self.assertTrue(d["repeat_observation_assessed"])
+                self.assertEqual(d["repeat_observation"] is not None,eligible)
+                self.assertEqual(d["prior_resolved_observation"]["incident_id"],old)
+                if eligible:self.assertEqual(d["repeat_observation"]["gap_seconds"],1800)
+
     def test_prior_observation_requires_resolved_persistent_context_and_window(self):
         with tempfile.TemporaryDirectory() as root:
             s=Store(root,mode="diagnostic");l=QualityLedger(s);i=l.incidents

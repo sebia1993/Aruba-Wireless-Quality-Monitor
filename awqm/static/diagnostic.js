@@ -298,6 +298,26 @@ async function openIncident(id){
     }else if(d.prior_observation_window_days===30&&prior===null){
       out.append(el("p","이전 30일 동일 관측 문맥의 정상화 이력 미확인 (최초 장애라는 의미 아님)"));
     }
+    const repeat=d.repeat_observation;
+    if(repeat){
+      if(d.repeat_observation_assessed!==true||d.repeat_observation_window_seconds!==1800||
+          repeat.relation!=="repeat_rf_observation"||repeat.service_impact!=="unverified"||
+          typeof repeat.prior_incident_id!=="string"||!/^[0-9a-f]{32}$/.test(repeat.prior_incident_id)||
+          repeat.prior_incident_id===id||
+          ![repeat.prior_ended_at,repeat.gap_seconds,d.first_at].every(Number.isSafeInteger)||
+          repeat.prior_ended_at<0||repeat.gap_seconds<=0||repeat.gap_seconds>1800||
+          d.first_at-repeat.prior_ended_at!==repeat.gap_seconds)
+        throw new Error("invalid repeat observation");
+      const related=el("button","반복 관측의 이전 이력 상세");
+      related.addEventListener("click",()=>openIncident(repeat.prior_incident_id));
+      out.append(el("h4","30분 이내 반복 RF 위험 관측"),
+        el("p","RF 정책 정상화 후 "+repeat.gap_seconds+"초 · 별도 위험 관측 사건"),
+        el("p","최초 관측 시점에 기록된 관계입니다. 동일 원인 및 실제 서비스 장애는 미확인입니다."),related);
+    }else if(d.repeat_observation_assessed===false){
+      out.append(el("p","반복 RF 위험 관측 평가 기록 없음 (이전 버전 포함)"));
+    }else if(d.repeat_observation_assessed===true&&repeat===null){
+      out.append(el("p","30분 이내 반복 RF 위험 관측의 기록된 관계 없음 (장애 없음이라는 의미 아님)"));
+    }
     const exports=el("div",null,"pager"),copy=el("button","주간보고 요약 복사"),copyText=el("textarea");
     copyText.hidden=true;copyText.readOnly=true;copyText.rows=10;copyText.setAttribute("aria-label","주간보고 요약");
     copy.addEventListener("click",async()=>{
