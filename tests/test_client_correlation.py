@@ -39,6 +39,34 @@ class CorrelationTests(unittest.TestCase):
         self.assertFalse(c.evaluate({**rows,"c":{**rows["c"],"sequence":"new-session"}},t))
         self.assertFalse(c.evaluate(rows,t+91))
         self.assertFalse(c.history)
+    def test_exact_correlation_approval_restarts_baseline(self):
+        original=CorrelationApproval("station",900,3000,False,"first")
+        renewed=replace(original,tag="renewed")
+        c=ClientCorrelation({"w1":original})
+        for at in range(1000,1301,60):
+            c.evaluate({k:observation(at) for k in ("a","b","c")},at)
+        rows={"a":observation(1360,20,35,0),"b":observation(1360,60,25,60),
+              "c":observation(1360,65,22,70)}
+        self.assertIn("a",c.evaluate(rows,1360))
+        c.approvals["w1"]=renewed
+        self.assertEqual(c.evaluate(rows,1360),{})
+        self.assertTrue(all(len(x[1])==1 for x in c.history.values()))
+        # Fresh comparable observations under the new consent can establish
+        # a new indirect candidate; the old baseline does not contribute.
+        for at in range(1420,1721,60):
+            self.assertFalse(c.evaluate({k:observation(at) for k in ("a","b","c")},at))
+        rows={"a":observation(1780,20,35,0),"b":observation(1780,60,25,60),
+              "c":observation(1780,65,22,70)}
+        self.assertIn("a",c.evaluate(rows,1780))
+        # Even same-Station evidence measured before correlation approval
+        # or in the future is not an approved link/Radio observation.
+        for key,at in (("link_at",1345),("radio_at",1421)):
+            restricted=ClientCorrelation({"w1":CorrelationApproval("station",1350,3000)})
+            row=observation(1420)
+            row[key]=at
+            self.assertFalse(restricted.evaluate({"a":row},1420))
+            self.assertFalse(restricted.history)
+
     def test_disabled_and_expired_approval(self):
         self.assertFalse(ClientCorrelation({}).evaluate({"a":observation(1000)},1000))
         c=ClientCorrelation({"w1":CorrelationApproval("wrong",900,3000)})
@@ -56,7 +84,13 @@ class CorrelationTests(unittest.TestCase):
                  "reviewed_by":"fixture","checks":{k:True for k in CHECKS}}
             d={"version":1,"enabled":True,"site":"lab","contract":"aos8-indirect-retry-correlation-v1","controllers":[rec]}
             f=p/"config/client-correlation.json";f.write_text(json.dumps(d))
-            self.assertTrue(load_correlation_approvals(cfg,stations,1000)["w1"].permits("station",1000,1000))
+            first=load_correlation_approvals(cfg,stations,1000)["w1"]
+            self.assertTrue(first.permits("station",1000,1000))
+            self.assertEqual(first,load_correlation_approvals(cfg,stations,1000)["w1"])
+            rec["reviewed_by"]="another-fixture";f.write_text(json.dumps(d))
+            renewed=load_correlation_approvals(cfg,stations,1000)["w1"]
+            self.assertNotEqual(first.tag,renewed.tag)
+            self.assertEqual(first.station_tag,renewed.station_tag)
             rec["checks"]["baseline_privacy_15_minutes"]=False;f.write_text(json.dumps(d))
             with self.assertRaises(ValueError):load_correlation_approvals(cfg,stations,1000)
     def test_live_pipeline_and_expiry(self):
@@ -101,6 +135,9 @@ class CorrelationTests(unittest.TestCase):
             expired=[{**x,"candidate_until":1420} for x in views]
             v.publish({},[(r.radio_id,1420)],client_views=expired,client_enabled=True)
             self.assertFalse(any(x["candidate"] for x in v.clients_page()["rows"]))
+        l.correlation.approvals["w1"]=replace(l.correlation.approvals["w1"],tag="renewed")
+        self.assertFalse(any(x["candidate"] for x in l.publish([r],[s],q,claims,1420)))
+        self.assertTrue(all(len(x[1])==1 for x in l.correlation.history.values()))
         failed=Reading("show ap debug client-stats","parse_error",1421,generation=1,target=devices[2])
         self.assertEqual(l.ingest(failed,"w1",s,assoc,bss,[r],q,claims,1421),0)
         self.assertFalse(any(x["candidate"] for x in l.publish([r],[s],q,claims,1421)))

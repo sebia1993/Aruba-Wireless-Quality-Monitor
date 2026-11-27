@@ -9,6 +9,7 @@ from awqm.client_correlation import CorrelationApproval,load_correlation_approva
 from awqm.station_validation import StationApproval
 from awqm.live_clients import LiveClients,ClientApproval
 from test_incidents import observation,snap,feed
+from test_client_correlation import observation as client_observation
 
 def persistent(root):
     store=Store(root,mode="diagnostic")
@@ -84,15 +85,28 @@ class RF03EvidenceTests(unittest.TestCase):
     def test_live_persistence_gate_and_no_identifiers(self):
         with tempfile.TemporaryDirectory() as root:
             st,l,r,s,q=persistent(root)
-            client=LiveClients({"w1":ClientApproval("tag",900,3000,True,"ct")},key=b"fixture",
-                station_approvals={"w1":StationApproval("ct",900,3000,"station")},
-                correlation_approvals={"w1":CorrelationApproval("station",900,3000)})
-            ident=client.token("client","02:00:00:00:01:01")
-            client.rows={ident:{"radio_id":r.radio_id}}
-            client.views=[{"id":ident,"controller":"w1","candidate":"RF03","confidence":"low","candidate_until":1420,
-                "station_start":1300,"station_end":1360,"peer_comparable":2,"peer_degraded":2}]
+            def evaluated_client(persist):
+                client=LiveClients({"w1":ClientApproval("tag",900,3000,True,"ct")},key=b"fixture",
+                    station_approvals={"w1":StationApproval("ct",900,3000,"station")},
+                    correlation_approvals={"w1":CorrelationApproval("station",900,3000,persist)})
+                ident=client.token("client","02:00:00:00:01:01")
+                peers=(ident,"peer-a","peer-b")
+                for at in range(1000,1301,60):
+                    client.correlation.evaluate({k:client_observation(at) for k in peers},at)
+                candidate=client.correlation.evaluate({
+                    ident:client_observation(1360,20,35,0),
+                    "peer-a":client_observation(1360,60,25,60),
+                    "peer-b":client_observation(1360,65,22,70)},1360)[ident]
+                client.rows={ident:{"radio_id":r.radio_id}}
+                client.views=[{"id":ident,"controller":"w1","station_start":1300,"station_end":1360,**candidate}]
+                return client,ident
+            client,ident=evaluated_client(False)
             self.assertEqual(client.persist_correlations(l.incidents,[r],[s],{r.radio_id:q},1365),0)
             client.correlation.approvals["w1"]=CorrelationApproval("station",900,3000,True)
+            # New retention permission must not retroactively authorize
+            # a candidate produced using a non-retention baseline.
+            self.assertEqual(client.persist_correlations(l.incidents,[r],[s],{r.radio_id:q},1365),0)
+            client,ident=evaluated_client(True)
             self.assertEqual(client.persist_correlations(l.incidents,[r],[s],{r.radio_id:q},1365),1)
             self.assertEqual(client.persist_correlations(l.incidents,[r],[s],{r.radio_id:q},1366),0)
             d=l.incidents.detail(q["incident_id"])

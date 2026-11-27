@@ -238,7 +238,8 @@ class LiveClients:
             if not internal:continue
             r=rs.get(internal["radio_id"]);s=by.get(row["controller"])
             a=self.correlation.approvals.get(row["controller"]);station=self.station_approvals.get(row["controller"])
-            if not r or not s or not a or not a.persist_aggregate or not station:
+            if (not r or not s or not a or not station
+                    or not self.correlation.may_persist(row["id"],a)):
                 continue
             if not a.permits(station.tag,row["station_start"],now) or not self.eligible(r,s,quality.get(r.radio_id),now):
                 continue

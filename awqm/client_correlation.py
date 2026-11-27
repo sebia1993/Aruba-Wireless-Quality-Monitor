@@ -7,7 +7,7 @@ service-impact inference. A comparison baseline can itself be degraded.
 """
 from collections import defaultdict,deque
 from dataclasses import dataclass
-import json,time
+import hashlib,json,time
 from .service_config import safe_path
 from .model import number
 from .client import overlap
@@ -21,6 +21,8 @@ class CorrelationApproval:
     approved_at:int
     valid_until:int
     persist_aggregate:bool=False
+    # Exact private manifest identity; never projected as client evidence.
+    tag:str=""
     def permits(self,tag,at,now):
         return bool(tag and tag==self.station_tag and self.approved_at<=at<=now<self.valid_until)
 
@@ -53,28 +55,44 @@ def load_correlation_approvals(cfg,stations,now=None,retention_enabled=False):
         checks=CHECKS|({"aggregate_evidence_retention_approval"} if persist else set())
         if not isinstance(r["checks"],dict) or set(r["checks"])!=checks or any(v is not True for v in r["checks"].values()):
             raise ValueError("all correlation checks required")
-        result[r["controller"]]=CorrelationApproval(s.tag,r["approved_at"],r["valid_until"],persist)
+        tag=hashlib.sha256(json.dumps({"site":cfg.site,"contract":d["contract"],"record":r},
+            sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+        result[r["controller"]]=CorrelationApproval(s.tag,r["approved_at"],r["valid_until"],persist,tag)
     return result
 
 class ClientCorrelation:
     def __init__(self,approvals,max_clients=5000):
         self.approvals=dict(approvals);self.max_clients=max_clients;self.history={}
+        self._candidate_approvals={}
     def forget(self,ident):
         self.history.pop(ident,None)
+        self._candidate_approvals.pop(ident,None)
     def clear(self):
         self.history.clear()
+        self._candidate_approvals.clear()
+    def may_persist(self,ident,approval):
+        # A candidate evaluated without retention consent cannot acquire it
+        # retrospectively, nor can an old view outlive an approval change.
+        return bool(approval and approval.persist_aggregate
+                    and self._candidate_approvals.get(ident)==approval)
     def evaluate(self,observations,now):
         """Input is a bounded mapping of ephemeral identifiers to internal
         link/station context, not raw MACs. Retain only currently visible,
         approved session sequences, never across a missing observation.
         """
+        self._candidate_approvals.clear()
         observations={k:v for k,v in observations.items()
             if v["controller"] in self.approvals
-            and self.approvals[v["controller"]].permits(v["station_tag"],v["start"],now)
+            and all(self.approvals[v["controller"]].permits(v["station_tag"],at,now)
+                    for at in (v["start"],v["end"],v["link_at"],v["radio_at"]))
             and 0<=now-v["end"]<=90 and now<v["until"]}
         if len(observations)>self.max_clients:self.clear();return {}
         def context(item):
-            return (item["sequence"],item["controller"],item["radio_id"],item["radio_epoch"],item["network"],item["station_tag"])
+            # Station continuity alone is not continuity of consent.
+            # An independently renewed/reviewed correlation manifest starts
+            # a new private baseline, even with unchanged Station tag.
+            return (item["sequence"],item["controller"],item["radio_id"],item["radio_epoch"],
+                    item["network"],item["station_tag"],self.approvals[item["controller"]])
         for ident in tuple(self.history):
             item=observations.get(ident)
             saved=self.history[ident]
@@ -126,4 +144,5 @@ class ClientCorrelation:
                     result[ident]={"candidate":"RF03","confidence":"low","peer_comparable":len(peers),
                         "peer_degraded":degraded,"candidate_until":min(x["until"],x["end"]+90,*(t for _,t in peers)),
                         "candidate_scope":"indirect_successful_retry_peer_degradation"}
+                    self._candidate_approvals[ident]=self.approvals[x["controller"]]
         return result
