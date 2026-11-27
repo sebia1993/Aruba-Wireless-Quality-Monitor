@@ -168,6 +168,84 @@ class SelectedHistoryTests(unittest.TestCase):
         self.assertEqual(session.calls, before)
         self.assertEqual(restarted.published_radios, ())
 
+    def test_early_handoff_stages_before_slow_snapshot_finishes(self):
+        w, engine, session = self.worker_engine(PORT)
+        entered, release = Event(), Event()
+        snapshot = w.snapshot
+
+        def delayed_snapshot():
+            entered.set()
+            if not release.wait(10):
+                raise RuntimeError("test snapshot release timed out")
+            return snapshot()
+
+        with patch.object(w, "snapshot", side_effect=delayed_snapshot):
+            engine.next_tick["w1"] = self.now
+            engine.pulse()  # Use the production executor dispatch path.
+            future = engine.inflight["w1"]
+            try:
+                self.assertTrue(entered.wait(5))
+                self.assertFalse(future.done())
+                self.assertEqual(engine.operation_status()["selected_history"]["pending"], 1)
+                with patch.object(engine.selected_history, "save",
+                                  side_effect=sqlite3.OperationalError):
+                    self.assertEqual(engine.pulse()["storage_error"], "OperationalError")
+                staged = engine.selected_history.pending()
+                self.assertEqual(set(staged), {"w1"})
+                self.assertEqual(engine.selected_pending, staged)
+                self.assertEqual(engine.selected_handoff, {})
+                self.assertEqual(self.rows(engine.store), [])
+                self.assertFalse(future.done())
+            finally:
+                release.set()
+            result = future.result(timeout=10)
+            self.assertIsNone(result[0].selected_receipt)
+        engine.paused = True
+        engine.recover_storage()
+        self.assertIsNone(engine.pulse()["storage_error"])
+        receipt = staged["w1"]
+        self.assertEqual(self.rows(engine.store), [(receipt.receipt_id, receipt.payload)])
+        self.assertEqual(engine.selected_history.pending(), {})
+        self.assertEqual(engine.selected_pending, {})
+        self.assertEqual(len([c for c in session.calls if c[0] == PORT]), 1)
+
+    def test_snapshot_failure_does_not_discard_accepted_receipt(self):
+        w, engine, session = self.worker_engine(PORT)
+        engine.next_tick["w1"] = self.now
+        with patch.object(w, "snapshot", side_effect=RuntimeError("private snapshot detail")):
+            engine.pulse()
+            future = engine.inflight["w1"]
+            with self.assertRaises(RuntimeError):
+                future.result(timeout=10)
+            engine.paused = True
+            result = engine.pulse()
+        self.assertIsNone(result["storage_error"])
+        self.assertEqual(result["controllers"]["w1"]["status"], "worker_error")
+        self.assertNotIn("private snapshot detail", json.dumps(result))
+        self.assertIsNone(engine.snapshots["w1"])
+        self.assertEqual(engine.published_radios, ())
+        self.assertEqual(len(self.rows(engine.store)), 1)
+        self.assertEqual(engine.selected_history.pending(), {})
+        self.assertEqual(engine.selected_handoff, {})
+        self.assertEqual(len([c for c in session.calls if c[0] == PORT]), 1)
+
+    def test_close_after_snapshot_failure_still_archives_receipt(self):
+        w, engine, session = self.worker_engine(PORT)
+        with patch.object(w, "snapshot", side_effect=RuntimeError("private snapshot detail")):
+            future = engine.pool.submit(Engine._step, w, False, engine._offer_selected)
+            engine.inflight["w1"] = future
+            with self.assertRaises(RuntimeError):
+                future.result(timeout=10)
+        before = list(session.calls)
+        with self.assertRaisesRegex(RuntimeError, "^selected history shutdown incomplete$"):
+            engine.close()
+        self.assertEqual(len(self.rows(engine.store)), 1)
+        self.assertEqual(engine.selected_handoff, {})
+        self.assertEqual(engine.selected_history.pending(), {})
+        self.assertEqual(engine.published_radios, ())
+        self.assertEqual(session.calls, before)
+        self.assertFalse(w.retain_selected_history)
+
     def test_pending_conflict_capacity_and_atomic_ack(self):
         w, engine, _ = self.worker_engine(PORT)
         receipt = Engine._step(w)[0].selected_receipt

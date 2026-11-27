@@ -34,6 +34,10 @@ class Engine:
         if simulation and selected_history:raise ValueError("selected history requires diagnostic mode")
         self.selected_history=SelectedHistory(store) if selected_history else None
         self.selected_pending=self.selected_history.pending() if self.selected_history else {}
+        # At most one immutable accepted receipt per in-flight controller.
+        # Workers publish to this bounded mailbox; only the coordinator writes SQLite.
+        self.selected_handoff={}
+        self.selected_handoff_lock=Lock()
         if self.selected_history:
             if not set(self.selected_pending).issubset(self.workers):
                 raise ValueError("pending selected receipt controller unavailable")
@@ -63,8 +67,13 @@ class Engine:
             for w in workers:
                 w.identity_peers=tuple(p for p in workers if p is not w)
     @staticmethod
-    def _step(w,cluster_load=False):
+    def _step(w,cluster_load=False,receipt_sink=None):
         r=w.tick(cluster_load=cluster_load) if w.enable_cluster else w.tick()
+        if receipt_sink is not None and r is not None and r.selected_receipt is not None:
+            # Transfer before snapshot/cluster/user-frame construction. A later
+            # failure or slow frame must not discard the accepted historical receipt.
+            receipt_sink(w.controller,r.selected_receipt)
+            r=replace(r,selected_receipt=None)
         snapshot=w.snapshot()
         b=w.latest.get("show ap bss-table")
         a=w.latest.get("show ap association")
@@ -72,6 +81,27 @@ class Engine:
         if not b or b.generation!=w.generation or w.outcomes[b.command].status!="success" or not 0<=w.wall()-b.observed_at<=330:b=None
         if not a or a.generation!=w.generation or w.outcomes[a.command].status!="success" or not 0<=w.wall()-a.observed_at<=150:a=None
         return r,snapshot,b,a,w.cluster_frame(),w.user_frame()
+    def _offer_selected(self,name,receipt):
+        """Worker-side bounded memory handoff; no I/O or coordinator lock."""
+        if not self.selected_history or name not in self.workers or receipt.controller!=name:
+            raise ValueError("invalid selected receipt handoff")
+        with self.selected_handoff_lock:
+            previous=self.selected_handoff.get(name)
+            if previous is not None and previous!=receipt:
+                raise RuntimeError("conflicting selected receipt handoff")
+            self.selected_handoff[name]=receipt
+
+    def _take_selected_handoff(self):
+        """Coordinator owns pending and disk writes; preserve conflicting slots."""
+        with self.selected_handoff_lock:
+            for name,receipt in list(self.selected_handoff.items()):
+                previous=self.selected_pending.get(name)
+                if previous is not None and previous!=receipt:
+                    self.error="selected_history_conflict"
+                    continue
+                self.selected_pending[name]=receipt
+                del self.selected_handoff[name]
+
     def submit(self,controller,request_id,name,target,ttl=300):
         # Caller must authenticate/authorize before using this internal API.
         if self.closed:raise RuntimeError("engine closed")
@@ -137,7 +167,9 @@ class Engine:
                 "phase":phase,"inflight":name in self.inflight,"jobs":counts,**protection})
         result={"revision":self.operation_revision,"error":self.operation_error,"controllers":states}
         if self.selected_history:
-            result["selected_history"]={"enabled":True,"pending":len(self.selected_pending),
+            with self.selected_handoff_lock:
+                pending=len(set(self.selected_pending)|set(self.selected_handoff))
+            result["selected_history"]={"enabled":True,"pending":pending,
                 "storage_error":self.error,"field_validated":False}
         return result
 
@@ -190,14 +222,16 @@ class Engine:
                     self.next_tick[name]=now+15
                     if isinstance(exc, (sqlite3.Error,OSError)):
                         self.error=type(exc).__name__
-            # A completed receipt is historical, not a current-state claim.
-            # Keep at most one pending receipt per in-flight worker; a failed
-            # commit freezes further dispatch until explicit storage recovery.
-            if self.selected_history and not self.error:
-                try:
-                    self._persist_selected()
-                except (ValueError,TypeError,KeyError,RuntimeError,sqlite3.Error,OSError) as exc:
-                    self.error=type(exc).__name__
+            # Harvest even when the worker is still assembling its snapshot,
+            # or that assembly failed. A future removed above has already
+            # offered its receipt; no later dispatch can overtake this transfer.
+            if self.selected_history:
+                self._take_selected_handoff()
+                if not self.error:
+                    try:
+                        self._persist_selected()
+                    except (ValueError,TypeError,KeyError,RuntimeError,sqlite3.Error,OSError) as exc:
+                        self.error=type(exc).__name__
             maintenance_blocked=self._maintenance_step()
             active=[]
             inventory_tables=[]
@@ -361,7 +395,11 @@ class Engine:
             if not self.error and not self.paused:
                 for name,w in self.workers.items():
                     if name not in maintenance_blocked and name not in self.inflight and now>=self.next_tick.get(name,0):
-                        self.inflight[name]=self.pool.submit(self._step,w,bool(self.cluster_monitor and name==self.cluster_monitor.representative))
+                        cluster_load=bool(self.cluster_monitor and name==self.cluster_monitor.representative)
+                        if self.selected_history:
+                            self.inflight[name]=self.pool.submit(self._step,w,cluster_load,self._offer_selected)
+                        else:
+                            self.inflight[name]=self.pool.submit(self._step,w,cluster_load)
                         self.next_tick[name]=now+.25
             return dict(self.last_result)
         finally:self.lock.release()
@@ -414,12 +452,13 @@ class Engine:
             except Exception as exc:
                 # Do not expose a worker exception, raw CLI or private payload.
                 incomplete = type(exc).__name__
+        self._take_selected_handoff()
         if self.selected_pending and not self.error:
             try:
                 self._persist_selected()
             except (ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error, OSError) as exc:
                 self.error = type(exc).__name__
-        if incomplete is not None or self.selected_pending:
+        if incomplete is not None or self.selected_pending or self.selected_handoff:
             self.error = self.error or incomplete or "selected_history_pending"
             raise RuntimeError("selected history shutdown incomplete") from None
 
