@@ -138,11 +138,19 @@ class ClientCorrelation:
                     # Most recent eligible baseline, not the best or worst one.
                     base=baseline[-1]
                     degraded=base["health"]-y["health"]>=20 or y["retry"]-base["retry"]>=15
-                    peers.append((degraded,min(y["until"],base["until"],y["end"]+90,base["end"]+901)))
-                degraded=sum(d for d,_ in peers)
+                    peers.append((degraded,min(y["until"],base["until"],y["end"]+90,base["end"]+901),base))
+                degraded=sum(d for d,_,_ in peers)
                 if len(peers)>=2 and degraded>=2:
+                    # A common current interval alone is insufficient:
+                    # require one common earlier window for the comparable
+                    # cohort, not a favorable subset or hand-picked sample.
+                    starts=[b["start"] for _,_,b in peers]
+                    ends=[b["end"] for _,_,b in peers]
+                    longest=max(e-s for s,e in zip(starts,ends))
+                    if max(ends)-min(ends)>30 or (min(ends)-max(starts))*5<longest*4:
+                        continue
                     result[ident]={"candidate":"RF03","confidence":"low","peer_comparable":len(peers),
-                        "peer_degraded":degraded,"candidate_until":min(x["until"],x["end"]+90,*(t for _,t in peers)),
+                        "peer_degraded":degraded,"candidate_until":min(x["until"],x["end"]+90,*(t for _,t,_ in peers)),
                         "candidate_scope":"indirect_successful_retry_peer_degradation"}
                     self._candidate_approvals[ident]=self.approvals[x["controller"]]
         return result

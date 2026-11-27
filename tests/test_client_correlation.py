@@ -39,6 +39,32 @@ class CorrelationTests(unittest.TestCase):
         self.assertFalse(c.evaluate({**rows,"c":{**rows["c"],"sequence":"new-session"}},t))
         self.assertFalse(c.evaluate(rows,t+91))
         self.assertFalse(c.history)
+    def test_peer_baselines_require_common_time_window(self):
+        # Current intervals coincide; earlier peer intervals may not.
+        # Twelve seconds of skew is exactly 80% overlap for 60s intervals.
+        for shift,expected in ((0,True),(12,True),(13,False),(60,False)):
+            with self.subTest(shift=shift):
+                c=ClientCorrelation({"w1":CorrelationApproval("station",900,3000)})
+                c.evaluate({"a":observation(1000),"b":observation(1000),
+                            "c":observation(1000+shift)},1000+shift)
+                rows={"a":observation(1360,20,35,0),"b":observation(1360,60,25,60),
+                      "c":observation(1360,65,22,70)}
+                self.assertEqual("a" in c.evaluate(rows,1360),expected)
+        # 80% overlap is insufficient when the baseline ends differ >30s.
+        c=ClientCorrelation({"w1":CorrelationApproval("station",900,3000)})
+        c.evaluate({"a":observation(1100),"b":{**observation(1100),"start":920},
+                    "c":{**observation(1131),"start":951}},1131)
+        rows={"a":observation(1450,20,35,0),"b":observation(1450,60,25,60),
+              "c":observation(1450,65,22,70)}
+        self.assertFalse(c.evaluate(rows,1450))
+        # Do not select an older baseline or discard a comparable peer.
+        c=ClientCorrelation({"w1":CorrelationApproval("station",900,3000)})
+        c.evaluate({k:observation(1000) for k in ("a","b","c","d")},1000)
+        c.evaluate({**{k:observation(1000) for k in ("a","b","c")},"d":observation(1060)},1060)
+        rows={"a":observation(1360,20,35,0),"b":observation(1360,60,25,60),
+              "c":observation(1360,65,22,70),"d":observation(1360,70,5,80)}
+        self.assertFalse(c.evaluate(rows,1360))
+
     def test_exact_correlation_approval_restarts_baseline(self):
         original=CorrelationApproval("station",900,3000,False,"first")
         renewed=replace(original,tag="renewed")
@@ -144,6 +170,43 @@ class CorrelationTests(unittest.TestCase):
         # Same physical Radio ID, changed channel epoch, must not retain views.
         self.assertEqual(l.publish([replace(r,epoch="changed")],[s],q,claims,1421),[])
         self.assertFalse(l.correlation.history)
+
+    def test_live_pipeline_withholds_staggered_peer_baselines(self):
+        r,s,q,a,assoc,bss,d=fixture()
+        devices=[MAC,"02:00:00:00:01:03","02:00:00:00:01:04"]
+        l=LiveClients({"w1":ClientApproval("tag",900,1900,True,"ct")},key=b"fixture",
+             station_approvals={"w1":StationApproval("ct",900,1800,"station")},
+             correlation_approvals={"w1":CorrelationApproval("station",900,1800)})
+        claims={m:{**a,"client_mac":m} for m in devices}
+        counters={m:[1000,100] for m in devices}
+        for i,t in enumerate(range(1000,1421,60)):
+            r=replace(r,observed_at=t);s=replace(s,observed_at=t)
+            q={r.radio_id:{"observed_at":t,"status":"PERSISTENT","score":50}}
+            assoc=replace(assoc,observed_at=t-1,data=list(claims.values()))
+            bss=replace(bss,observed_at=t-2)
+            health=[90,90,90] if t<1420 else [20,60,60]
+            snr=[30,30,30] if t<1420 else [12,22,22]
+            detail=replace(d,observed_at=t,data=[{**d.data[0],"client_mac":m,"health":h,"ack_snr":n}
+                 for m,h,n in zip(devices,health,snr)])
+            self.assertEqual(l.ingest(detail,"w1",s,assoc,bss,[r],q,claims,t),3)
+            for m in devices:
+                # Third station has no successful-Tx increase at the
+                # latest eligible earlier interval.
+                if not (m==devices[2] and t==1120):
+                    counters[m][0]+=200;counters[m][1]+=70 if t==1420 else 10
+                stamp=AssociationStamp(a["ap_name"],BSS,SSID,2,1,471+i*60,t)
+                read=Reading("show ap debug client-stats","success",t,{"before":stamp,"after":stamp,
+                      "counters":{"sent":counters[m][0],"retried":counters[m][1]}},generation=1,target=m)
+                self.assertEqual(l.ingest(read,"w1",s,assoc,bss,[r],q,claims,t),1)
+            views=l.publish([r],[s],q,claims,t)
+        self.assertEqual(len(views),3)
+        self.assertTrue(all(x["station_tx_activity"]=="successful_tx_observed" for x in views))
+        self.assertTrue(all(x["candidate"] is None and x["airtime"] is None for x in views))
+        latest=[]
+        for m in devices[1:]:
+            history=l.correlation.history[l.token("client",m)][1]
+            latest.append(max(b["end"] for b in history if 300<=1420-b["end"]<=900))
+        self.assertEqual(latest,[1120,1060])
 
     def test_cohort_selection_preserves_controller_cap(self):
         from awqm.jobs import Jobs
