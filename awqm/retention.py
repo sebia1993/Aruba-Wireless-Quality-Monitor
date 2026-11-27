@@ -7,6 +7,7 @@ are verified. Existing backups are not automatically removed.
 import json,sqlite3
 from pathlib import Path
 from contextlib import contextmanager
+from itertools import zip_longest
 from .service_config import safe_path
 from .storage import DAY,day_for,day_start
 
@@ -37,6 +38,11 @@ def _has_tables(c,names):
 
 EVIDENCE_TABLES=("rf_incidents","rf_incident_events","rf_incident_reviews","radio_quality_events")
 
+def _same_rows(c,backup,query,args):
+    """Compare ordered evidence without loading a day's rows into memory."""
+    return all(left==right for left,right in zip_longest(
+        c.execute(query,args),backup.execute(query,args)))
+
 def _incident_evidence(c,backup,start,end):
     if not _has_tables(c,EVIDENCE_TABLES) or not _has_tables(backup,EVIDENCE_TABLES):
         return "incident_schema_missing"
@@ -56,6 +62,17 @@ def _incident_evidence(c,backup,start,end):
         if not saved or saved[0]<rev:return "incident_backup_behind"
         saved_events=backup.execute("SELECT COUNT(*) FROM rf_incident_events WHERE incident_id=? AND revision<=?",(ident,rev)).fetchone()[0]
         if saved_events!=rev:return "incident_backup_incomplete"
+        # A valid backup hash and equal revision/count do not establish
+        # that this backup actually contains the same incident evidence.
+        snapshot = """SELECT incident_id,radio_id,context,ap_name,controller,band,
+            first_at,last_at,persistent_at,ended_at,state,evidence_rev,evidence
+            FROM rf_incidents WHERE incident_id=?"""
+        if not _same_rows(c,backup,snapshot,(ident,)):
+            return "incident_backup_snapshot_mismatch"
+        events = """SELECT revision,at,state,evidence FROM rf_incident_events
+            WHERE incident_id=? AND revision<=? ORDER BY revision"""
+        if not _same_rows(c,backup,events,(ident,rev)):
+            return "incident_backup_event_mismatch"
         # Reviews are append-only and do not advance the incident revision.
         # A matching revision alone cannot establish that a later review was saved.
         review_columns = "request_id,incident_id,evidence_rev,username,at,verdict,reason,candidate"
@@ -72,6 +89,14 @@ def _incident_evidence(c,backup,start,end):
        AND NOT EXISTS(SELECT 1 FROM rf_incidents i WHERE i.radio_id=q.radio_id AND i.context=q.context
           AND i.first_at<=q.observed_at AND i.last_at>=q.observed_at) LIMIT 1""",(start,end)).fetchone()
     if orphan:return "legacy_or_unmapped_evidence"
+    # The ledger transitions are separate from incident revisions. Preserve
+    # the raw day if any risk transition (including its score) differs.
+    transitions = """SELECT radio_id,observed_at,approval,context,status,score
+        FROM radio_quality_events WHERE observed_at>=? AND observed_at<?
+        AND status IN ('DETECTED','PERSISTENT','RECOVERING','RESOLVED')
+        ORDER BY radio_id,observed_at,approval,context,status"""
+    if not _same_rows(c,backup,transitions,(start,end)):
+        return "quality_event_backup_mismatch"
     return None
 
 def _backup_day(backup,day,state,verified_files):

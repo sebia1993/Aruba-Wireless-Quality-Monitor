@@ -78,6 +78,39 @@ class RetentionTests(unittest.TestCase):
             self.assertEqual(result["raw_held"][DAY], "review_backup_behind")
             updated = verified_backup(store, backups / "aggregate-with-review")
             self.assertEqual(retention.run(now, updated.name)["raw_deleted"], [DAY])
+    def test_same_revision_and_count_different_evidence_holds_raw(self):
+        # Each valid, hash-verified backup predates a synthetic evidence
+        # discrepancy. Revision and row count alone must not authorize expiry.
+        cases = (
+            ("UPDATE rf_incidents SET ap_name='DEMO-AP-CHANGED'",
+             "incident_backup_snapshot_mismatch"),
+            ("UPDATE rf_incident_events SET at=at+1 WHERE revision=1",
+             "incident_backup_event_mismatch"),
+            ("UPDATE radio_quality_events SET score=COALESCE(score,0)+1 WHERE status='DETECTED'",
+             "quality_event_backup_mismatch"),
+        )
+        for sql, expected in cases:
+            with self.subTest(reason=expected), tempfile.TemporaryDirectory() as root:
+                p = Path(root)
+                store, ledger = prepare(p)
+                backups = p / "backups"
+                old = verified_backup(store, backups / "aggregate-before-discrepancy")
+                verify(old)
+                with store.lock, store._db(store.root / "core.db") as db:
+                    self.assertGreater(db.execute(sql).rowcount, 0)
+                raw = store.root / ("radio_" + DAY + ".db")
+                retention = Retention(store, backups)
+                now = day_start("20261112")
+                result = retention.run(now, old.name)
+                self.assertEqual(result["raw_deleted"], [])
+                self.assertEqual(result["raw_held"][DAY], expected)
+                self.assertTrue(raw.is_file())
+                self.assertTrue(old.is_dir())
+                # The hold is not permanent when the actual current evidence
+                # is subsequently preserved by a new verified backup.
+                current = verified_backup(store, backups / "aggregate-current-evidence")
+                self.assertEqual(retention.run(now, current.name)["raw_deleted"], [DAY])
+
     def test_late_arrival_or_corruption_is_held(self):
         with tempfile.TemporaryDirectory() as root:
             p=Path(root);s,l=prepare(p);backup=p/"backup";backup.mkdir()
