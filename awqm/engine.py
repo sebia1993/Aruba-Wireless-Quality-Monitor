@@ -16,6 +16,7 @@ from .selection import Selector
 from .client_history import ClientHistory,map_samples
 from .live_neighbors import COMMAND as NEIGHBOR
 from .ap_anchors import reconcile as reconcile_anchors
+from .controller_load_review import review_controller_load
 from .selected_history import SelectedHistory
 import json
 
@@ -392,7 +393,12 @@ class Engine:
                 self.cluster_monitor.choose(self.cluster_frames,int(self.wall()),self.inflight)
                 self.cluster_view=self.cluster_monitor.report(self.cluster_frames,int(self.wall()))
                 self.anchor_views,summaries=reconcile_anchors(radios,self.cluster_frames,int(self.wall())) if not self.error and not self.paused else ({},{})
-                for node in self.cluster_view['nodes']:node['ap_anchors']=summaries.get(node['controller'],{})
+                snapshots_by_controller={s.controller:s for s in active}
+                for node in self.cluster_view['nodes']:
+                    name=node['controller'];node['ap_anchors']=summaries.get(name,{})
+                    if not self.error and not self.paused and not self.simulation:
+                        node['load_review']=review_controller_load(name,self.cluster_frames.get(name),
+                            snapshots_by_controller.get(name),radios,self.field_quality,int(self.wall()))
             self.published_radios=tuple((r.radio_id,r.observed_at) for r in radios if not self.error and self.accepted.get(r.radio_id)==r.observed_at)
             self.last_result={"mode":"demo" if self.simulation else "diagnostic","field_validated":False,
                 "coherent_controllers":len(active),"expected_controllers":len(self.workers),

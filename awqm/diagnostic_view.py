@@ -138,6 +138,11 @@ class DiagnosticView:
                 # between coordinator publications.
                 meta["cluster"]=deepcopy(meta["cluster"])
                 for node in meta["cluster"].get("nodes",[]):
+                    review=node.get("load_review")
+                    if review and review.get("status")=="review_candidate":
+                        until=review.pop("valid_until",None)
+                        if meta.get("paused") or until is None or now>=until or any(not 0<=now-review[k]<=90 for k in ("cpu_at","datapath_at","radio_at")):
+                            node["load_review"]={"status":"not_evaluated","reason":"stale_or_paused"}
                     for item in node.get("ap_anchors",{}).values():
                         until=item.pop("valid_until",None)
                         if item.get("status")=="observed" and (until is None or now>=until or not 0<=now-item["observed_at"]<=600):

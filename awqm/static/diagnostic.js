@@ -472,6 +472,11 @@ function clusterPanel(d){
   })));
   const cores=d.nodes.flatMap(r=>(r.resources?.datapath?.data?.rows||[]).map(x=>[r.controller,x.id,x.type,x.percent_1s,x.percent_4s]));
   if(cores.length){const detail=el("details");detail.append(el("summary","Datapath CPU별 상세 (64초 값 제외)"),table(["WLC","CPU ID","유형","1초 %","4초 %"],cores));c.append(detail);}
+  const reviews=d.nodes.filter(r=>r.load_review);
+  if(reviews.length){
+    const reasons={current_connection_required:"현재 연결 확인 필요",matching_attestation_required:"동일 승인·연결 근거 필요",resource_evidence_required:"유효 자원 근거 필요",time_unaligned:"시각 불일치",cpu_screen_not_met:"CPU 검토 기준 미충족",distinct_persistent_aps_required:"서로 다른 지속 위험 AP 2대 이상 필요",stale_or_paused:"관측 만료/정지"};
+    c.append(el("h3","CL01 컨트롤러 부하 검토 후보"),el("p","동일 30초 구간의 CPU 70% 이상, 승인된 Datapath 관측 및 서로 다른 AP 2대 이상의 지속 RF 위험이 함께 관측된 경우입니다. 낮은 신뢰도 검토 후보이며 Datapath 장애 임계치·장애 전후 비교·인과관계·서비스 영향은 미확인입니다."),table(["WLC","검토 상태","CPU %","CPU 시각","DP 1초 / 4초 최대 %","DP 시각","위험 AP / Radio","Radio 시각"],reviews.map(r=>{const v=r.load_review;return [r.controller,v.status==="review_candidate"?"CL01 · 낮음 · 미확정":reasons[v.reason]||"미확인",v.cpu_percent,kst(v.cpu_at),v.status==="review_candidate"?v.datapath_max_1s_percent+" / "+v.datapath_max_4s_percent:null,kst(v.datapath_at),v.status==="review_candidate"?v.ap_count+" / "+v.radio_count:null,kst(v.radio_at)];})));
+  }
   for(const [key,title] of [["ap","AP"],["client","Client"]]){
     const l=d.load[key],status={unknown:"미확인",time_unaligned:"Load·멤버십 시각 불일치",single_source:"단일 출처",crosschecked:"교차 확인",conflicting_observations:"관측값 상충"}[l.status]||l.status;
     c.append(el("p",title+" 전체 Active "+(l.active_total??"미확인")+" / Standby "+(l.standby_total??"미확인")+" · "+status+" · "+(l.source||"—")+" · Load "+kst(l.observed_at)+" · 멤버십 "+kst(l.membership_at)));

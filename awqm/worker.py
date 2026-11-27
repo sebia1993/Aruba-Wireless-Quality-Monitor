@@ -282,6 +282,8 @@ class ControllerWorker:
                 anchor_validation={"valid":valid,"approved_at":a.approved_at,
                     "until":min(a.valid_until,r.valid_until,v.observed_at+660) if valid else 0}
             return {"connected":self.session is not None and not self.blocked,
+                    "_field_connection":self.instance_id+":"+str(self.generation),
+                    "_resource_radio_tag":self.resource_approval.radio_tag if self.resource_approval else None,
                     "readings":readings,"disabled":tuple(self.disabled),"resource_validation":validation,
                     "anchor_validation":anchor_validation}
     def submit_detail(self,request_id,name,target,ttl=300,binding=None):
