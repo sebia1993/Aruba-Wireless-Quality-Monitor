@@ -81,6 +81,80 @@ class StationTests(unittest.TestCase):
         self.assertEqual(l.ingest(read(1085,2,1300,200),"w1",s,assoc,bss,[r],q,{MAC:a},1085),1)
         self.assertIsNone(l.publish([r],[s],q,{MAC:a},1085)[0]["station_retry"])
         for secret in (MAC,BSS,SSID):self.assertNotIn(secret,json.dumps(l.station))
+    def test_counter_epoch_restarts_on_changed_approval_and_hides_old_ratio(self):
+        r,s,q,a,assoc,bss,d=fixture()
+        original=StationApproval("ct",900,1800,"station-v1")
+        l=LiveClients({"w1":ClientApproval("tag",900,1900,True,"ct")},key=b"fixture",
+                      station_approvals={"w1":original})
+        self.assertEqual(l.ingest(d,"w1",s,assoc,bss,[r],q,{MAC:a},1010),1)
+        ident=l.token("client",MAC)
+        def read(t,age,sent,retried):
+            x=AssociationStamp(a["ap_name"],BSS,SSID,2,1,age,t)
+            return Reading("show ap debug client-stats","success",t,
+                {"before":x,"after":x,"counters":{"sent":sent,"retried":retried}},
+                generation=1,target=MAC)
+        def accept(t,age,sent,retried):
+            self.assertEqual(l.ingest(read(t,age,sent,retried),"w1",s,assoc,bss,[r],q,{MAC:a},t),1)
+        accept(1010,471,1000,100)
+        accept(1040,501,1200,170)
+        old_sequence=l.station[ident]["sequence"]
+        self.assertEqual(l.publish([r],[s],q,{MAC:a},1040)[0]["station_retry"],35)
+        l.station_approvals["w1"]=replace(original,tag="station-v2",approved_at=1041)
+        # Never relabel the old counter interval under a replacement approval.
+        view=l.publish([r],[s],q,{MAC:a},1041)[0]
+        self.assertIsNone(view["station_retry"])
+        self.assertIsNone(view["station_start"])
+        self.assertNotIn(ident,l.station)
+        accept(1070,531,1400,240)
+        self.assertNotEqual(l.station[ident]["sequence"],old_sequence)
+        self.assertIsNone(l.publish([r],[s],q,{MAC:a},1070)[0]["station_retry"])
+        # Refresh normal metadata and show that a new same-approval interval
+        # can produce the successful-retry ratio, not an Airtime estimate.
+        r=replace(r,observed_at=1100)
+        s=replace(s,observed_at=1100)
+        q={"r1":{"observed_at":1100,"status":"PERSISTENT","score":50}}
+        assoc=replace(assoc,observed_at=1099)
+        bss=replace(bss,observed_at=1098)
+        self.assertEqual(l.ingest(replace(d,observed_at=1100),"w1",s,assoc,bss,[r],q,{MAC:a},1100),1)
+        accept(1100,561,1600,310)
+        view=l.publish([r],[s],q,{MAC:a},1100)[0]
+        self.assertEqual(view["station_retry"],35)
+        self.assertIsNone(view["airtime"])
+        self.assertIsNone(view["retry"])
+        for secret in ("station-v1","station-v2",MAC,BSS,SSID):
+            self.assertNotIn(secret,json.dumps(view))
+        l.station_approvals["w1"]=replace(l.station_approvals["w1"],valid_until=1100)
+        self.assertIsNone(l.publish([r],[s],q,{MAC:a},1100)[0]["station_retry"])
+        self.assertNotIn(ident,l.station)
+
+    def test_counter_epoch_checks_start_and_end_of_each_bracket(self):
+        r,s,q,a,assoc,bss,d=fixture()
+        l=LiveClients({"w1":ClientApproval("tag",900,1900,True,"ct")},key=b"fixture",
+                      station_approvals={"w1":StationApproval("ct",1005,1800,"station")})
+        self.assertEqual(l.ingest(d,"w1",s,assoc,bss,[r],q,{MAC:a},1010),1)
+        ident=l.token("client",MAC)
+        def read(t,begin,begin_age,end,end_age,sent,retried):
+            before=AssociationStamp(a["ap_name"],BSS,SSID,2,1,begin_age,begin)
+            after=replace(before,at=end,age=end_age)
+            return Reading("show ap debug client-stats","success",t,
+                {"before":before,"after":after,"counters":{"sent":sent,"retried":retried}},
+                generation=1,target=MAC)
+        def ingest(reading):
+            return l.ingest(reading,"w1",s,assoc,bss,[r],q,{MAC:a},reading.observed_at)
+        # Approval must cover the complete bracket, not just receipt time.
+        self.assertEqual(ingest(read(1010,1004,465,1010,471,1000,100)),0)
+        self.assertNotIn(ident,l.station)
+        self.assertEqual(ingest(read(1010,1010,471,1010,471,1000,100)),1)
+        first=l.station[ident]["sequence"]
+        # End-to-end age appears plausible, and within-bracket tolerance
+        # passes, but prior end -> new start is inconsistent by four seconds.
+        self.assertEqual(ingest(read(1055,1050,507,1055,515,1200,170)),1)
+        self.assertNotEqual(l.station[ident]["sequence"],first)
+        self.assertIsNone(l.publish([r],[s],q,{MAC:a},1055)[0]["station_retry"])
+        # A bracket cannot finish after its receipt timestamp.
+        self.assertEqual(ingest(read(1060,1059,519,1061,521,1300,200)),0)
+        self.assertNotIn(ident,l.station)
+
     def test_terminal_station_targets_removed(self):
         q=Jobs();j=q.submit("r","show ap debug client-stats",MAC,100)
         q.start(j.job_id,100);q.finish(j.job_id,"completed","done",101)

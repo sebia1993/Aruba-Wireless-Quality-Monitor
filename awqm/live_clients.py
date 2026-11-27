@@ -163,6 +163,24 @@ class LiveClients:
             keep=sorted(self.rows,key=lambda k:self.rows[k]["observed_at"],reverse=True)[:self.max_rows]
             self.rows={k:self.rows[k] for k in keep}
         return len(new)
+    @staticmethod
+    def _station_approval_context(approval):
+        # Internal provenance only; never expose tags or approval metadata.
+        return (approval.client_tag,approval.tag,approval.approved_at,approval.valid_until)
+
+    def _station_matches(self,station,row,now):
+        approval=self.station_approvals.get(row["controller"])
+        client=self.approvals.get(row["controller"])
+        return bool(approval and client and
+            station["approval"]==self._station_approval_context(approval) and
+            approval.permits(client.tag,station["bracket_start"],now) and
+            station["controller"]==row["controller"] and
+            station["context"]==row["context"] and
+            station["association"]==row["association"] and
+            station["radio_epoch"]==row["radio_epoch"] and
+            station["radio_id"]==row["radio_id"] and
+            0<=now-station["at"]<=180 and now<station["until"])
+
     def publish(self,radios,snapshots,quality,clients,now):
         by={s.controller:s for s in snapshots}
         rs=unambiguous_radios(radios)
@@ -178,7 +196,7 @@ class LiveClients:
                 "last_phy_rate","quality_score","quality_status","airtime","retry","candidate","scope","valid_until")}
             station=self.station.get(ident);approval=self.station_approvals.get(row["controller"])
             item.update(station_retry=None,station_start=None,station_end=None,station_tx_activity="unknown",station_until=None)
-            if station and approval and 0<=now-station["at"]<=90 and now<station["until"] and station["context"]==row["context"] and station["association"]==row["association"] and station["radio_epoch"]==row["radio_epoch"] and station["radio_id"]==r.radio_id:
+            if station and self._station_matches(station,row,now) and now-station["at"]<=90:
                 item.update(station_retry=station["ratio"],station_start=station["start"],station_end=station["at"],
                             station_tx_activity=station["activity"],station_until=station["until"])
                 ca=self.correlation.approvals.get(row["controller"])
@@ -194,7 +212,9 @@ class LiveClients:
         # station counters are ever written to disk by this component.
         visible={v["id"] for v in views}
         self.rows={k:v for k,v in self.rows.items() if k in visible}
-        self.station={k:v for k,v in self.station.items() if k in visible and 0<=now-v["at"]<=180 and now<v["until"]}
+        for ident,station in list(self.station.items()):
+            if ident not in visible or not self._station_matches(station,self.rows[ident],now):
+                self._forget_station(ident)
         self.station_plan={k:v for k,v in self.station_plan.items() if 0<=now-v<=180}
         candidates=self.correlation.evaluate(comparison,now)
         for row in views:
@@ -260,7 +280,10 @@ class LiveClients:
         before,after=reading.data["before"],reading.data["after"]
         association=self.token("association",json.dumps([claim["bssid"],claim["ssid"]]))
         if ((after.ap,after.bssid,after.ssid)!=(claim["ap_name"],claim["bssid"],claim["ssid"]) or
-            association!=row["association"] or row["ap_name"]!=after.ap or not continuous(before,after,10)):
+            association!=row["association"] or row["ap_name"]!=after.ap or not continuous(before,after,10) or
+            not 0<=reading.observed_at-after.at<=10 or
+            not approval.permits(client.tag,before.at,now) or
+            not client.permits(snapshot.field_tag,before.at,now)):
             self._forget_station(ident);return 0
         # Store only a pseudonymized stamp and temporary counters, no BSSID/SSID.
         stamp_token=self.token("station-association",json.dumps([after.ap,after.bssid,after.ssid,after.aid,after.count]))
@@ -269,9 +292,15 @@ class LiveClients:
             self._forget_station(ident);return 0
         old=self.station.get(ident);ratio=None;start=None;activity="unknown";sequence=secrets.token_hex(16)
         if old and reading.observed_at<=old["at"]:return 0
-        if old and old["radio_id"]==r.radio_id and old["context"]==row["context"] and old["stamp"]==stamp_token and old["association"]==association and old["radio_epoch"]==row["radio_epoch"]:
+        if old and self._station_matches(old,row,now) and old["stamp"]==stamp_token:
             dt=reading.observed_at-old["at"]
-            if 30<=dt<=180 and after.age>=old["age"] and abs(after.age-old["age"]-dt)<=3:
+            # Both sides of the new observation bracket must continue the
+            # previous bracket. A plausible end stamp alone is insufficient.
+            before_gap=before.at-old["bracket_end"]
+            after_gap=after.at-old["bracket_end"]
+            if (30<=dt<=180 and 0<before_gap<=after_gap<=180 and
+                before.age>=old["age"] and abs(before.age-old["age"]-before_gap)<=3 and
+                after.age>=old["age"] and abs(after.age-old["age"]-after_gap)<=3):
                 sent=current["sent"]-old["counters"]["sent"]
                 retried=current["retried"]-old["counters"]["retried"]
                 if 0<=retried<=sent:
@@ -282,6 +311,8 @@ class LiveClients:
         if old and sequence!=old["sequence"]:self.correlation.forget(ident)
         self.station[ident]={"sequence":sequence,"radio_id":r.radio_id,"radio_epoch":row["radio_epoch"],"at":reading.observed_at,"start":start,"ratio":ratio,"activity":activity,
             "until":min(row["valid_until"],approval.valid_until,snapshot.field_until),"context":row["context"],
+            "controller":controller,"approval":self._station_approval_context(approval),
+            "bracket_start":before.at,"bracket_end":after.at,
             "association":association,"stamp":stamp_token,"age":after.age,"counters":{"sent":current["sent"],"retried":current["retried"]}}
         return 1
 
