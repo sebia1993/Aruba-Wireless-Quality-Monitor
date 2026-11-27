@@ -504,6 +504,16 @@ def browser_test(output):
                         history.get_by_role("button",name="정밀 이력 조회").click()
                         expect(history).to_contain_text("이력 조회 실패")
                         expect(history.locator("tbody tr")).to_have_count(0)
+                        view.selected_disclosure_days=7
+                        try:
+                            history.get_by_label("이력 WLC ID").fill("WLC-1")
+                            history.get_by_label("정밀 이력 조회 기간").select_option("2592000")
+                            history.get_by_role("button",name="정밀 이력 조회").click()
+                            expect(history).to_contain_text("서버 기준 최근 7일")
+                            expect(history).to_contain_text("요청 기간이 조회 제한됨")
+                            expect(history.get_by_text("ARM 보고값 1행",exact=True)).to_be_visible()
+                        finally:
+                            view.selected_disclosure_days=30
                         archive=view.selected_history
                         try:
                             view.selected_history=None

@@ -8,7 +8,8 @@ import hashlib,hmac,secrets,re
 from copy import deepcopy
 from threading import RLock
 from .reporting import csv_report,html_report,WINDOWS,timestamp
-from .selected_history import COMMAND_IDS, MAX_QUERY_SECONDS, MAX_TIMESTAMP, receipt_summary
+from .selected_history import (COMMAND_IDS, MAX_DISCLOSURE_DAYS, MAX_TIMESTAMP,
+                               receipt_summary, validate_disclosure_days)
 
 # The live merger assigns site:wired-MAC and appends the physical Radio ID.
 # Never group legacy or malformed identities by display name or IP.
@@ -26,7 +27,8 @@ def _physical_ap(row):
 
 class DiagnosticView:
     def __init__(self,store,clock,key=None,incidents=None,association_history=None,
-                 selected_history=None, selected_controllers=()):
+                 selected_history=None, selected_controllers=(),
+                 selected_disclosure_days=MAX_DISCLOSURE_DAYS):
         if store.mode!="diagnostic":raise ValueError("diagnostic store required")
         self.store=store;self.clock=clock;self.key=key or secrets.token_bytes(32)
         self.lock=RLock();self.rows=[];self.index={};self.meta={};self.incidents=incidents;self.association_history=association_history;self.client_rows=[];self.client_enabled=False;self.neighbor_views={};self.neighbor_enabled=False
@@ -35,6 +37,7 @@ class DiagnosticView:
             raise ValueError("selected history store mismatch")
         self.selected_history=selected_history
         self.selected_controllers=frozenset(selected_controllers)
+        self.selected_disclosure_days=validate_disclosure_days(selected_disclosure_days)
     def token(self,radio_id):
         return hmac.new(self.key,radio_id.encode("utf-8"),hashlib.sha256).hexdigest()[:32]
     def publish(self,result,current=(),available=True,quality=None,client_views=(),client_enabled=False,neighbor_views=None,neighbor_enabled=False,anchor_views=None):
@@ -201,14 +204,15 @@ class DiagnosticView:
                 raise RuntimeError("selected history clock unavailable") from None
             if not 0 <= now <= MAX_TIMESTAMP:
                 raise RuntimeError("selected history clock unavailable")
-            floor=max(0,now-MAX_QUERY_SECONDS)
+            days=validate_disclosure_days(self.selected_disclosure_days)
+            floor=max(0,now-days*86400)
             page,cursor=self.selected_history.query(controller,COMMAND_IDS[command_id],
                                                     start,end,limit=limit,after=after,not_before=floor)
         finally:
             self.store.lock.release()
         return {"enabled":True,"controller":controller,"command_id":command_id,
                 "time_basis":"receipt_time","snapshot":False,
-                "disclosure_floor":floor,"disclosure_limited":start<floor,
+                "disclosure_days":days,"disclosure_floor":floor,"disclosure_limited":start<floor,
                 "rows":[receipt_summary(row,self.token) for row in page],
                 "next_cursor":None if cursor is None else
                     {"received_at":cursor[0],"receipt_id":cursor[1]}}

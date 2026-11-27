@@ -592,13 +592,14 @@ function selectedHistoryPanel(){
       if(d.enabled===false){status.textContent="정밀 이력 보존 비활성 · 이력 없음으로 판단할 수 없습니다.";return;}
       if(d.enabled!==true||d.controller!==scope.controller||d.command_id!==scope.command||
           d.time_basis!=="receipt_time"||d.snapshot!==false||!Array.isArray(d.rows)||d.rows.length>20||
+          !Number.isSafeInteger(d.disclosure_days)||d.disclosure_days<1||d.disclosure_days>30||
           !Number.isSafeInteger(d.disclosure_floor)||d.disclosure_floor<0||
           d.disclosure_limited!==(Number(scope.start)<d.disclosure_floor)||
           d.rows.some(r=>!Number.isSafeInteger(r.received_at)||r.received_at<Math.max(Number(scope.start),d.disclosure_floor)||r.received_at>=Number(scope.end)))
         throw Error("invalid history response");
       status.textContent="수신 시각 기준 KST: "+kst(Number(scope.start))+" ~ "+kst(Number(scope.end))+
         " (종료 미포함) · 페이지 간 스냅샷 아님 · 조회 허용 하한: "+kst(d.disclosure_floor)+
-        " (서버 기준 최근 30일)"+(d.disclosure_limited?" · 일부 또는 전체 요청 기간이 조회 제한됨":"");
+        " (서버 기준 최근 "+d.disclosure_days+"일)"+(d.disclosure_limited?" · 일부 또는 전체 요청 기간이 조회 제한됨":"");
       if(!d.rows.length){out.append(el("p",d.disclosure_limited?"허용된 조회 범위에 표시 가능한 기록 없음 · 제한된 기간의 보존 여부는 판단할 수 없습니다.":"조회 범위에 저장 기록 없음 · 수집 누락 또는 장애 여부는 판단할 수 없습니다."));return;}
       const fields=counts[scope.command];
       const radio=scope.command==="D03",rf=scope.command==="D04",port=scope.command==="D07",arm=scope.command==="D08";

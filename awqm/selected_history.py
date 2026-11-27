@@ -23,24 +23,39 @@ MAX_BYTES = 128 * 1024 * 1024
 MAX_RECEIPT = 128 * 1024
 MAX_PENDING = 4
 MAX_QUERY_ROWS = 20
-MAX_QUERY_SECONDS = 30 * 86400
+MAX_DISCLOSURE_DAYS = 30
+MAX_QUERY_SECONDS = MAX_DISCLOSURE_DAYS * 86400
 MAX_TIMESTAMP = 253402300799
 
 
-def load_selected_history(cfg):
+def validate_disclosure_days(days):
+    if type(days) is not int or not 1 <= days <= MAX_DISCLOSURE_DAYS:
+        raise ValueError("selected history disclosure days must be 1 to 30")
+    return days
+
+
+def load_selected_history_policy(cfg):
+    """Read protected startup policy once; default off, never exceed 30 days."""
     path = safe_path(cfg.root, "config/selected-history.json")
     if not path.exists():
-        return False
+        return False, MAX_DISCLOSURE_DAYS
     if path.stat().st_size > 4096:
         raise ValueError("selected history policy too large")
     doc = json.loads(path.read_text(encoding="utf-8"))
     if type(doc) is not dict or type(doc.get("version")) is not int:
         raise ValueError("invalid selected history policy")
     if doc == {"version": 1, "enabled": False} and doc["enabled"] is False:
-        return False
-    if doc != POLICY or doc["enabled"] is not True:
+        return False, MAX_DISCLOSURE_DAYS
+    days = validate_disclosure_days(doc.get("disclosure_days", MAX_DISCLOSURE_DAYS))
+    base = {k: v for k, v in doc.items() if k != "disclosure_days"}
+    if base != POLICY or doc["enabled"] is not True:
         raise ValueError("explicit selected history policy required")
-    return True
+    return True, days
+
+
+def load_selected_history(cfg):
+    """Compatibility helper for callers requiring only the enable flag."""
+    return load_selected_history_policy(cfg)[0]
 
 
 @dataclass(frozen=True)

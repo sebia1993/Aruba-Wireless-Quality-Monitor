@@ -226,6 +226,26 @@ class DiagnosticHTTPTests(unittest.TestCase):
                 self.assertIsNone(old_page["next_cursor"])
                 self.assertNotIn("ap_token",raw.decode())
                 self.assertEqual(len(archive.query("w1",PORT,old_at,old_at+1)[0]),1)
+                self.assertEqual(old_page["disclosure_days"],30)
+                short_at=t-8*86400
+                short_payload={**payload,"received_at":short_at,
+                    "observation":{**payload["observation"],"received_at":short_at}}
+                archive.save(Receipt("5"*32,"w1",PORT,short_at,json.dumps(short_payload)))
+                short_path="/api/admin/selected-history?"+urlencode(
+                    {"controller":"w1","command":"D07","start":short_at,"end":short_at+1})
+                self.assertEqual(len(json.loads(req("GET",short_path,headers=admin_h)[2])["rows"]),1)
+                view.selected_disclosure_days=7
+                status,headers,raw=req("GET",short_path,headers=admin_h)
+                self.assertEqual(status,200)
+                self.assertEqual(headers["Cache-Control"],"no-store")
+                restricted=json.loads(raw)
+                self.assertEqual(restricted["disclosure_days"],7)
+                self.assertEqual(restricted["rows"],[])
+                self.assertTrue(restricted["disclosure_limited"])
+                self.assertEqual(len(archive.query("w1",PORT,short_at,short_at+1)[0]),1)
+                self.assertEqual(req("GET",short_path,headers=h)[0],403)
+                self.assertEqual(req("GET",short_path+"&disclosure_days=30",headers=admin_h)[0],400)
+                view.selected_disclosure_days=30
                 status,headers,raw=req("GET",history_path+"&limit=1",headers=admin_h)
                 self.assertEqual(status,200)
                 self.assertEqual(headers["Cache-Control"],"no-store")

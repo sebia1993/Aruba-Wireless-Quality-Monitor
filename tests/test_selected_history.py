@@ -15,7 +15,7 @@ from threading import Event
 from awqm.storage import Store
 from awqm.worker import ControllerWorker
 from awqm.selected_history import (COMMANDS, POLICY, SelectedHistory, SelectedHistoryFull,
-                                   load_selected_history)
+                                   load_selected_history, load_selected_history_policy)
 from awqm.ap_port_status import COMMAND as PORT
 from awqm.arm_rf_summary import COMMAND as RF
 from awqm.live_arm_history import COMMAND as ARM
@@ -81,6 +81,30 @@ class SelectedHistoryTests(unittest.TestCase):
             path.write_text(json.dumps(doc), encoding="utf-8")
             with self.assertRaises(ValueError):
                 load_selected_history(cfg)
+
+    def test_selected_disclosure_policy_is_optional_and_strictly_bounded(self):
+        cfg = SimpleNamespace(root=Path(self.root.name))
+        (cfg.root / "config").mkdir()
+        path = cfg.root / "config/selected-history.json"
+        self.assertEqual(load_selected_history_policy(cfg), (False, 30))
+        for doc, expected in (({"version": 1, "enabled": False}, (False, 30)),
+                              (POLICY, (True, 30)),
+                              ({**POLICY, "disclosure_days": 7}, (True, 7)),
+                              ({**POLICY, "disclosure_days": 1}, (True, 1))):
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            self.assertEqual(load_selected_history_policy(cfg), expected)
+            self.assertIs(load_selected_history(cfg), expected[0])
+        for value in (0, -1, 31, True, False, 7.0, "7", None, [], {}):
+            with self.subTest(value=value):
+                path.write_text(json.dumps({**POLICY, "disclosure_days": value}), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    load_selected_history_policy(cfg)
+        for doc in ({"version": 1, "enabled": False, "disclosure_days": 7},
+                    {"version": 1, "enabled": True, "disclosure_days": 7},
+                    {**POLICY, "disclosure_days": 7, "other": 1}):
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_selected_history_policy(cfg)
 
     def test_each_actual_worker_path_persists_once_and_keeps_uncertainty(self):
         for cmd in sorted(COMMANDS):
@@ -824,6 +848,55 @@ class SelectedHistoryTests(unittest.TestCase):
         now[0] = float("nan")
         with self.assertRaisesRegex(RuntimeError, "selected history clock unavailable"):
             view.selected_history_page("w1", "D07", 999, 1002)
+
+    def test_shorter_site_disclosure_policy_with_cursor_and_restore(self):
+        from awqm.diagnostic_view import DiagnosticView
+        w, engine, session = self.worker_engine(PORT)
+        outcome = Engine._step(w)
+        receipt = outcome[0].selected_receipt
+        self.harvest(engine, outcome)
+        ledger = engine.selected_history
+        data = json.loads(receipt.payload)
+        data["received_at"] = data["observation"]["received_at"] = 1001
+        later = replace(receipt, receipt_id="f"*32 if receipt.receipt_id != "f"*32 else "0"*32,
+                        received_at=1001, payload=json.dumps(data))
+        ledger.save(later)
+        cfg = SimpleNamespace(root=Path(self.root.name))
+        (cfg.root / "config").mkdir()
+        (cfg.root / "config/selected-history.json").write_text(
+            json.dumps({**POLICY, "disclosure_days": 7}), encoding="utf-8")
+        enabled, days = load_selected_history_policy(cfg)
+        self.assertTrue(enabled)
+        now = [1000 + days*86400]
+        def read_model(store, archive):
+            return DiagnosticView(store, lambda: now[0], selected_history=archive,
+                                  selected_controllers=("w1",), selected_disclosure_days=days)
+        view = read_model(engine.store, ledger)
+        before = list(session.calls)
+        first = view.selected_history_page("w1", "D07", 999, 1002, limit=1)
+        self.assertEqual(first["disclosure_days"], 7)
+        self.assertEqual(first["disclosure_floor"], 1000)
+        self.assertTrue(first["disclosure_limited"])
+        self.assertEqual([r["received_at"] for r in first["rows"]], [1000])
+        cursor = first["next_cursor"]
+        now[0] += 1
+        tail = view.selected_history_page("w1", "D07", 999, 1002, limit=1,
+                            after=(cursor["received_at"], cursor["receipt_id"]))
+        self.assertEqual([r["received_at"] for r in tail["rows"]], [1001])
+        self.assertIsNone(tail["next_cursor"])
+        now[0] += 1
+        self.assertEqual(view.selected_history_page("w1", "D07", 999, 1002)["rows"], [])
+        self.assertEqual(ledger.query("w1", PORT, 999, 1002)[0], (receipt, later))
+        backup = engine.store.backup(Path(self.root.name) / "shorter-history-backup")
+        restored = Store(backup, mode="diagnostic")
+        restored_ledger = SelectedHistory(restored)
+        self.assertEqual(read_model(restored, restored_ledger).selected_history_page(
+            "w1", "D07", 999, 1002)["rows"], [])
+        self.assertEqual(restored_ledger.query("w1", PORT, 999, 1002)[0], (receipt, later))
+        self.assertEqual(session.calls, before)
+        with self.assertRaises(ValueError):
+            DiagnosticView(engine.store, lambda: now[0], selected_history=ledger,
+                           selected_disclosure_days=31)
 
     def test_private_receipt_query_bounds_and_cursor(self):
         _, engine, _ = self.worker_engine(PORT)

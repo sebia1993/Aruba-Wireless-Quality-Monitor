@@ -17,7 +17,7 @@ from .live_rf_summary import load_rf_approvals
 from .live_arm_history import load_arm_approvals
 from .live_radio_stats import load_stats_approvals
 from .retention import Retention,load_retention
-from .selected_history import load_selected_history
+from .selected_history import load_selected_history_policy
 from .archive_retention import load_archive_retention
 from .live_neighbors import LiveNeighbors,load_neighbor_approvals
 from .association_history import AssociationHistory,load_history_approvals,load_key
@@ -155,7 +155,7 @@ def run_service(root,stop,on_ready=None):
         profile=load_profile(cfg)
         manual_enabled=load_manual_policy(cfg)
         retention_enabled=load_retention(cfg)
-        selected_history=load_selected_history(cfg)
+        selected_history,selected_disclosure_days=load_selected_history_policy(cfg)
         archive_days = load_archive_retention(cfg)
         approvals=load_approvals(cfg)
         resource_approvals=load_resource_approvals(cfg,approvals)
@@ -196,7 +196,8 @@ def run_service(root,stop,on_ready=None):
         resources.callback(maintenance.close)
         view=DiagnosticView(store,time.time,incidents=quality.incidents,association_history=history,
                             selected_history=engine.selected_history,
-                            selected_controllers=(t.id for t in cfg.targets)) if web else None
+                            selected_controllers=(t.id for t in cfg.targets),
+                            selected_disclosure_days=selected_disclosure_days) if web else None
         if web:
             server=create_listener(web,cfg,engine.workers,gate,view,stop,manual_enabled=manual_enabled,
                 operations=operations,maintenance_status=lambda: maintenance.web_status(retention_enabled,archive_days))
