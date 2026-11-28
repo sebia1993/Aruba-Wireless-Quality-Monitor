@@ -1,7 +1,7 @@
 import json,tempfile,unittest
 from dataclasses import replace
 from awqm.aos8 import ControllerSnapshot
-from awqm.controller_load_review import ControllerLoadHistory,review_controller_load,CPU
+from awqm.controller_load_review import ControllerLoadHistory,review_controller_load,review_common_groups,CPU
 from awqm.controller_resources import DATAPATH
 from awqm.diagnostic_view import DiagnosticView
 from awqm.model import Radio
@@ -36,6 +36,29 @@ class ControllerLoadReviewTests(unittest.TestCase):
         self.assertEqual(self.review()["reason"],"time_unaligned")
         self.frame["readings"][CPU]=replace(self.frame["readings"][CPU],observed_at=970,data=69)
         self.assertEqual(self.review()["reason"],"cpu_screen_not_met")
+    def test_common_group_requires_complete_disjoint_component_and_global_window(self):
+        a,b,c,d,e=(f"{i:032x}" for i in range(1,6))
+        def pair(x,y,start=970,end=1000):
+            return {"incident_ids":sorted((x,y)),"window_start":start,"window_end":end}
+        triangle=[pair(a,b),pair(b,c),pair(a,c)]
+        separate=pair(d,e)
+        expected={"groups":[{"incident_ids":[a,b,c],"pair_count":3,
+                              "window_start":970,"window_end":1000},
+                             {"incident_ids":[d,e],"pair_count":1,
+                              "window_start":970,"window_end":1000}],
+                  "withheld_components":0}
+        self.assertEqual(review_common_groups(triangle+[separate]),expected)
+        self.assertEqual(review_common_groups(list(reversed(triangle+[separate]))),expected)
+        for pairs in ([pair(a,b),pair(b,c)],
+                      triangle+[pair(c,d)],
+                      [pair(a,b,970,990),pair(b,c,980,1000),pair(a,c,985,1001)]):
+            with self.subTest(pairs=pairs):
+                self.assertEqual(review_common_groups(pairs),
+                                 {"groups":[],"withheld_components":1})
+        self.assertEqual(review_common_groups([pair(a,b),pair(b,c),separate]),
+                         {"groups":[expected["groups"][1]],"withheld_components":1})
+        self.assertEqual(review_common_groups([]),{"groups":[],"withheld_components":0})
+
     def test_common_incident_pair_requires_reciprocal_aligned_evidence(self):
         a,b=self.radios[0],self.radios[-1]
         for i,r in enumerate(self.radios):
@@ -58,6 +81,8 @@ class ControllerLoadReviewTests(unittest.TestCase):
         self.assertEqual(common["pairs"],[{"incident_ids":[self.quality[a.radio_id]["incident_id"],
             self.quality[b.radio_id]["incident_id"]],"rf_candidate":"RF05","overlap_mhz":40,
             "window_start":970,"window_end":1000}])
+        self.assertEqual(common["group_review"],{"groups":[{"incident_ids":common["pairs"][0]["incident_ids"],
+            "pair_count":1,"window_start":970,"window_end":1000}],"withheld_components":0})
         self.assertEqual(common["valid_until"],1010)
         self.assertNotIn(a.radio_id,json.dumps(common))
         self.assertNotIn("fixture:3",json.dumps(common))
@@ -78,6 +103,7 @@ class ControllerLoadReviewTests(unittest.TestCase):
             view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":result}]}},[])
             public=view.page()["cluster"]["nodes"][0]["load_review"]
             self.assertEqual(public["common_incident_review"]["pairs"],common["pairs"])
+            self.assertEqual(public["common_incident_review"]["group_review"],common["group_review"])
             self.assertNotIn("valid_until",public["common_incident_review"])
             clock[0]=1010
             public=view.page()["cluster"]["nodes"][0]["load_review"]
@@ -144,6 +170,9 @@ class ControllerLoadReviewTests(unittest.TestCase):
             self.assertNotIn("fixture:3",json.dumps(page))
             self.assertNotIn(a.radio_id,json.dumps(page))
             self.assertNotIn("fixture:3",json.dumps(view.neighbors(view.token(a.radio_id))))
+            group=page["cluster"]["nodes"][0]["load_review"]["common_incident_review"]["group_review"]
+            self.assertEqual(group,{"groups":[{"incident_ids":ids,"pair_count":1,
+                "window_start":1335,"window_end":1365}],"withheld_components":0})
             for ident in ids:
                 self.assertEqual(ledger.incidents.detail(ident)["state"],"PERSISTENT")
 

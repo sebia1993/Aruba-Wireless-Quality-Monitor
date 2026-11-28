@@ -227,6 +227,47 @@ class ControllerLoadHistory:
         return dict(public,risk_first_at=start)
 
 
+def review_common_groups(pairs):
+    """Disjoint complete review groups from already eligible direct pairs.
+
+    Never choose a favorable clique from an ambiguous connected component.
+    All pair envelopes must fit together. No persisted parent or causal claim.
+    """
+    neighbors={}
+    edges={}
+    for pair in pairs:
+        a,b=pair["incident_ids"]
+        neighbors.setdefault(a,set()).add(b)
+        neighbors.setdefault(b,set()).add(a)
+        edges[tuple(sorted((a,b)))]=pair
+    remaining=set(neighbors)
+    groups=[]
+    withheld=0
+    while remaining:
+        pending=[min(remaining)]
+        component=set()
+        while pending:
+            item=pending.pop()
+            if item in component:
+                continue
+            component.add(item)
+            pending.extend(neighbors[item]-component)
+        remaining.difference_update(component)
+        ids=sorted(component)
+        if any(len(neighbors[i])!=len(ids)-1 for i in ids):
+            withheld+=1
+            continue
+        links=[edges[(a,b)] for pos,a in enumerate(ids) for b in ids[pos+1:]]
+        start=min(p["window_start"] for p in links)
+        end=max(p["window_end"] for p in links)
+        if end-start>30:
+            withheld+=1
+            continue
+        groups.append({"incident_ids":ids,"pair_count":len(links),
+                       "window_start":start,"window_end":end})
+    return {"groups":groups,"withheld_components":withheld}
+
+
 def review_common_pairs(records,radio_ids,quality,views,context,times,now,expires):
     """Bounded pair proposals only, never a transitive or durable parent.
     
@@ -313,6 +354,7 @@ def review_common_pairs(records,radio_ids,quality,views,context,times,now,expire
     if not pairs:
         return unavailable
     return {"status":"review_pairs","pairs":sorted(pairs,key=lambda p:p["incident_ids"]),
+            "group_review":review_common_groups(pairs),
             "valid_until":valid_until,"confidence":"low",
             "service_impact":"unverified","verified":False}
 

@@ -496,10 +496,17 @@ function clusterPanel(d){
       c.append(el("h3","공통 Incident 쌍 검토"),el("p","CL01 자원 관측과 양방향 직접 RF 관계·채널 중첩·동시 관측이 모두 정합한 기존 Incident 쌍만 표시합니다. 낮은 신뢰도 참고이며 상위 Incident 생성·병합·서비스 영향 확정은 하지 않습니다."));
       for(const r of common){
         const v=r.load_review.common_incident_review;
-        if(v.status==="review_pairs")c.append(el("p",r.controller+" · 검토 쌍 "+v.pairs.length+"개"),table(
-          ["기존 Incident 1","기존 Incident 2","RF 후보","중첩 MHz","공통 관측 구간"],
-          v.pairs.map(p=>[...p.incident_ids,p.rf_candidate,p.overlap_mhz,kst(p.window_start)+" ~ "+kst(p.window_end)])));
-        else c.append(el("p",r.controller+" · "+(v.reason==="pair_capacity_exceeded"?"검토 한도 초과":v.reason==="stale_or_paused"?"관측 만료/정지":"공통 근거 부족 · 그룹 미판정")));
+        if(v.status==="review_pairs"){
+          c.append(el("p",r.controller+" · 검토 쌍 "+v.pairs.length+"개"),table(
+            ["기존 Incident 1","기존 Incident 2","RF 후보","중첩 MHz","공통 관측 구간"],
+            v.pairs.map(p=>[...p.incident_ids,p.rf_candidate,p.overlap_mhz,kst(p.window_start)+" ~ "+kst(p.window_end)])));
+          const g=v.group_review;
+          if(g){
+            c.append(el("p","상위 Incident 검토 집단 "+g.groups.length+"개 · 연결 근거 불완전 또는 공통 시간 불일치로 보류된 집단 "+g.withheld_components+"개. 모든 구성원 간 직접 근거 필요; 연쇄 연결만으로 그룹화하지 않습니다."));
+            if(g.groups.length)c.append(table(["검토 대상 기존 Incident","직접 검증 쌍","공통 관측 구간"],
+              g.groups.map(p=>[p.incident_ids.join(" / "),p.pair_count,kst(p.window_start)+" ~ "+kst(p.window_end)])));
+          }
+        }else c.append(el("p",r.controller+" · "+(v.reason==="pair_capacity_exceeded"?"검토 한도 초과":v.reason==="stale_or_paused"?"관측 만료/정지":"공통 근거 부족 · 그룹 미판정")));
       }
     }
     const recovery=reviews.filter(r=>r.load_review.status==="recovery_observation");
