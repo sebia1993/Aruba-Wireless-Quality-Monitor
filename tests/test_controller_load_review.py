@@ -430,8 +430,11 @@ class ControllerLoadReviewTests(unittest.TestCase):
                 h=ControllerLoadHistory()
                 self.assertEqual(at(h,1000,"PERSISTENT")["status"],"review_candidate")
                 self.assertEqual(at(h,1060,"RESOLVED",mode)["status"],"not_evaluated")
-                self.assertIsNone(h.recovery)
+                if mode!="staggered":self.assertIsNone(h.recovery)
+                # A partially resolved cohort must never infer the missing
+                # explicit RESOLVED event from a later NORMAL sample.
                 self.assertEqual(at(h,1120,"NORMAL")["status"],"not_evaluated")
+                self.assertIsNone(h.recovery)
         h=ControllerLoadHistory()
         self.assertEqual(at(h,1000,"PERSISTENT")["status"],"review_candidate")
         self.assertEqual(at(h,1060,"RESOLVED")["status"],"not_evaluated")
@@ -440,3 +443,79 @@ class ControllerLoadReviewTests(unittest.TestCase):
         self.assertEqual(at(h,1090,"NORMAL")["status"],"recovery_observation")
         self.assertEqual(at(h,1190,"NORMAL")["status"],"not_evaluated")
         self.assertIsNone(h.recovery)
+
+    def test_staggered_recovery_preserves_original_cohort_with_real_ledger(self):
+        from awqm.quality_ledger import QualityLedger
+        history=ControllerLoadHistory()
+        self.frame["resource_validation"].update(approved_at=100,until=3000)
+        with tempfile.TemporaryDirectory() as root:
+            store=Store(root,mode="diagnostic")
+            ledger=QualityLedger(store)
+            def at(t,risk_indices,cpu,dp_offset=0):
+                snapshot=replace(self.snapshot,observed_at=t,field_until=3000,
+                    field_profile="standard")
+                self.frame["readings"][CPU]=replace(self.frame["readings"][CPU],
+                    observed_at=t-10,data=cpu)
+                self.frame["readings"][DATAPATH]=replace(self.frame["readings"][DATAPATH],
+                    observed_at=t+dp_offset)
+                radios=[replace(r,observed_at=t,utilization=90 if i in risk_indices else 20,
+                    interference=30 if i in risk_indices else 2,noise=-95)
+                    for i,r in enumerate(self.radios)]
+                for r in radios:store.save(r)
+                q=ledger.evaluate(radios,[snapshot],t+dp_offset,{r.radio_id:t for r in radios})
+                return review_controller_load("w1",self.frame,snapshot,radios,q,t+dp_offset,history)
+            for t in (1000,1060):self.assertEqual(at(t,{0,1,2},82)["status"],"not_evaluated")
+            original=at(1120,{0,1,2},82)
+            self.assertEqual(original["radio_count"],3)
+            # Radio 0 clears earlier, while the other two still qualify
+            # as a current multi-AP candidate. Never shrink the old cohort.
+            for t in (1180,1240,1300):
+                remaining=at(t,{1,2},82)
+                self.assertEqual((remaining["status"],remaining["radio_count"]),("review_candidate",2))
+                self.assertEqual(len(history.recovery["cohort"]),3)
+            self.assertEqual(list(history.recovery["resolved"].values()),[1300])
+            for t in (1360,1420,1480):
+                self.assertEqual(at(t,set(),40)["status"],"not_evaluated")
+            self.assertEqual(at(1480,set(),40)["status"],"not_evaluated")
+            result=at(1540,set(),40)
+            self.assertEqual((result["status"],result["first_resolved_at"],
+                result["resolved_at"],result["radio_count"]),("recovery_observation",1300,1480,3))
+            self.assertEqual(result["risk_observation"]["radio_at"],1120)
+            self.assertFalse(result["verified"])
+            self.assertNotIn("00:11",json.dumps(result))
+            view=DiagnosticView(store,lambda:1540)
+            view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":result}]}},[])
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["first_resolved_at"],1300)
+            for t in (1600,1660,1720):
+                self.assertEqual(at(t,set(),40)["status"],"recovery_observation")
+            # Aligned but after the five-minute resource window.
+            self.assertEqual(at(1780,set(),40,dp_offset=1)["status"],"not_evaluated")
+            self.assertEqual(at(1781,set(),40)["status"],"not_evaluated")
+
+    def test_staggered_recovery_rejects_recurrence_and_lost_context(self):
+        def row(status,ident,epoch="e",clear=True):
+            return (epoch,"5GHz",44,not clear,clear,20 if clear else 90,
+                    2 if clear else 30,-95,status,ident)
+        ids={k:"%032x"%i for i,k in enumerate(("a","b","c"),1)}
+        risk={k:row("PERSISTENT",v,clear=False) for k,v in ids.items()}
+        public={"cpu_percent":82,"cpu_at":990,"datapath_at":1000,
+                "datapath_max_1s_percent":25,"datapath_max_4s_percent":20,
+                "radio_at":1000,"ap_count":2,"radio_count":3}
+        early={"a":row("RESOLVED",ids["a"]),"b":risk["b"],"c":risk["c"]}
+        for mode in ("recur","missing","epoch","unclear","wrong_id","gap"):
+            with self.subTest(mode=mode):
+                h=ControllerLoadHistory()
+                h.remember_risk(public,risk,set(risk))
+                self.assertIsNone(h.after_recovery(early,{},public,1060,3000,90))
+                self.assertEqual(h.recovery["resolved"],{"a":1060})
+                following={"a":row("NORMAL",None),"b":row("RESOLVED",ids["b"]),
+                           "c":row("RESOLVED",ids["c"])}
+                t=1120
+                if mode=="recur":following["a"]=row("DETECTED","f"*32,clear=False)
+                if mode=="missing":del following["a"]
+                if mode=="epoch":following["a"]=row("NORMAL",None,epoch="changed")
+                if mode=="unclear":following["a"]=row("WATCH",None,clear=False)
+                if mode=="wrong_id":following["b"]=row("RESOLVED","f"*32)
+                if mode=="gap":t=1151
+                self.assertIsNone(h.after_recovery(following,{},public,t,3000,90))
+                self.assertIsNone(h.recovery)

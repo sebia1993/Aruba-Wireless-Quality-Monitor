@@ -121,16 +121,24 @@ class ControllerLoadHistory:
             return
         risk={k:public[k] for k in ("cpu_percent","cpu_at","datapath_at",
             "datapath_max_1s_percent","datapath_max_4s_percent","radio_at","ap_count","radio_count")}
-        self.recovery={"cohort":cohort,"risk":risk,"last_at":at,"resolved_at":None}
+        # A still-persistent subset is not a new comparison cohort. Keep
+        # the original risk frame while those same incidents resolve at
+        # different times; never merge new incidents into it.
+        if self.recovery and self.recovery["resolved_at"] is None:
+            old=self.recovery["cohort"]
+            if all(old.get(k)==v for k,v in cohort.items()) and (
+                    cohort!=old or self.recovery["resolved"]):
+                return
+        self.recovery={"cohort":cohort,"risk":risk,"last_at":at,
+                       "resolved":{},"resolved_at":None}
 
     def after_recovery(self,records,quality,resource,at,expires,max_gap):
         """Compare only an explicitly resolved, unchanged physical cohort.
 
-        This initial slice requires every contributing Incident to resolve
-        in the same committed Radio frame. Missing/staggered resolution,
-        new incidents, context changes or observation gaps invalidate it.
-        It is an observation within five minutes, not a five-minute soak,
-        a parent Incident, or proof of controller/service recovery.
+        Remember each exact Incident's explicit RESOLVED observation, then
+        anchor the five-minute window to the last such observation. All
+        previously resolved Radios must remain observed and clear. No
+        service recovery or continuous five-minute soak is inferred.
         """
         state=self.recovery
         if state is None:return None
@@ -142,34 +150,41 @@ class ControllerLoadHistory:
         cohort=state["cohort"]
         if any(key not in records or records[key][:3]!=ctx for key,(ctx,_) in cohort.items()):
             return discard()
-        rows=[(records[k],ident) for k,(_,ident) in cohort.items()]
-        if state["resolved_at"] is None:
-            if any(row[9]!=ident for row,ident in rows):return discard()
-            statuses={row[8] for row,_ in rows}
-            if statuses=={"RESOLVED"}:
-                if at<=state["risk"]["radio_at"]:return discard()
-                state["resolved_at"]=at
-            elif not statuses<= {"PERSISTENT","RECOVERING"}:
+        def clear(row):
+            return row[5]<65 and row[6]<20 and row[7]<=-85
+        resolved=state["resolved"]
+        for key,(_,ident) in cohort.items():
+            row=records[key]
+            if key in resolved:
+                if at==resolved[key]:
+                    if row[8]!="RESOLVED" or row[9]!=ident or not clear(row):
+                        return discard()
+                elif row[8] not in ("NORMAL","WATCH") or row[9] is not None or not clear(row):
+                    return discard()
+            elif row[9]!=ident:
                 return discard()
-            state["last_at"]=at
-            return None
-        anchor=state["resolved_at"]
-        if at==anchor:
-            # Repeated coordinator publication of the exact resolution
-            # frame is neither a new sample nor a post-resolution reading.
-            if any(row[8]!="RESOLVED" or row[9]!=ident for row,ident in rows):
+            elif row[8]=="RESOLVED":
+                if at<=state["risk"]["radio_at"] or not clear(row):
+                    return discard()
+                resolved[key]=at
+            elif row[8] not in ("PERSISTENT","RECOVERING"):
                 return discard()
-            return None
-        if not 0<at-anchor<=300:return discard()
-        if any(row[8] not in ("NORMAL","WATCH") or row[9] is not None
-               or not (row[5]<65 and row[6]<20 and row[7]<=-85) for row,_ in rows):
-            return discard()
         state["last_at"]=at
-        # Both resource observations must actually follow the resolution,
-        # not just be cached values close to the subsequent Radio sample.
-        if min(resource["cpu_at"],resource["datapath_at"])<=anchor:return None
+        if len(resolved)!=len(cohort):
+            return None
+        if state["resolved_at"] is None:
+            state["resolved_at"]=max(resolved.values())
+        anchor=state["resolved_at"]
+        if at==anchor:return None
+        if not 0<at-anchor<=300:return discard()
+        # Both resource readings must be inside the same post-resolution
+        # window, not just near the subsequent Radio sample.
+        if not all(anchor<t<=anchor+300 for t in
+                   (resource["cpu_at"],resource["datapath_at"])):
+            return None
         until=min(expires,anchor+301,*(quality[k]["valid_until"] for k in cohort))
         return {"status":"recovery_observation","code":"CL01","resolved_at":anchor,
+                "first_resolved_at":min(resolved.values()),
                 **resource,"radio_at":at,"ap_count":state["risk"]["ap_count"],
                 "radio_count":len(cohort),"risk_observation":dict(state["risk"]),
                 "valid_until":until,"service_impact":"unverified","verified":False}
@@ -301,11 +316,12 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now,history=
               "datapath_max_1s_percent":dp["data"]["max_1s_percent"],
               "datapath_max_4s_percent":dp["data"]["max_4s_percent"],
               "datapath_at":dp["observed_at"]}
+    # Track the original cohort even while a persistent subset still
+    # independently qualifies as a current CL01 review candidate.
+    recovery=history.after_recovery(rf_records,quality,resource,snapshot.observed_at,
+        expires,270 if snapshot.field_profile=="safe" else 90) if history is not None else None
     if cpu_value<70 or len(aps)<2:
-        if history is not None:
-            recovery=history.after_recovery(rf_records,quality,resource,snapshot.observed_at,
-                expires,270 if snapshot.field_profile=="safe" else 90)
-            if recovery is not None and now<recovery["valid_until"]:return recovery
+        if recovery is not None and now<recovery["valid_until"]:return recovery
         return withheld("cpu_screen_not_met" if cpu_value<70 else "distinct_persistent_aps_required")
     other_normals=[(ap,until) for ap,until in normal_radios.values() if ap not in aps]
     if other_normals:
