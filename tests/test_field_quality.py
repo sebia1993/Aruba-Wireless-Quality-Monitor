@@ -80,6 +80,7 @@ class QualityTests(unittest.TestCase):
                 got=l.evaluate([r],[snapshot(t)],t,{r.radio_id:t})[r.radio_id]
                 self.assertEqual(got["status"],status)
                 self.assertEqual(got["score"],50)
+                self.assertEqual(got["incident_first_at"],1000 if status=="PERSISTENT" else None)
                 self.assertEqual(l.evaluate([r],[snapshot(t)],t,{r.radio_id:t})[r.radio_id],got)
             # Missing or invalid data cannot manufacture a recovery.
             r=observation(1540,u=None);s.save(r)
@@ -100,6 +101,7 @@ class QualityTests(unittest.TestCase):
             r=observation(1540);s.save(r)
             q=l.evaluate([r],[snapshot(1540,connection="new-session")],1540,{r.radio_id:1540})
             self.assertEqual(q[r.radio_id]["status"],"DETECTED")
+            self.assertIsNone(q[r.radio_id]["incident_first_at"])
             now=[1540];v=DiagnosticView(s,lambda:now[0],key=b"fixture")
             v.publish({},[(r.radio_id,1540)],quality=q)
             self.assertEqual(v.page()["rows"][0]["quality_score"],50)

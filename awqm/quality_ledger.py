@@ -69,7 +69,19 @@ class QualityLedger:
                         c.execute("INSERT OR IGNORE INTO radio_quality_events VALUES(?,?,?,?,?,?)",
                             (r.radio_id,r.observed_at,s.field_tag,context,state.status,score))
                     incident=self.incidents.observe(c,r,context,state,score)
+                # Use only the exact current open ledger record, never infer
+                # the risk start by subtracting the poll interval. This is
+                # internal correlation evidence, not a service outage time.
+                start=None
+                if incident and state.status=="PERSISTENT":
+                    row=c.execute("""SELECT first_at FROM rf_incidents
+                        WHERE incident_id=? AND radio_id=? AND context=? AND controller=?
+                        AND state='PERSISTENT' AND ended_at IS NULL AND last_at=?""",
+                        (incident,r.radio_id,context,r.controller,r.observed_at)).fetchone()
+                    if row and type(row[0]) is int and 0<=row[0]<=r.observed_at:
+                        start=row[0]
                 results[r.radio_id]=(context,{"observed_at":r.observed_at,"score":score,"incident_id":incident,
+                    "incident_first_at":start,
                     "status":state.status,"approval":s.field_tag[:12],"valid_until":s.field_until,
                     "policy":"balanced-radio-v1","scope":"local_operator_attested_radio"})
         self.cache=results

@@ -1,7 +1,7 @@
 import json,tempfile,unittest
 from dataclasses import replace
 from awqm.aos8 import ControllerSnapshot
-from awqm.controller_load_review import review_controller_load,CPU
+from awqm.controller_load_review import ControllerLoadHistory,review_controller_load,CPU
 from awqm.controller_resources import DATAPATH
 from awqm.diagnostic_view import DiagnosticView
 from awqm.model import Radio
@@ -87,6 +87,65 @@ class ControllerLoadReviewTests(unittest.TestCase):
             self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["counter_evidence"],result["counter_evidence"])
             clock[0]=1005
             self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["status"],"not_evaluated")
+    def test_pre_risk_resource_pair_exact_window_and_scope(self):
+        history=ControllerLoadHistory()
+        self.frame["resource_validation"].update(approved_at=100,until=3000)
+        def at(t,cpu=70,skew=30):
+            self.now=t
+            self.snapshot=replace(self.snapshot,observed_at=t,field_until=3000)
+            self.frame["readings"][CPU]=replace(self.frame["readings"][CPU],observed_at=t-skew,data=cpu)
+            self.frame["readings"][DATAPATH]=replace(self.frame["readings"][DATAPATH],observed_at=t)
+            radios=[replace(r,observed_at=t) for r in self.radios]
+            quality={r.radio_id:dict(self.quality[r.radio_id],observed_at=t,valid_until=3000,
+                        incident_first_at=1600 if i<2 else 1660) for i,r in enumerate(radios)}
+            return review_controller_load("w1",self.frame,self.snapshot,radios,quality,t,history)
+        # Earlier eligible pair, exact upper boundary and pair outside it.
+        self.assertEqual(at(730,20)["reason"],"cpu_screen_not_met")
+        self.assertEqual(at(1300,42)["reason"],"cpu_screen_not_met")
+        self.assertEqual(at(1301,10)["reason"],"cpu_screen_not_met")
+        result=at(2000)
+        self.assertEqual(result["baseline"],"observed")
+        self.assertEqual(result["baseline_observation"],{"cpu_at":1270,"cpu_percent":42,
+            "datapath_at":1300,"datapath_max_1s_percent":25,"datapath_max_4s_percent":20,"risk_first_at":1600})
+        self.assertEqual(result["confidence"],"low")
+        self.assertNotIn("fixture",json.dumps(result))
+        radios=[replace(r,observed_at=2000) for r in self.radios]
+        quality={r.radio_id:dict(self.quality[r.radio_id],observed_at=2000,valid_until=3000,
+                  incident_first_at=1600 if i<2 else None) for i,r in enumerate(radios)}
+        missing=review_controller_load("w1",self.frame,self.snapshot,radios,quality,2000,history)
+        self.assertEqual(missing["baseline"],"unavailable")
+        with tempfile.TemporaryDirectory() as root:
+            view=DiagnosticView(Store(root,mode="diagnostic"),lambda:2000)
+            view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":result}]}},[])
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["baseline_observation"],
+                             result["baseline_observation"])
+        self.frame["_field_connection"]="fixture:4"
+        self.snapshot=replace(self.snapshot,field_connection="fixture:4")
+        self.assertEqual(at(2060)["baseline"],"unavailable")
+        self.assertTrue(all(k[0]>=2030 for k in history.pairs))
+        history.clear()
+        self.assertFalse(history.pairs)
+
+    def test_history_bounds_clock_and_inventory(self):
+        history=ControllerLoadHistory()
+        history.context(("scope",),2000)
+        dp={"observed_at":1000,"data":{"rows":[{"id":0,"type":"FP"}],
+             "max_1s_percent":25,"max_4s_percent":20}}
+        for t in range(1000,1300):
+            history.record(t,30,dict(dp,observed_at=t))
+        self.assertEqual(len(history.pairs),history.MAX_PAIRS)
+        history.context(("scope",),4000)
+        self.assertFalse(history.pairs)
+        history.record(3990,30,dict(dp,observed_at=3990))
+        history.context(("scope",),3999)
+        self.assertFalse(history.pairs)
+        history.record(3990,30,dict(dp,observed_at=3990))
+        changed={"observed_at":3999,"data":dict(dp["data"],rows=[{"id":0,"type":"SP"}])}
+        history.record(3999,35,changed)
+        self.assertEqual(list(history.pairs),[(3999,3999)])
+        history.record(3999,36,changed)
+        self.assertIsNone(history.before_risk([4299],4300))
+
     def test_publication_masks_expired_candidate_without_mutating_evidence(self):
         self.quality[self.radios[-1].radio_id]["valid_until"]=1002
         candidate=self.review()

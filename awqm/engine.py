@@ -16,7 +16,7 @@ from .selection import Selector
 from .client_history import ClientHistory,map_samples
 from .live_neighbors import COMMAND as NEIGHBOR
 from .ap_anchors import reconcile as reconcile_anchors
-from .controller_load_review import review_controller_load
+from .controller_load_review import ControllerLoadHistory,review_controller_load
 from .selected_history import SelectedHistory
 import json
 
@@ -59,6 +59,7 @@ class Engine:
         if simulation and live_clients:raise ValueError("live client path is separate from demo")
         self.live_details={};self.live_client_views=[]
         self.cluster_monitor=cluster_monitor;self.cluster_frames={};self.cluster_view=None;self.anchor_views={}
+        self.controller_load_history={name:ControllerLoadHistory() for name in self.workers}
         if simulation and live_neighbors:raise ValueError("live neighbor path is separate from demo")
         self.live_neighbors=live_neighbors;self.neighbor_frames={};self.neighbor_pending={};self.neighbor_views={};self.neighbor_refresh_at=None
         if simulation and association_history:raise ValueError("live history requires diagnostic mode")
@@ -398,7 +399,10 @@ class Engine:
                     name=node['controller'];node['ap_anchors']=summaries.get(name,{})
                     if not self.error and not self.paused and not self.simulation:
                         node['load_review']=review_controller_load(name,self.cluster_frames.get(name),
-                            snapshots_by_controller.get(name),radios,self.field_quality,int(self.wall()))
+                            snapshots_by_controller.get(name),radios,self.field_quality,int(self.wall()),
+                            history=self.controller_load_history[name])
+                    else:
+                        self.controller_load_history[name].clear()
             self.published_radios=tuple((r.radio_id,r.observed_at) for r in radios if not self.error and self.accepted.get(r.radio_id)==r.observed_at)
             self.last_result={"mode":"demo" if self.simulation else "diagnostic","field_validated":False,
                 "coherent_controllers":len(active),"expected_controllers":len(self.workers),
