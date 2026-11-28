@@ -41,6 +41,28 @@ def _pairs_valid(pairs,radio_at):
         seen.add(tuple(ids))
     return True
 
+def _resource_window_valid(evidence,radio_at,pairs):
+    """Same bounded resource contract for capture and historical reads."""
+    times=[evidence.get("cpu_at"),evidence.get("datapath_at"),radio_at]
+    if not all(_integer(t) for t in times):return False
+    if any(not p["window_start"]<=min(times)<=max(times)<=p["window_end"]
+           for p in pairs):return False
+    resources=[evidence.get(k) for k in
+               ("cpu_percent","datapath_max_1s_percent","datapath_max_4s_percent")]
+    return (all(type(v) in (int,float) and 0<=v<=100 for v in resources)
+            and resources[0]>=70)
+
+def _child_identity_valid(rows):
+    """The original group must still identify distinct same-site APs."""
+    if any(not isinstance(r[0],str) or r[0].count(":")<2
+           or not _integer(r[1]) or not isinstance(r[4],str) or not r[4]
+           for r in rows):return False
+    physical=[r[0].rsplit(":",1)[0] for r in rows]
+    return (len(set(physical))==len(rows)
+            and len({p.split(":",1)[0] for p in physical})==1
+            and len({r[4] for r in rows})==1
+            and max(r[1] for r in rows)-min(r[1] for r in rows)<=30)
+
 def _revision(c,ident,revision,radio_at,window_end):
     # Neighbor evidence is appended at its own observation time, which
     # can be later than the underlying Radio sample. Bind the immutable
@@ -100,10 +122,9 @@ class CommonIncidents:
         if group_review!=common.get("group_review"):return []
         times=[review.get(k) for k in ("cpu_at","datapath_at","radio_at")]
         if not all(_integer(t) and 0<=now-t<=90 for t in times):return []
-        if any(not p["window_start"]<=min(times)<=max(times)<=p["window_end"]
-               or not 0<=now-p["window_end"]<=90 or now-p["window_start"]>90 for p in pairs):return []
+        if not _resource_window_valid(review,radio_at,pairs):return []
+        if any(not 0<=now-p["window_end"]<=90 or now-p["window_start"]>90 for p in pairs):return []
         resources={k:review.get(k) for k in ("cpu_percent","datapath_max_1s_percent","datapath_max_4s_percent")}
-        if any(type(v) not in (int,float) or not 0<=v<=100 for v in resources.values()) or resources["cpu_percent"]<70:return []
         parents=[]
         with self.store.lock,self.store._db(self.store.root/"core.db") as c:
             for group in group_review["groups"]:
@@ -112,9 +133,7 @@ class CommonIncidents:
                     FROM rf_incidents WHERE incident_id=?""",(i,)).fetchone() for i in ids]
                 if any(r is None or r[2]!=radio_at or r[4]!=controller or r[5]!="PERSISTENT"
                        or r[6] is not None or not _revision(c,i,r[3],radio_at,group["window_end"]) for i,r in zip(ids,rows)):continue
-                physical=[r[0].rsplit(":",1)[0] for r in rows]
-                if len(set(physical))!=len(ids) or len({p.split(":",1)[0] for p in physical})!=1:continue
-                if max(r[1] for r in rows)-min(r[1] for r in rows)>30:continue
+                if not _child_identity_valid(rows):continue
                 existing={r[0] for i in ids for r in c.execute(
                     "SELECT parent_id FROM rf_common_incident_children WHERE child_id=?",(i,))}
                 if existing:
@@ -122,8 +141,12 @@ class CommonIncidents:
                         parent=next(iter(existing))
                         saved=[r[0] for r in c.execute("""SELECT child_id FROM rf_common_incident_children
                             WHERE parent_id=? ORDER BY child_id""",(parent,))]
-                        if saved==ids and c.execute("SELECT 1 FROM rf_common_incidents WHERE parent_id=?",(parent,)).fetchone():
-                            parents.append(parent)
+                        if saved==ids:
+                            row=c.execute("SELECT * FROM rf_common_incidents WHERE parent_id=?",(parent,)).fetchone()
+                            if row is not None:
+                                try:_validated_parent(c,row)
+                                except ValueError:continue
+                                parents.append(parent)
                     continue
                 parent=uuid4().hex
                 links=[p for p in pairs if set(p["incident_ids"])<=set(ids)]
@@ -155,6 +178,8 @@ def _validated_parent(c,row):
             or e.get("version")!=1 or e.get("confidence")!="low" or e.get("verified") is not False
             or e.get("service_impact")!="unverified" or not _pairs_valid(e.get("pairs"),at)):
         raise ValueError("common incident evidence invalid")
+    if not _resource_window_valid(e,at,e["pairs"]):
+        raise ValueError("common incident resource evidence invalid")
     groups=review_common_groups(e["pairs"])
     if groups["withheld_components"] or len(groups["groups"])!=1:raise ValueError("common incident group invalid")
     g=groups["groups"][0]
@@ -165,6 +190,10 @@ def _validated_parent(c,row):
         raise ValueError("common incident membership mismatch")
     if any(not _integer(rev) or rev<1 or not _revision(c,i,rev,at,end) for i,rev in children):
         raise ValueError("common incident child revision unavailable")
+    rows=[c.execute("""SELECT radio_id,first_at,last_at,evidence_rev,controller
+        FROM rf_incidents WHERE incident_id=?""",(i,)).fetchone() for i,_ in children]
+    if any(r is None for r in rows) or not _child_identity_valid(rows):
+        raise ValueError("common incident child identity mismatch")
     return children
 
 def lifecycle_for_child(c,ident):
@@ -230,4 +259,10 @@ def backup_matches(c,backup,ident):
         a=c.execute(query,(parent,)).fetchall()
         b=backup.execute(query,(parent,)).fetchall()
         if not a or a!=b:return False
+    # Matching bytes alone do not make an invalid common incident safe.
+    # Validate only the referenced parent, not the entire archive ledger.
+    for db in (c,backup):
+        row=db.execute("SELECT * FROM rf_common_incidents WHERE parent_id=?",(parent,)).fetchone()
+        try:_validated_parent(db,row)
+        except ValueError:return False
     return True

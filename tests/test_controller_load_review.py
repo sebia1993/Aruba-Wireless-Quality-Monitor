@@ -230,6 +230,45 @@ class ControllerLoadReviewTests(unittest.TestCase):
                         validate_links(db)
                     db.execute("UPDATE rf_incident_events SET at=? WHERE incident_id=? AND revision=?",(event_at,ids[0],rev))
                     validate_links(db)
+                # Historical reads and retention/restore must revalidate the
+                # original capture contract, not merely trust matching JSON.
+                with store.lock,store._db(store.root/"core.db") as db:
+                    original=db.execute("SELECT evidence FROM rf_common_incidents WHERE parent_id=?",(created[0],)).fetchone()[0]
+                    for changes in ({"cpu_percent":69},{"cpu_percent":True},
+                                    {"datapath_max_1s_percent":101},{"datapath_at":1366},
+                                    {"cpu_at":1334}):
+                        with self.subTest(resource=changes):
+                            bad=json.dumps(dict(json.loads(original),**changes),sort_keys=True)
+                            db.execute("UPDATE rf_common_incidents SET evidence=? WHERE parent_id=?",(bad,created[0]))
+                            with self.assertRaisesRegex(ValueError,"common incident resource evidence invalid"):
+                                validate_links(db)
+                    db.execute("UPDATE rf_common_incidents SET evidence=? WHERE parent_id=?",(original,created[0]))
+                    original_child=db.execute("SELECT radio_id,controller,first_at FROM rf_incidents WHERE incident_id=?",(ids[1],)).fetchone()
+                    other_radio=db.execute("SELECT radio_id FROM rf_incidents WHERE incident_id=?",(ids[0],)).fetchone()[0]
+                    duplicate_ap=other_radio.rsplit(":",1)[0]+":99"
+                    for radio,controller,first in ((duplicate_ap,original_child[1],original_child[2]),
+                            (original_child[0],"other-controller",original_child[2]),
+                            (original_child[0],original_child[1],0)):
+                        with self.subTest(identity=(radio,controller,first)):
+                            db.execute("UPDATE rf_incidents SET radio_id=?,controller=?,first_at=? WHERE incident_id=?",
+                                       (radio,controller,first,ids[1]))
+                            with self.assertRaisesRegex(ValueError,"common incident child identity mismatch"):
+                                validate_links(db)
+                            db.execute("UPDATE rf_incidents SET radio_id=?,controller=?,first_at=? WHERE incident_id=?",
+                                       (*original_child,ids[1]))
+                    validate_links(db)
+                    bad=json.dumps(dict(json.loads(original),cpu_percent=69),sort_keys=True)
+                    db.execute("UPDATE rf_common_incidents SET evidence=? WHERE parent_id=?",(bad,created[0]))
+                self.assertEqual(parents.capture("w1",result,1365),[])
+                self.assertEqual(view.incident_detail(ids[0])["common_incident_lifecycle"]["status"],"unavailable")
+                invalid_backup=verified_backup(store,p/"invalid-resource",include_aggregates=False)
+                with store.lock,store._db(store.root/"core.db") as db,readonly(invalid_backup/"core.db") as copy:
+                    self.assertFalse(backup_matches(db,copy,ids[0]))
+                    db.execute("UPDATE rf_common_incidents SET evidence=? WHERE parent_id=?",(original,created[0]))
+                with self.assertRaisesRegex(ValueError,"common incident resource evidence invalid"):
+                    restore_new(invalid_backup,p/"invalid-resource-restore")
+                self.assertFalse((p/"invalid-resource-restore").exists())
+                self.assertEqual(parents.capture("w1",result,1365),created)
                 # The authenticated detail path only reports recorded child
                 # recovery. It never promotes an open or missing observation.
                 def lifecycle():
