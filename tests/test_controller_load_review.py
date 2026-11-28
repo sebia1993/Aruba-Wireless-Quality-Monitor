@@ -175,6 +175,41 @@ class ControllerLoadReviewTests(unittest.TestCase):
                 "window_start":1335,"window_end":1365}],"withheld_components":0})
             for ident in ids:
                 self.assertEqual(ledger.incidents.detail(ident)["state"],"PERSISTENT")
+            # Exercise the real validated pair -> immutable SQLite parent path.
+            from awqm.common_incidents import CommonIncidents,validate_links,backup_matches
+            from awqm.maintenance import verified_backup,restore_new
+            from awqm.retention import _incident_reference_holds,readonly
+            from pathlib import Path
+            from copy import deepcopy
+            with tempfile.TemporaryDirectory() as dst:
+                p=Path(dst)
+                before=verified_backup(store,p/"before",include_aggregates=False)
+                parents=CommonIncidents(store)
+                invalid=deepcopy(result)
+                invalid["common_incident_review"]["group_review"]["groups"][0]["pair_count"]=2
+                self.assertEqual(parents.capture("w1",invalid,1365),[])
+                self.assertEqual(parents.capture("w2",result,1365),[])
+                self.assertEqual(parents.capture("w1",result,result["common_incident_review"]["valid_until"]),[])
+                created=parents.capture("w1",result,1365)
+                self.assertEqual(len(created),1)
+                self.assertEqual(parents.capture("w1",result,1365),created)
+                self.assertEqual(CommonIncidents(store).capture("w1",result,1365),created)
+                with store.lock,store._db(store.root/"core.db") as db,readonly(before/"core.db") as old:
+                    validate_links(db)
+                    self.assertFalse(backup_matches(db,old,ids[0]))
+                    self.assertEqual(_incident_reference_holds(db,set(ids)),set(ids))
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM rf_common_incidents").fetchone(),(1,))
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM rf_common_incident_children").fetchone(),(2,))
+                saved=verified_backup(store,p/"saved",include_aggregates=False)
+                restored=restore_new(saved,p/"restored")
+                with store.lock,store._db(store.root/"core.db") as db,readonly(restored/"core.db") as copy:
+                    validate_links(copy)
+                    self.assertTrue(backup_matches(db,copy,ids[0]))
+                    db.execute("UPDATE rf_common_incident_children SET evidence_rev=99999 WHERE child_id=?",(ids[0],))
+                corrupt=verified_backup(store,p/"corrupt",include_aggregates=False)
+                with self.assertRaisesRegex(ValueError,"common incident membership mismatch"):
+                    restore_new(corrupt,p/"refused")
+                self.assertFalse((p/"refused").exists())
 
     def test_attestation_generation_and_current_quality_are_required(self):
         self.frame["_field_connection"]="fixture:4"

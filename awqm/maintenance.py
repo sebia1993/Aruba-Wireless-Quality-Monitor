@@ -100,6 +100,8 @@ def _validate_restored_incident_links(path):
     db = sqlite3.connect(path.resolve().as_uri()+"?mode=ro&immutable=1", uri=True)
     try:
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        from .common_incidents import validate_links
+        validate_links(db)
         required = {"rf_incidents", "rf_incident_events"}
         if not tables & required:
             return

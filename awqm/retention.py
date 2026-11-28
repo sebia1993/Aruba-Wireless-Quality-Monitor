@@ -52,7 +52,11 @@ def _incident_evidence(c,backup,start,end):
     affected=c.execute("""SELECT incident_id,evidence_rev,ended_at FROM rf_incidents
         WHERE first_at<? AND last_at>=?""",(end,start)).fetchall()
     if any(row[2] is None for row in affected):return "open_incident_evidence"
+    from .common_incidents import backup_matches
     for ident,rev,_ in affected:
+        try:
+            if not backup_matches(c,backup,ident):return "common_incident_backup_mismatch"
+        except (ValueError,sqlite3.Error):return "common_incident_schema_invalid"
         local=c.execute("SELECT COUNT(*),MIN(revision),MAX(revision) FROM rf_incident_events WHERE incident_id=?",(ident,)).fetchone()
         if local!=(rev,1,rev):return "incomplete_incident_evidence"
         if c.execute("""SELECT 1 FROM rf_incident_reviews r WHERE r.incident_id=?
@@ -133,7 +137,9 @@ def _incident_reference_holds(c,candidate_ids):
     Stream rows under the existing writer lock; do not materialize the ledger.
     """
     if not candidate_ids:return set()
-    held=set()
+    from .common_incidents import held_children
+    try:held=held_children(c,candidate_ids)
+    except (ValueError,sqlite3.Error):return set(candidate_ids)
     for source,payload in c.execute("""SELECT incident_id,evidence FROM rf_incidents
         UNION ALL SELECT incident_id,evidence FROM rf_incident_events"""):
         try:
