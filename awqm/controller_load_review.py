@@ -191,16 +191,23 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now,history=
         positive=r.utilization>=75 or r.interference>=30 or r.noise>-80
         normal=(q.get("status")=="NORMAL" and not q.get("incident_id")
                 and r.utilization<50 and r.interference<10 and r.noise<=-90)
-        if history is not None and q.get("status") in (
+        if q.get("status") in (
             "NORMAL","WATCH","DETECTED","PERSISTENT","RECOVERING","RESOLVED"):
-            record=(r.epoch,r.band,r.channel,positive,normal)
-            if r.radio_id in rf_records and rf_records[r.radio_id]!=record:
-                rf_conflict=True
-            # Bound the temporary map too; an oversized snapshot cannot
-            # become a deceptively complete comparison through truncation.
-            elif len(rf_records)<history.MAX_RADIOS_PER_FRAME or r.radio_id in rf_records:
+            # Exact RF inputs matter even when two values fall in the same
+            # risk bucket. Retain them privately; the comparison API still
+            # publishes only aggregate counts.
+            record=(r.epoch,r.band,r.channel,positive,normal,
+                    r.utilization,r.interference,r.noise,q["status"])
+            if r.radio_id in rf_records:
+                if rf_records[r.radio_id]!=record:rf_conflict=True
+                # An identical duplicate contributes only once.
+                continue
+            # Bound the temporary map even if no history is supplied.
+            if len(rf_records)<ControllerLoadHistory.MAX_RADIOS_PER_FRAME:
                 rf_records[r.radio_id]=record
-            else:rf_conflict=True
+            else:
+                rf_conflict=True
+                continue
         if q.get("status")=="PERSISTENT" and q.get("incident_id") and positive:
             aps.add(r.ap_id);radio_ids.add(r.radio_id)
             risk_starts.append(q.get("incident_first_at"))
@@ -211,7 +218,12 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now,history=
             normal_radios[r.radio_id]=(r.ap_id,q["valid_until"])
     if history is not None:
         rf_recorded=history.record_radio_snapshot(snapshot.observed_at,None if rf_conflict else rf_records)
-    else:rf_recorded=False
+        if not rf_recorded:
+            return withheld("radio_observation_unusable")
+    else:
+        rf_recorded=False
+        if rf_conflict:
+            return withheld("radio_observation_unusable")
     if cpu_value<70:return withheld("cpu_screen_not_met")
     if len(aps)<2:return withheld("distinct_persistent_aps_required")
     other_normals=[(ap,until) for ap,until in normal_radios.values() if ap not in aps]

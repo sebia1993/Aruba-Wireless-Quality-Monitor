@@ -318,3 +318,49 @@ class ControllerLoadReviewTests(unittest.TestCase):
         self.assertTrue(history.record_radio_snapshot(1300,prior))
         history.context(("changed",),3200)
         self.assertFalse(history.radio_frames)
+
+    def test_current_radio_conflicts_withhold_candidate_and_block_replay(self):
+        history=ControllerLoadHistory()
+        self.frame["resource_validation"].update(approved_at=100,until=3000)
+        def at(t,mode="valid",h=history):
+            snapshot=replace(self.snapshot,observed_at=t,field_until=3000)
+            self.frame["readings"][CPU]=replace(self.frame["readings"][CPU],observed_at=t-10,data=82)
+            self.frame["readings"][DATAPATH]=replace(self.frame["readings"][DATAPATH],observed_at=t)
+            radios=[replace(r,observed_at=t) for r in self.radios]
+            quality={r.radio_id:dict(self.quality[r.radio_id],observed_at=t,valid_until=3000,
+                                     incident_first_at=900) for r in radios}
+            if mode=="duplicate":radios.append(radios[0])
+            if mode=="duplicate_conflict":radios.append(replace(radios[0],utilization=91))
+            if mode=="changed":radios[0]=replace(radios[0],utilization=91)
+            return review_controller_load("w1",self.frame,snapshot,radios,quality,t,h)
+        blocked={"status":"not_evaluated","reason":"radio_observation_unusable"}
+        first=at(1000)
+        self.assertEqual(first["status"],"review_candidate")
+        self.assertEqual(at(1000,"duplicate"),first)
+        # Conflicting observations in the same risk bucket are not equivalent.
+        self.assertEqual(at(1000,"changed"),blocked)
+        self.assertFalse(history.radio_frames)
+        self.assertEqual(at(1000),blocked)
+        self.assertEqual(at(1010,"duplicate_conflict"),blocked)
+        self.assertEqual(at(1010),blocked)
+        self.assertEqual(at(1020)["status"],"review_candidate")
+        self.assertEqual(at(1020)["rf_baseline"],"unavailable")
+        # The same-frame check is also enforced without optional history.
+        self.assertEqual(at(1030,"duplicate_conflict",None),blocked)
+        self.assertEqual(at(1030,"duplicate",None)["radio_count"],3)
+        with tempfile.TemporaryDirectory() as root:
+            view=DiagnosticView(Store(root,mode="diagnostic"),lambda:1030)
+            view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":blocked}]}},[])
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"],blocked)
+            self.assertNotIn("00:11",json.dumps(view.page()["cluster"]))
+
+    def test_over_capacity_radio_frame_cannot_be_a_partial_cause_candidate(self):
+        from unittest.mock import patch
+        history=ControllerLoadHistory()
+        with patch.object(ControllerLoadHistory,"MAX_RADIOS_PER_FRAME",2):
+            self.assertEqual(self.review(),{"status":"not_evaluated","reason":"radio_observation_unusable"})
+            result=review_controller_load("w1",self.frame,self.snapshot,self.radios,self.quality,self.now,history)
+            self.assertEqual(result,{"status":"not_evaluated","reason":"radio_observation_unusable"})
+            self.assertFalse(history.radio_frames)
+        # Same frame must not be accepted once discarded.
+        self.assertEqual(review_controller_load("w1",self.frame,self.snapshot,self.radios,self.quality,self.now,history),result)
