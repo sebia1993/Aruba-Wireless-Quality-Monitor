@@ -5,7 +5,7 @@ unambiguous AAC and a matching resource-approved connection is eligible.
 No new SSH, raw device identifiers, grouping or historical persistence.
 A bounded volatile resource baseline is optional; it is not an RF baseline.
 """
-import re
+import hashlib,json,re
 from .model import number
 from .controller_resources import DATAPATH,observations
 
@@ -29,6 +29,7 @@ class ControllerLoadHistory:
         self.inventory=None
         self.last_now=None
         self.pairs={}
+        self.blocked_through=None
 
     def context(self,scope,now):
         if self.scope!=scope or (self.last_now is not None and now<self.last_now):
@@ -44,29 +45,46 @@ class ControllerLoadHistory:
             self.pairs.clear()
             self.inventory=inventory
         key=(cpu_at,dp["observed_at"])
+        if self.blocked_through is not None and min(key)<=self.blocked_through:
+            return False
+        # A single resource reading can be reused with a newer reading of
+        # the other resource. Detect contradictions by each source timestamp,
+        # not just by the compound pair key. Keep only a private digest of
+        # the approved per-CPU fields; identical maxima can hide a conflict.
+        fingerprint=hashlib.sha256(json.dumps(dp["data"]["rows"],
+            sort_keys=True,separators=(",",":")).encode("utf-8")).hexdigest()
         v={"cpu_at":cpu_at,"cpu_percent":cpu_value,
            "datapath_at":key[1],
            "datapath_max_1s_percent":dp["data"]["max_1s_percent"],
-           "datapath_max_4s_percent":dp["data"]["max_4s_percent"]}
-        if key in self.pairs and self.pairs[key] is not None and self.pairs[key]!=v:
-            # Conflicting observation at the same timestamp is not a baseline.
-            self.pairs.clear()
-            self.pairs[key]=None
-        elif key not in self.pairs:
-            self.pairs[key]=v
+           "datapath_max_4s_percent":dp["data"]["max_4s_percent"],
+           "_datapath_fingerprint":fingerprint}
+        for previous_key,previous in self.pairs.items():
+            cpu_conflict=previous_key[0]==key[0] and previous["cpu_percent"]!=cpu_value
+            dp_conflict=previous_key[1]==key[1] and any(previous[k]!=v[k] for k in
+                ("_datapath_fingerprint","datapath_max_1s_percent","datapath_max_4s_percent"))
+            if cpu_conflict or dp_conflict:
+                # Do not cherry-pick unaffected-looking old pairs or accept
+                # a replay of either conflicting reading. Start a fresh
+                # comparison segment only when both readings are newer.
+                self.blocked_through=max(max(key),max(max(k) for k in self.pairs))
+                self.pairs.clear()
+                return False
+        self.pairs[key]=v
         if len(self.pairs)>self.MAX_PAIRS:
             self.pairs.pop(min(self.pairs,key=lambda k:(max(k),k)))
+        return True
 
     def before_risk(self,starts,radio_at):
         if not starts or any(type(t) is not int or not 0<=t<=radio_at for t in starts):
             return None
         start=min(starts)
         lo,hi=start-900,start-300
-        eligible=[k for k,v in self.pairs.items() if v is not None and all(lo<=t<=hi for t in k)]
+        eligible=[k for k in self.pairs if all(lo<=t<=hi for t in k)]
         if not eligible:return None
         # Choose the latest eligible pair, not the largest/smallest CPU.
         key=max(eligible,key=lambda k:(max(k),k))
-        return dict(self.pairs[key],risk_first_at=start)
+        public={k:v for k,v in self.pairs[key].items() if k!="_datapath_fingerprint"}
+        return dict(public,risk_first_at=start)
 
 
 def review_controller_load(controller,frame,snapshot,radios,quality,now,history=None):
@@ -82,9 +100,6 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now,history=
         or not snapshot.field_until or not now<snapshot.field_until or not gate.get("valid")):
         if history is not None:history.clear()
         return withheld("matching_attestation_required")
-    if history is not None:
-        history.context((controller,snapshot.field_connection,snapshot.field_tag,
-                         gate["approved_at"],tuple(gate["cpu_ids"])),now)
     dp=observations(frame,now)["datapath"]
     cpu=frame.get("readings",{}).get(CPU)
     dp_reading=frame.get("readings",{}).get(DATAPATH)
@@ -97,10 +112,15 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now,history=
     if cpu_value is None:
         if history is not None:history.clear()
         return withheld("resource_evidence_required")
+    if history is not None:
+        history.context((controller,snapshot.field_connection,snapshot.field_tag,
+                         snapshot.field_until,gate["approved_at"],gate["until"],
+                         tuple(gate["cpu_ids"]),cpu.generation),now)
     times=(cpu.observed_at,dp["observed_at"],snapshot.observed_at)
     if any(not 0<=now-t<=90 for t in times) or max(times)-min(times)>30:
         return withheld("time_unaligned")
-    if history is not None:history.record(cpu.observed_at,cpu_value,dp)
+    if history is not None and not history.record(cpu.observed_at,cpu_value,dp):
+        return withheld("resource_observation_conflict")
     if cpu_value<70:return withheld("cpu_screen_not_met")
     # The CPU threshold is the existing collection-protection threshold,
     # not a vendor fault threshold. Datapath values are observations only;

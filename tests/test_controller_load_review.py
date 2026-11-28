@@ -146,6 +146,66 @@ class ControllerLoadReviewTests(unittest.TestCase):
         history.record(3999,36,changed)
         self.assertIsNone(history.before_risk([4299],4300))
 
+    def test_independent_resource_timestamp_conflicts_block_replayed_pairs(self):
+        history=ControllerLoadHistory()
+        history.context(("scope",),1200)
+        rows=[{"id":0,"type":"FP","percent_1s":25,"percent_4s":20},
+              {"id":1,"type":"FP","percent_1s":10,"percent_4s":5}]
+        def dp(at,other=10):
+            return {"observed_at":at,"data":{"rows":[rows[0],dict(rows[1],percent_1s=other)],
+                "max_1s_percent":25,"max_4s_percent":20}}
+        self.assertTrue(history.record(1000,40,dp(1010)))
+        self.assertTrue(history.record(1000,40,dp(1020)))
+        self.assertFalse(history.record(1000,41,dp(1030)))
+        self.assertFalse(history.pairs)
+        self.assertIsNone(history.before_risk([1400],1400))
+        self.assertFalse(history.record(1000,40,dp(1040)))
+        self.assertFalse(history.record(1040,40,dp(1030)))
+        self.assertTrue(history.record(1040,40,dp(1050)))
+        self.assertTrue(history.record(1045,41,dp(1050)))
+        # Same Datapath timestamp and same maxima but contradictory CPU row.
+        self.assertFalse(history.record(1049,42,dp(1050,other=11)))
+        self.assertFalse(history.record(1060,42,dp(1050)))
+        self.assertTrue(history.record(1060,42,dp(1070)))
+        public=history.before_risk([1400],1400)
+        self.assertEqual(public["cpu_at"],1060)
+        self.assertNotIn("_datapath_fingerprint",public)
+        history.context(("changed",),1200)
+        self.assertTrue(history.record(1000,40,dp(1010)))
+
+    def test_live_review_withholds_conflicting_resource_and_requires_fresh_pair(self):
+        history=ControllerLoadHistory()
+        self.frame["resource_validation"].update(approved_at=100,until=3000)
+        def at(t,cpu_at,cpu_value,dp_at):
+            snapshot=replace(self.snapshot,observed_at=t,field_until=3000)
+            self.frame["readings"][CPU]=replace(self.frame["readings"][CPU],observed_at=cpu_at,data=cpu_value)
+            self.frame["readings"][DATAPATH]=replace(self.frame["readings"][DATAPATH],observed_at=dp_at)
+            radios=[replace(r,observed_at=t) for r in self.radios]
+            quality={r.radio_id:dict(self.quality[r.radio_id],observed_at=t,valid_until=3000,
+                                     incident_first_at=900) for r in radios}
+            return review_controller_load("w1",self.frame,snapshot,radios,quality,t,history)
+        self.assertEqual(at(1000,990,70,1000)["status"],"review_candidate")
+        conflict=at(1010,990,71,1010)
+        self.assertEqual(conflict,{"status":"not_evaluated","reason":"resource_observation_conflict"})
+        self.assertEqual(at(1015,990,70,1015),conflict)
+        self.assertEqual(at(1020,1010,70,1020),conflict)
+        result=at(1030,1020,70,1030)
+        self.assertEqual(result["status"],"review_candidate")
+        self.assertEqual(result["baseline"],"unavailable")
+        with tempfile.TemporaryDirectory() as root:
+            view=DiagnosticView(Store(root,mode="diagnostic"),lambda:1010)
+            view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":conflict}]}},[])
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"],conflict)
+        # An approval lifetime or reading generation change starts a new
+        # bounded segment; it must not reuse the previous resource history.
+        self.frame["resource_validation"]["until"]=2900
+        self.assertEqual(at(1040,1035,70,1040)["status"],"review_candidate")
+        self.assertEqual(list(history.pairs),[(1035,1040)])
+        for command in (CPU,DATAPATH):
+            self.frame["readings"][command]=replace(self.frame["readings"][command],generation=4)
+        self.assertEqual(at(1050,1045,70,1050)["status"],"review_candidate")
+        self.assertEqual(list(history.pairs),[(1045,1050)])
+
     def test_publication_masks_expired_candidate_without_mutating_evidence(self):
         self.quality[self.radios[-1].radio_id]["valid_until"]=1002
         candidate=self.review()
