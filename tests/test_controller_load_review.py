@@ -230,6 +230,47 @@ class ControllerLoadReviewTests(unittest.TestCase):
                         validate_links(db)
                     db.execute("UPDATE rf_incident_events SET at=? WHERE incident_id=? AND revision=?",(event_at,ids[0],rev))
                     validate_links(db)
+                # The authenticated detail path only reports recorded child
+                # recovery. It never promotes an open or missing observation.
+                def lifecycle():
+                    return view.incident_detail(ids[0])["common_incident_lifecycle"]
+                self.assertEqual(lifecycle()["status"],"not_all_resolved_observed")
+                self.assertEqual(lifecycle()["resolved_count"],0)
+                self.assertEqual(lifecycle()["parent_id"],created[0])
+                for t in (1420,1480,1540,1600,1660,1720):
+                    current=[replace(a,observed_at=t,utilization=20,interference=2,noise=-95),
+                             replace(b,observed_at=t,utilization=20 if t>=1600 else 90,
+                                     interference=2 if t>=1600 else 30,noise=-95)]
+                    store.save_batch(current)
+                    ledger.evaluate(current,[replace(snap,observed_at=t)],t,
+                                    {r.radio_id:t for r in current})
+                    if t==1540:
+                        partial=lifecycle()
+                        self.assertEqual((partial["status"],partial["resolved_count"]),
+                                         ("not_all_resolved_observed",1))
+                        self.assertEqual(partial["last_resolved_at"],1540)
+                done=lifecycle()
+                self.assertEqual((done["status"],done["child_count"],done["resolved_count"]),
+                                 ("all_children_resolved_observed",2,2))
+                self.assertEqual((done["first_resolved_at"],done["last_resolved_at"]),(1540,1720))
+                self.assertEqual(done["service_impact"],"unverified")
+                self.assertFalse(done["verified"])
+                self.assertNotIn(a.radio_id,json.dumps(done))
+                # Even a RESOLVED snapshot cannot prove recovery if its
+                # exact terminal event is missing or inconsistent.
+                with store.lock,store._db(store.root/"core.db") as db:
+                    terminal=db.execute("SELECT evidence_rev,ended_at FROM rf_incidents WHERE incident_id=?",
+                                        (ids[0],)).fetchone()
+                    db.execute("UPDATE rf_incident_events SET at=? WHERE incident_id=? AND revision=?",
+                               (terminal[1]+1,ids[0],terminal[0]))
+                self.assertEqual(lifecycle()["status"],"unavailable")
+                self.assertIsNone(lifecycle()["resolved_count"])
+                with store.lock,store._db(store.root/"core.db") as db:
+                    db.execute("UPDATE rf_incident_events SET at=? WHERE incident_id=? AND revision=?",
+                               (terminal[1],ids[0],terminal[0]))
+                    self.assertEqual(_incident_reference_holds(db,set(ids)),set(ids))
+                    validate_links(db)
+                self.assertEqual(lifecycle(),done)
                 saved=verified_backup(store,p/"saved",include_aggregates=False)
                 restored=restore_new(saved,p/"restored")
                 with store.lock,store._db(store.root/"core.db") as db,readonly(restored/"core.db") as copy:

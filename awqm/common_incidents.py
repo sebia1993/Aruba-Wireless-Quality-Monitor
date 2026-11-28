@@ -144,23 +144,73 @@ def validate_links(c):
     if c.execute("""SELECT 1 FROM rf_common_incident_children ch
         LEFT JOIN rf_common_incidents p ON p.parent_id=ch.parent_id
         WHERE p.parent_id IS NULL LIMIT 1""").fetchone():raise ValueError("common incident parent unavailable")
-    for parent,at,start,end,payload in c.execute("SELECT * FROM rf_common_incidents"):
+    for row in c.execute("SELECT * FROM rf_common_incidents"):
+        _validated_parent(c,row)
+
+def _validated_parent(c,row):
+    parent,at,start,end,payload=row
+    try:e=json.loads(payload)
+    except (ValueError,TypeError,RecursionError) as exc:raise ValueError("common incident evidence invalid") from exc
+    if (not _ident(parent) or not _integer(at) or not isinstance(e,dict)
+            or e.get("version")!=1 or e.get("confidence")!="low" or e.get("verified") is not False
+            or e.get("service_impact")!="unverified" or not _pairs_valid(e.get("pairs"),at)):
+        raise ValueError("common incident evidence invalid")
+    groups=review_common_groups(e["pairs"])
+    if groups["withheld_components"] or len(groups["groups"])!=1:raise ValueError("common incident group invalid")
+    g=groups["groups"][0]
+    children=[list(r) for r in c.execute("""SELECT child_id,evidence_rev FROM rf_common_incident_children
+        WHERE parent_id=? ORDER BY child_id LIMIT 201""",(parent,))]
+    if ([i for i,_ in children]!=g["incident_ids"] or children!=e.get("children")
+            or (start,end)!=(g["window_start"],g["window_end"])):
+        raise ValueError("common incident membership mismatch")
+    if any(not _integer(rev) or rev<1 or not _revision(c,i,rev,at,end) for i,rev in children):
+        raise ValueError("common incident child revision unavailable")
+    return children
+
+def lifecycle_for_child(c,ident):
+    """Historical resolution evidence for one immutable group, not live RF state.
+
+    Read under the existing incident transaction. Do not close/reassign a
+    parent or change retention; a missing or invalid event cannot prove recovery.
+    """
+    if not schema(c):return None
+    link=c.execute("SELECT parent_id FROM rf_common_incident_children WHERE child_id=?",
+                   (ident,)).fetchone()
+    if link is None:return None
+    parent=link[0]
+    result={"parent_id":parent if _ident(parent) else None,
+            "status":"unavailable","child_count":None,"resolved_count":None,
+            "first_resolved_at":None,"last_resolved_at":None,
+            "service_impact":"unverified","verified":False}
+    row=c.execute("SELECT * FROM rf_common_incidents WHERE parent_id=?",(parent,)).fetchone()
+    if row is None:return result
+    try:children=_validated_parent(c,row)
+    except ValueError:return result
+    resolved=[]
+    for child,initial_revision in children:
+        snapshot=c.execute("""SELECT state,ended_at,last_at,evidence_rev,evidence
+            FROM rf_incidents WHERE incident_id=?""",(child,)).fetchone()
+        if snapshot is None:return result
+        state,end,last,revision,payload=snapshot
+        if state!="RESOLVED":continue
+        if (not _integer(end) or end<=row[3] or end!=last or
+                not _integer(revision) or revision<=initial_revision):return result
+        event=c.execute("""SELECT at,state,evidence FROM rf_incident_events
+            WHERE incident_id=? AND revision=?""",(child,revision)).fetchone()
+        if event!=(end,"RESOLVED",payload):return result
         try:e=json.loads(payload)
-        except (ValueError,TypeError,RecursionError) as exc:raise ValueError("common incident evidence invalid") from exc
-        if (not _ident(parent) or not _integer(at) or not isinstance(e,dict)
-                or e.get("version")!=1 or e.get("confidence")!="low" or e.get("verified") is not False
-                or e.get("service_impact")!="unverified" or not _pairs_valid(e.get("pairs"),at)):
-            raise ValueError("common incident evidence invalid")
-        groups=review_common_groups(e["pairs"])
-        if groups["withheld_components"] or len(groups["groups"])!=1:raise ValueError("common incident group invalid")
-        g=groups["groups"][0]
-        children=[list(r) for r in c.execute("""SELECT child_id,evidence_rev FROM rf_common_incident_children
-            WHERE parent_id=? ORDER BY child_id""",(parent,))]
-        if ([i for i,_ in children]!=g["incident_ids"] or children!=e.get("children")
-                or (start,end)!=(g["window_start"],g["window_end"])):
-            raise ValueError("common incident membership mismatch")
-        if any(not _integer(rev) or rev<1 or not _revision(c,i,rev,at,end) for i,rev in children):
-            raise ValueError("common incident child revision unavailable")
+        except (ValueError,TypeError,RecursionError):return result
+        if (not isinstance(e,dict) or not _integer(e.get("observed_at"))
+                or e["observed_at"]!=end or e.get("risk_status")!="RESOLVED"
+                or e.get("service_impact")!="unverified"):return result
+        resolved.append(end)
+    result.update(status=("all_children_resolved_observed" if len(resolved)==len(children)
+                          else "not_all_resolved_observed"),
+                  child_count=len(children),resolved_count=len(resolved),
+                  first_resolved_at=min(resolved) if resolved else None,
+                  last_resolved_at=max(resolved) if resolved else None)
+    return result
+
 
 def held_children(c,ids):
     """Until parent lifecycle is implemented, never retire referenced children."""

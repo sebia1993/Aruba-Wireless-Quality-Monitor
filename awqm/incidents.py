@@ -395,6 +395,9 @@ class Incidents:
             item["prior_resolved_observation"]=self._prior_resolved_observation(c,ident,item["first_at"])
             item["repeat_observation_window_seconds"]=REPEAT_OBSERVATION_SECONDS
             item["repeat_observation_assessed"],item["repeat_observation"]=self._recorded_repeat_observation(c,ident,item["first_at"])
+            from .common_incidents import lifecycle_for_child
+            lifecycle=lifecycle_for_child(c,ident)
+            if lifecycle is not None:item["common_incident_lifecycle"]=lifecycle
             item["service_impact"]="unverified"
             return item
     def review(self,ident,revision,request_id,user,verdict,reason,candidate):

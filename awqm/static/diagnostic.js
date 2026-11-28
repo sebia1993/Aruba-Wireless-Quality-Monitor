@@ -334,6 +334,26 @@ async function openIncident(id){
     }else if(d.repeat_observation_assessed===true&&repeat===null){
       out.append(el("p","30분 이내 반복 RF 위험 관측의 기록된 관계 없음 (장애 없음이라는 의미 아님)"));
     }
+    const group=d.common_incident_lifecycle;
+    if(group){
+      out.append(el("h4","공통 Incident · 기록된 RF 정상화"));
+      if(group.status==="unavailable"){
+        out.append(el("p","상위·하위 증거 정합성 확인 불가"));
+      }else if(group.service_impact==="unverified"&&group.verified===false&&
+          /^[0-9a-f]{32}$/.test(group.parent_id)&&
+          Number.isSafeInteger(group.child_count)&&group.child_count>=2&&group.child_count<=200&&
+          Number.isSafeInteger(group.resolved_count)&&group.resolved_count>=0&&group.resolved_count<=group.child_count&&
+          group.status===(group.resolved_count===group.child_count?"all_children_resolved_observed":"not_all_resolved_observed")){
+        out.append(el("p","상위 ID: "+group.parent_id),
+          el("p","명시적 RF 정상화 기록: "+group.resolved_count+" / "+group.child_count));
+        if(group.resolved_count>0&&Number.isSafeInteger(group.first_resolved_at)&&Number.isSafeInteger(group.last_resolved_at)&&
+           group.first_resolved_at<=group.last_resolved_at){
+          out.append(el("p","첫 정상화: "+kst(group.first_resolved_at)+" · 마지막 기록: "+kst(group.last_resolved_at)));
+        }
+        out.append(el("p",group.status==="all_children_resolved_observed"?"최초 집단 전체의 정상화 이력 확보":"전체 정상화 기록 미확보"));
+      }else{out.append(el("p","정상화 기록 확인 불가"));}
+      out.append(el("p","과거 하위 관측 기록의 집계입니다. 현재 정상, 서비스 복구, 원인 확정 또는 상위 Incident 종료를 뜻하지 않습니다."));
+    }
     const exports=el("div",null,"pager"),copy=el("button","주간보고 요약 복사"),copyText=el("textarea");
     copyText.hidden=true;copyText.readOnly=true;copyText.rows=10;copyText.setAttribute("aria-label","주간보고 요약");
     copy.addEventListener("click",async()=>{
