@@ -149,6 +149,12 @@ class DiagnosticView:
                         until=review.pop("valid_until",None)
                         if meta.get("paused") or until is None or now>=until or any(not 0<=now-review[k]<=90 for k in ("cpu_at","datapath_at","radio_at")):
                             node["load_review"]={"status":"not_evaluated","reason":"stale_or_paused"}
+                        elif review.get("common_incident_review",{}).get("status")=="review_pairs":
+                            common=review["common_incident_review"]
+                            common_until=common.pop("valid_until",None)
+                            if common_until is None or now>=common_until or any(
+                                    not 0<=now-p["window_start"]<=90 for p in common["pairs"]):
+                                review["common_incident_review"]={"status":"not_evaluated","reason":"stale_or_paused"}
                     for item in node.get("ap_anchors",{}).values():
                         until=item.pop("valid_until",None)
                         if item.get("status")=="observed" and (until is None or now>=until or not 0<=now-item["observed_at"]<=600):

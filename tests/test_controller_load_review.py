@@ -36,6 +36,117 @@ class ControllerLoadReviewTests(unittest.TestCase):
         self.assertEqual(self.review()["reason"],"time_unaligned")
         self.frame["readings"][CPU]=replace(self.frame["readings"][CPU],observed_at=970,data=69)
         self.assertEqual(self.review()["reason"],"cpu_screen_not_met")
+    def test_common_incident_pair_requires_reciprocal_aligned_evidence(self):
+        a,b=self.radios[0],self.radios[-1]
+        for i,r in enumerate(self.radios):
+            self.quality[r.radio_id].update(incident_id=f"{i+1:032x}",incident_first_at=800)
+        def edge(target,**changes):
+            return dict(target_id=target.radio_id,target_context="fixture:3",target_radio_at=1000,
+                candidate="RF05",confidence="medium",discovery="active",relation="same_block",
+                band=target.band,channel=target.channel,width=40,overlap_mhz=40,
+                neighbor_at=990,target_until=1010) | changes
+        def publication(rows):
+            return dict(radio_at=1000,context="fixture:3",observed_at=1000,
+                        until=1100,truncated=False,rows=rows)
+        views={a.radio_id:publication([edge(b)]),b.radio_id:publication([edge(a)])}
+        def evaluate(v):
+            return review_controller_load("w1",self.frame,self.snapshot,self.radios,self.quality,
+                                          self.now,neighbor_views=v)
+        result=evaluate(views)
+        common=result["common_incident_review"]
+        self.assertEqual(common["status"],"review_pairs")
+        self.assertEqual(common["pairs"],[{"incident_ids":[self.quality[a.radio_id]["incident_id"],
+            self.quality[b.radio_id]["incident_id"]],"rf_candidate":"RF05","overlap_mhz":40,
+            "window_start":970,"window_end":1000}])
+        self.assertEqual(common["valid_until"],1010)
+        self.assertNotIn(a.radio_id,json.dumps(common))
+        self.assertNotIn("fixture:3",json.dumps(common))
+        for changes in ({"neighbor_at":969},{"candidate":None},{"target_context":"other"},
+                        {"target_until":1000},{"width":20},{"discovery":"passive"}):
+            with self.subTest(changes=changes):
+                bad={**views,b.radio_id:publication([edge(a,**changes)])}
+                self.assertEqual(evaluate(bad)["common_incident_review"]["status"],"not_evaluated")
+        self.assertEqual(evaluate({a.radio_id:views[a.radio_id]})["common_incident_review"]["status"],"not_evaluated")
+        bad={**views,b.radio_id:publication([edge(a),edge(a,overlap_mhz=20)])}
+        self.assertEqual(evaluate(bad)["common_incident_review"]["status"],"not_evaluated")
+        self.quality[b.radio_id]["incident_first_at"]=831
+        self.assertEqual(evaluate(views)["common_incident_review"]["status"],"not_evaluated")
+        self.quality[b.radio_id]["incident_first_at"]=800
+        with tempfile.TemporaryDirectory() as root:
+            clock=[1000]
+            view=DiagnosticView(Store(root,mode="diagnostic"),lambda:clock[0])
+            view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":result}]}},[])
+            public=view.page()["cluster"]["nodes"][0]["load_review"]
+            self.assertEqual(public["common_incident_review"]["pairs"],common["pairs"])
+            self.assertNotIn("valid_until",public["common_incident_review"])
+            clock[0]=1010
+            public=view.page()["cluster"]["nodes"][0]["load_review"]
+            self.assertEqual(public["status"],"review_candidate")
+            self.assertEqual(public["common_incident_review"],{"status":"not_evaluated","reason":"stale_or_paused"})
+            self.assertEqual(common["valid_until"],1010)
+
+    def test_common_pair_from_live_neighbor_and_committed_ledger(self):
+        from awqm.quality_ledger import QualityLedger
+        from awqm.live_neighbors import LiveNeighbors,NeighborApproval,COMMAND
+        from awqm.rf_neighbors import ChannelBlock
+        from datetime import datetime,timezone
+        a,b=self.radios[0],self.radios[-1]
+        a=replace(a,ap_name="AP1",epoch="w1:5GHz:AP:44+")
+        b=replace(b,ap_name="AP2",channel=48,epoch="w1:5GHz:AP:48-")
+        blocks={("5GHz","44+"):ChannelBlock("5GHz",44,(44,48),True),
+                ("5GHz","48-"):ChannelBlock("5GHz",48,(44,48),True)}
+        with tempfile.TemporaryDirectory() as root:
+            store=Store(root,mode="diagnostic")
+            ledger=QualityLedger(store)
+            for t in (1000,1180,1360):
+                radios=[replace(r,observed_at=t) for r in (a,b)]
+                snap=ControllerSnapshot("w1",t,[],[
+                    {"name":"AP1","ip":"192.0.2.1","roles":["A"]},
+                    {"name":"AP2","ip":"192.0.2.2","roles":["A"]}],[],
+                    field_tag=self.tag,field_until=2000,field_connection="fixture:3")
+                store.save_batch(radios)
+                quality=ledger.evaluate(radios,[snap],t,{r.radio_id:t for r in radios})
+            self.assertTrue(all(q["status"]=="PERSISTENT" for q in quality.values()))
+            bss=("02:ff:00:01:00:01","02:ff:00:02:00:01")
+            frames={"w1":(snap,Reading("show ap bss-table","success",1360,[
+                {"bssid":mac,"ap_name":r.ap_name,"ip":f"192.0.2.{i+1}",
+                 "band":r.band,"channel":r.channel,"width":"40MHz","service":True}
+                for i,(r,mac) in enumerate(zip(radios,bss))],generation=3))}
+            neighbors=LiveNeighbors({"w1":NeighborApproval(self.tag,900,1900,True,0,blocks)},
+                                    ledger.incidents,key=b"fixture")
+            index=neighbors.index(radios,[snap],frames,1360)
+            self.assertEqual(set(index),set(bss))
+            stamp=datetime.fromtimestamp(1360,timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            for i in (0,1):
+                j=1-i;target=radios[j]
+                data=[{"bssid":bss[j],"band":target.band,"primary_channel":target.channel,
+                       "width_candidate":40,"channel_raw":target.epoch.rsplit(":",1)[-1],
+                       "snr":35,"discovery":"active","last_update_raw":stamp}]
+                reading=Reading(COMMAND,"success",1365,data,generation=3,target=bss[i])
+                neighbors.ingest(reading,"w1",snap,index,quality,1365)
+            views=neighbors.publish(radios,[snap],quality,1365)
+            self.frame["resource_validation"]["until"]=1900
+            self.frame["readings"][CPU]=replace(self.frame["readings"][CPU],observed_at=1335)
+            self.frame["readings"][DATAPATH]=replace(self.frame["readings"][DATAPATH],observed_at=1360)
+            result=review_controller_load("w1",self.frame,snap,radios,quality,1365,
+                                          neighbor_views=views)
+            common=result["common_incident_review"]
+            self.assertEqual(common["status"],"review_pairs")
+            ids=sorted(q["incident_id"] for q in quality.values())
+            self.assertEqual(common["pairs"][0]["incident_ids"],ids)
+            view=DiagnosticView(store,lambda:1365,incidents=ledger.incidents)
+            view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":result}]}},
+                         [(r.radio_id,r.observed_at) for r in radios],quality=quality,
+                         neighbor_views=views,neighbor_enabled=True)
+            page=view.page()
+            self.assertEqual(page["cluster"]["nodes"][0]["load_review"]["common_incident_review"]["pairs"],
+                             common["pairs"])
+            self.assertNotIn("fixture:3",json.dumps(page))
+            self.assertNotIn(a.radio_id,json.dumps(page))
+            self.assertNotIn("fixture:3",json.dumps(view.neighbors(view.token(a.radio_id))))
+            for ident in ids:
+                self.assertEqual(ledger.incidents.detail(ident)["state"],"PERSISTENT")
+
     def test_attestation_generation_and_current_quality_are_required(self):
         self.frame["_field_connection"]="fixture:4"
         self.assertEqual(self.review()["reason"],"matching_attestation_required")

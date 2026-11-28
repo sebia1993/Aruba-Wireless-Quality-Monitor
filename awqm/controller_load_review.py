@@ -227,7 +227,97 @@ class ControllerLoadHistory:
         return dict(public,risk_first_at=start)
 
 
-def review_controller_load(controller,frame,snapshot,radios,quality,now,history=None):
+def review_common_pairs(records,radio_ids,quality,views,context,times,now,expires):
+    """Bounded pair proposals only, never a transitive or durable parent.
+    
+    A current CL01 resource screen is necessary but not sufficient. Require
+    reciprocal attested direct RF05/RF06 links with agreeing geometry and a
+    common time envelope. Inputs are the private LiveNeighbors publication.
+    Incident IDs are already opaque public ledger identifiers.
+    """
+    unavailable={"status":"not_evaluated","reason":"common_evidence_required"}
+    if not views or len(views)>100:
+        return unavailable
+    ids={k:records[k][9] for k in radio_ids}
+    if (any(not isinstance(i,str) or not re.fullmatch(r"[0-9a-f]{32}",i) for i in ids.values())
+            or len(set(ids.values()))!=len(ids)):
+        return unavailable
+    directed={}
+    conflicts=set()
+    for source in sorted(radio_ids):
+        view=views.get(source)
+        if (not view or view.get("truncated") is not False or view.get("context")!=context
+                or view.get("radio_at")!=times[2] or type(view.get("until")) is not int
+                or now>=view["until"] or type(view.get("observed_at")) is not int
+                or not 0<=now-view["observed_at"]<=90):
+            continue
+        for row in view["rows"]:
+            target=row.get("target_id")
+            if target not in radio_ids or source==target:
+                continue
+            # Strip only the final physical Radio component, not the AP/site.
+            if (source.rsplit(":",1)[0]==target.rsplit(":",1)[0]
+                    or source.split(":",1)[0]!=target.split(":",1)[0]):
+                continue
+            key=(source,target)
+            code=row.get("candidate")
+            at=row.get("neighbor_at")
+            width=row.get("width")
+            overlap=row.get("overlap_mhz")
+            until=row.get("target_until")
+            starts=(quality[source].get("incident_first_at"),quality[target].get("incident_first_at"))
+            if (code not in ("RF05","RF06") or row.get("confidence")!="medium"
+                    or row.get("discovery")!="active"
+                    or row.get("relation")!=("same_block" if code=="RF05" else "overlapping_block")
+                    or row.get("target_context")!=context or row.get("target_radio_at")!=times[2]
+                    or row.get("band")!=records[source][1] or row.get("band")!=records[target][1]
+                    or row.get("channel")!=records[target][2]
+                    or type(width) is not int or width not in (20,40,80,160)
+                    or type(overlap) is not int or not 0<overlap<=width
+                    or type(at) is not int or not 0<=now-at<=90 or at>view["observed_at"]
+                    or type(until) is not int or now>=until
+                    or any(type(t) is not int or not 0<=t<=times[2] for t in starts)
+                    or abs(starts[0]-starts[1])>30):
+                conflicts.add(key)
+                continue
+            window=(*times,at,view["observed_at"])
+            if max(window)-min(window)>30:
+                conflicts.add(key)
+                continue
+            value=(code,overlap,width,at,view["observed_at"],min(expires,until,view["until"],min(window)+91))
+            if key in directed and directed[key]!=value:
+                conflicts.add(key)
+            directed[key]=value
+    pairs=[]
+    valid_until=expires
+    for (a,b),left in sorted(directed.items()):
+        if a>=b or (a,b) in conflicts or (b,a) in conflicts:
+            continue
+        right=directed.get((b,a))
+        if not right or left[:2]!=right[:2]:
+            continue
+        code,overlap=left[:2]
+        if code=="RF05" and not overlap==left[2]==right[2]:
+            continue
+        if code=="RF06" and overlap==left[2]==right[2]:
+            continue
+        window=(*times,left[3],left[4],right[3],right[4])
+        if max(window)-min(window)>30:
+            continue
+        if len(pairs)>=100:
+            return {"status":"not_evaluated","reason":"pair_capacity_exceeded"}
+        valid_until=min(valid_until,left[5],right[5])
+        pairs.append({"incident_ids":sorted((ids[a],ids[b])),
+                      "rf_candidate":code,"overlap_mhz":overlap,
+                      "window_start":min(window),"window_end":max(window)})
+    if not pairs:
+        return unavailable
+    return {"status":"review_pairs","pairs":sorted(pairs,key=lambda p:p["incident_ids"]),
+            "valid_until":valid_until,"confidence":"low",
+            "service_impact":"unverified","verified":False}
+
+
+def review_controller_load(controller,frame,snapshot,radios,quality,now,history=None,neighbor_views=None):
     def withheld(reason):
         return {"status":"not_evaluated","reason":reason}
     if not frame or not frame.get("connected") or not snapshot or snapshot.controller!=controller:
@@ -342,5 +432,7 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now,history=
             "rf_baseline_observation":rf_baseline,"datapath_threshold":"unvalidated",
             "counter_evidence":counter,
             "service_impact":"unverified","verified":False}
+    result["common_incident_review"]=review_common_pairs(rf_records,radio_ids,quality,
+        neighbor_views,snapshot.field_connection,times,now,expires)
     if history is not None:history.remember_risk(result,rf_records,radio_ids)
     return result

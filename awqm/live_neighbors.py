@@ -213,7 +213,7 @@ class LiveNeighbors:
                 elif x["candidate"] and not self.eligible(target,other,quality.get(target.radio_id),now):
                     x.update(candidate=None,confidence="unavailable",reason="target_congestion_not_current")
                 shown.append(x)
-            self.views[rid]={**{k:v[k] for k in ("radio_at","observed_at","until","truncated")},"rows":shown}
+            self.views[rid]={**{k:v[k] for k in ("radio_at","context","observed_at","until","truncated")},"rows":shown}
         return self.views
     def clear(self):
         self.rows.clear();self.views={}

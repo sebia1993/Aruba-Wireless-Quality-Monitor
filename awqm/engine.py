@@ -408,7 +408,7 @@ class Engine:
                     if not self.error and not self.paused and not self.simulation:
                         node['load_review']=review_controller_load(name,self.cluster_frames.get(name),
                             snapshots_by_controller.get(name),radios,self.field_quality,int(self.wall()),
-                            history=self.controller_load_history[name])
+                            history=self.controller_load_history[name],neighbor_views=self.neighbor_views)
                     else:
                         self.controller_load_history[name].clear()
             self.published_radios=tuple((r.radio_id,r.observed_at) for r in radios if not self.error and self.accepted.get(r.radio_id)==r.observed_at)
