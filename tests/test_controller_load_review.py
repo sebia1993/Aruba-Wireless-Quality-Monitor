@@ -251,8 +251,29 @@ class ControllerLoadReviewTests(unittest.TestCase):
             view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":result}]}},[])
             self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["rf_baseline_observation"],
                              result["rf_baseline_observation"])
+            # The publication TTL (20 s) is independent of the candidate
+            # evidence lifetime. Exercise both boundaries without relaxing either.
+            self.assertGreater(result["valid_until"],2021)
+            clock[0]=2020
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["rf_baseline_observation"],
+                             result["rf_baseline_observation"])
+            clock[0]=2021
+            stale=view.page()
+            self.assertFalse(stale["available"])
+            self.assertIsNone(stale["cluster"])
+            # The coordinator may republish the same still-valid evidence.
+            # Keep the publication fresh to isolate the evidence expiry guard.
+            clock[0]=result["valid_until"]-1
+            view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":result}]}},[])
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["rf_baseline_observation"],
+                             result["rf_baseline_observation"])
             clock[0]=result["valid_until"]
-            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["status"],"not_evaluated")
+            expired=view.page()
+            self.assertTrue(expired["available"])
+            self.assertEqual(expired["cluster"]["nodes"][0]["load_review"],
+                             {"status":"not_evaluated","reason":"stale_or_paused"})
+            self.assertEqual(result["rf_baseline"],"observed")
+            self.assertEqual(result["rf_baseline_observation"]["radio_count"],3)
         # Same resource comparison remains available, but do not substitute
         # an older apparently favorable cohort for a missing or changed one.
         for mode in ("missing","changed","outside"):
