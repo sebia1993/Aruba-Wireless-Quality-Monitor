@@ -137,6 +137,12 @@ class DiagnosticView:
                 # Do not expose expired resource attestation metadata, even
                 # between coordinator publications.
                 meta["cluster"]=deepcopy(meta["cluster"])
+                transition=meta["cluster"].get("transition_review")
+                if transition and transition.get("status")=="transition_observation":
+                    until=transition.pop("valid_until",None)
+                    if (meta.get("paused") or until is None or now>=until
+                        or not 0<=now-transition["current_start"]<=90):
+                        meta["cluster"]["transition_review"]={"status":"not_evaluated","reason":"stale_or_paused"}
                 for node in meta["cluster"].get("nodes",[]):
                     review=node.get("load_review")
                     if review and review.get("status") in ("review_candidate","recovery_observation"):

@@ -17,6 +17,7 @@ from .client_history import ClientHistory,map_samples
 from .live_neighbors import COMMAND as NEIGHBOR
 from .ap_anchors import reconcile as reconcile_anchors
 from .controller_load_review import ControllerLoadHistory,review_controller_load
+from .cluster_transition_review import ClusterTransitionReview
 from .selected_history import SelectedHistory
 import json
 
@@ -60,6 +61,7 @@ class Engine:
         self.live_details={};self.live_client_views=[]
         self.cluster_monitor=cluster_monitor;self.cluster_frames={};self.cluster_view=None;self.anchor_views={}
         self.controller_load_history={name:ControllerLoadHistory() for name in self.workers}
+        self.cluster_transition_review=ClusterTransitionReview(self.workers)
         if simulation and live_neighbors:raise ValueError("live neighbor path is separate from demo")
         self.live_neighbors=live_neighbors;self.neighbor_frames={};self.neighbor_pending={};self.neighbor_views={};self.neighbor_refresh_at=None
         if simulation and association_history:raise ValueError("live history requires diagnostic mode")
@@ -394,6 +396,11 @@ class Engine:
                 self.cluster_monitor.choose(self.cluster_frames,int(self.wall()),self.inflight)
                 self.cluster_view=self.cluster_monitor.report(self.cluster_frames,int(self.wall()))
                 self.anchor_views,summaries=reconcile_anchors(radios,self.cluster_frames,int(self.wall())) if not self.error and not self.paused else ({},{})
+                if not self.error and not self.paused and not self.simulation:
+                    self.cluster_view['transition_review']=self.cluster_transition_review.observe(
+                        active,self.cluster_frames,radios,self.field_quality,int(self.wall()))
+                else:
+                    self.cluster_transition_review.clear()
                 snapshots_by_controller={s.controller:s for s in active}
                 for node in self.cluster_view['nodes']:
                     name=node['controller'];node['ap_anchors']=summaries.get(name,{})

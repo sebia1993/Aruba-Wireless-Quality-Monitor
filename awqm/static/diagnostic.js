@@ -472,6 +472,17 @@ function clusterPanel(d){
   })));
   const cores=d.nodes.flatMap(r=>(r.resources?.datapath?.data?.rows||[]).map(x=>[r.controller,x.id,x.type,x.percent_1s,x.percent_4s]));
   if(cores.length){const detail=el("details");detail.append(el("summary","Datapath CPU별 상세 (64초 값 제외)"),table(["WLC","CPU ID","유형","1초 %","4초 %"],cores));c.append(detail);}
+  const transition=d.transition_review;
+  if(transition){
+    c.append(el("h3","CL02 AAC 변경 및 RF 관측"),el("p","동일 물리 Radio의 이전 정상 및 이후 위험 관측입니다. AAC 변경으로 Epoch가 다르므로 원인 판정은 보류합니다. Failover 발생·서비스 영향·Counter 연속성을 확정하지 않습니다."));
+    if(transition.status==="transition_observation"){
+      c.append(el("p",`이전 ${kst(transition.prior_start)} ~ ${kst(transition.prior_end)} / 이후 ${kst(transition.current_start)} ~ ${kst(transition.current_end)}`),
+        table(["이전 WLC","이후 WLC","물리 AP","Radio"],transition.rows.map(r=>[r.from,r.to,r.ap_count,r.radio_count])));
+    }else{
+      const labels={complete_cluster_required:"전체 클러스터 관측 필요",matching_attestation_required:"동일 승인·연결 필요",time_unaligned:"시각 불일치",radio_observation_unusable:"Radio 관측 상충 또는 한도 초과",new_window_required:"새 비교 관측 필요",no_matched_change_observed:"해당 변경 미관측",stale_or_paused:"관측 만료/정지"};
+      c.append(el("p",labels[transition.reason]||"미확인"));
+    }
+  }
   const reviews=d.nodes.filter(r=>r.load_review);
   if(reviews.length){
     const reasons={current_connection_required:"현재 연결 확인 필요",matching_attestation_required:"동일 승인·연결 근거 필요",resource_evidence_required:"유효 자원 근거 필요",resource_observation_conflict:"자원 관측값 상충 · 새 관측 쌍 대기",radio_observation_unusable:"Radio 관측 상충·재사용 또는 비교 한도 초과 · 새 관측 대기",time_unaligned:"시각 불일치",cpu_screen_not_met:"CPU 검토 기준 미충족",distinct_persistent_aps_required:"서로 다른 지속 위험 AP 2대 이상 필요",stale_or_paused:"관측 만료/정지"};
