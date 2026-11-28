@@ -56,6 +56,37 @@ class ControllerLoadReviewTests(unittest.TestCase):
         self.assertEqual(self.review(self.radios[:2]+[replace(self.radios[-1],utilization=10,interference=0)])["reason"],"distinct_persistent_aps_required")
         self.frame["resource_validation"]["cpu_ids"]=(1,)
         self.assertEqual(self.review()["reason"],"resource_evidence_required")
+    def test_current_window_contrary_observations_are_limited_and_attested(self):
+        def normal(ap,physical):
+            r=replace(self.radio(ap,physical),utilization=20,interference=2,noise=-95)
+            self.quality[r.radio_id]={"scope":"local_operator_attested_radio","status":"NORMAL",
+                "incident_id":None,"observed_at":1000,"approval":self.tag[:12],"valid_until":1005}
+            return r
+        other=[normal(3,0),normal(3,1),normal(4,0)]
+        same=normal(1,2)
+        self.assertEqual(self.review()["counter_evidence"],{"status":"not_observed","other_ap_count":0,"normal_radio_count":0})
+        self.assertEqual(self.review(self.radios+[same])["counter_evidence"]["status"],"not_observed")
+        result=self.review(self.radios+other+[same])
+        self.assertEqual(result["counter_evidence"],{"status":"observed","other_ap_count":2,"normal_radio_count":3})
+        self.assertEqual((result["confidence"],result["valid_until"]),("low",1005))
+        self.assertFalse(result["verified"])
+        self.assertNotIn("00:11",json.dumps(result))
+        r=other[-1];q=self.quality[r.radio_id]
+        for key,value in (("approval","other"),("observed_at",999),("valid_until",1000),
+                          ("status","UNKNOWN"),("incident_id","open"),("scope","other")):
+            with self.subTest(key=key):
+                self.quality[r.radio_id]=dict(q,**{key:value})
+                self.assertEqual(self.review(self.radios+other)["counter_evidence"]["other_ap_count"],1)
+        self.quality[r.radio_id]=q
+        self.assertEqual(self.review(self.radios+other[:2]+[replace(r,utilization=50)])["counter_evidence"]["other_ap_count"],1)
+        self.assertEqual(self.review(self.radios+other[:2]+[replace(r,controller="w2")])["counter_evidence"]["other_ap_count"],1)
+        with tempfile.TemporaryDirectory() as root:
+            clock=[1000]
+            view=DiagnosticView(Store(root,mode="diagnostic"),lambda:clock[0])
+            view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":result}]}},[])
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["counter_evidence"],result["counter_evidence"])
+            clock[0]=1005
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["status"],"not_evaluated")
     def test_publication_masks_expired_candidate_without_mutating_evidence(self):
         self.quality[self.radios[-1].radio_id]["valid_until"]=1002
         candidate=self.review()

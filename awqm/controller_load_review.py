@@ -38,7 +38,7 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now):
     # The CPU threshold is the existing collection-protection threshold,
     # not a vendor fault threshold. Datapath values are observations only;
     # no approved Datapath fault threshold or historical comparison exists.
-    aps=set();radio_ids=set();expires=min(snapshot.field_until,dp["valid_until"],min(times)+91)
+    aps=set();radio_ids=set();normal_radios={};expires=min(snapshot.field_until,dp["valid_until"],min(times)+91)
     for r in radios:
         if (r.controller!=controller or r.source!="aos8-cli-unvalidated"
             or r.observed_at!=snapshot.observed_at or not r.valid
@@ -46,14 +46,25 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now):
             or not re.fullmatch(r"[0-9]+",r.radio_id[len(r.ap_id)+1:],re.ASCII)):
             continue
         q=quality.get(r.radio_id,{})
-        if (q.get("scope")!="local_operator_attested_radio" or q.get("status")!="PERSISTENT"
-            or not q.get("incident_id") or q.get("observed_at")!=r.observed_at
-            or q.get("approval")!=snapshot.field_tag[:12] or not now<q.get("valid_until",0)
-            or not (r.utilization>=75 or r.interference>=30 or r.noise>-80)):
+        if (q.get("scope")!="local_operator_attested_radio" or q.get("observed_at")!=r.observed_at
+            or q.get("approval")!=snapshot.field_tag[:12] or not now<q.get("valid_until",0)):
             continue
-        aps.add(r.ap_id);radio_ids.add(r.radio_id)
-        expires=min(expires,q["valid_until"])
+        if (q.get("status")=="PERSISTENT" and q.get("incident_id")
+            and (r.utilization>=75 or r.interference>=30 or r.noise>-80)):
+            aps.add(r.ap_id);radio_ids.add(r.radio_id)
+            expires=min(expires,q["valid_until"])
+        elif (q.get("status")=="NORMAL" and not q.get("incident_id")
+            and r.utilization<50 and r.interference<10 and r.noise<=-90):
+            # A normal observed Radio on another AP is limited contrary
+            # evidence, not proof that the entire AP or controller is healthy.
+            normal_radios[r.radio_id]=(r.ap_id,q["valid_until"])
     if len(aps)<2:return withheld("distinct_persistent_aps_required")
+    other_normals=[(ap,until) for ap,until in normal_radios.values() if ap not in aps]
+    if other_normals:
+        expires=min(expires,min(until for _,until in other_normals))
+    counter={"status":"observed" if other_normals else "not_observed",
+             "other_ap_count":len({ap for ap,_ in other_normals}),
+             "normal_radio_count":len(other_normals)}
     return {"status":"review_candidate","code":"CL01","confidence":"low",
             "cpu_percent":cpu_value,"cpu_at":cpu.observed_at,
             "datapath_max_1s_percent":dp["data"]["max_1s_percent"],
@@ -61,4 +72,5 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now):
             "datapath_at":dp["observed_at"],"radio_at":snapshot.observed_at,
             "ap_count":len(aps),"radio_count":len(radio_ids),"valid_until":expires,
             "baseline":"unavailable","datapath_threshold":"unvalidated",
+            "counter_evidence":counter,
             "service_impact":"unverified","verified":False}
