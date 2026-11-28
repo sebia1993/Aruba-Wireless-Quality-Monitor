@@ -190,6 +190,31 @@ class ControllerLoadReviewTests(unittest.TestCase):
                 self.assertEqual(parents.capture("w1",invalid,1365),[])
                 self.assertEqual(parents.capture("w2",result,1365),[])
                 self.assertEqual(parents.capture("w1",result,result["common_incident_review"]["valid_until"]),[])
+                # Neighbor evidence is committed five seconds after the
+                # Radio observation, at the exact end of the shared window.
+                # A revision outside that window or about an older sample
+                # must still be rejected, even when capture itself is later.
+                with store.lock,store._db(store.root/"core.db") as db:
+                    row=db.execute("""SELECT e.revision,e.at,e.evidence FROM rf_incident_events e
+                        JOIN rf_incidents i ON i.incident_id=e.incident_id
+                        AND i.evidence_rev=e.revision WHERE i.incident_id=?""",(ids[0],)).fetchone()
+                    rev,event_at,payload=row
+                    self.assertEqual(event_at,1365)
+                    self.assertEqual(json.loads(payload)["observed_at"],1360)
+                    db.execute("UPDATE rf_incident_events SET at=1366 WHERE incident_id=? AND revision=?",(ids[0],rev))
+                self.assertEqual(parents.capture("w1",result,1366),[])
+                with store.lock,store._db(store.root/"core.db") as db:
+                    db.execute("UPDATE rf_incident_events SET at=1359 WHERE incident_id=? AND revision=?",(ids[0],rev))
+                self.assertEqual(parents.capture("w1",result,1365),[])
+                with store.lock,store._db(store.root/"core.db") as db:
+                    stale=json.dumps(dict(json.loads(payload),observed_at=1359),sort_keys=True)
+                    db.execute("UPDATE rf_incident_events SET at=?,evidence=? WHERE incident_id=? AND revision=?",
+                               (event_at,stale,ids[0],rev))
+                    db.execute("UPDATE rf_incidents SET evidence=? WHERE incident_id=?",(stale,ids[0]))
+                self.assertEqual(parents.capture("w1",result,1365),[])
+                with store.lock,store._db(store.root/"core.db") as db:
+                    db.execute("UPDATE rf_incident_events SET evidence=? WHERE incident_id=? AND revision=?",(payload,ids[0],rev))
+                    db.execute("UPDATE rf_incidents SET evidence=? WHERE incident_id=?",(payload,ids[0]))
                 created=parents.capture("w1",result,1365)
                 self.assertEqual(len(created),1)
                 self.assertEqual(parents.capture("w1",result,1365),created)
@@ -200,6 +225,11 @@ class ControllerLoadReviewTests(unittest.TestCase):
                     self.assertEqual(_incident_reference_holds(db,set(ids)),set(ids))
                     self.assertEqual(db.execute("SELECT COUNT(*) FROM rf_common_incidents").fetchone(),(1,))
                     self.assertEqual(db.execute("SELECT COUNT(*) FROM rf_common_incident_children").fetchone(),(2,))
+                    db.execute("UPDATE rf_incident_events SET at=1366 WHERE incident_id=? AND revision=?",(ids[0],rev))
+                    with self.assertRaisesRegex(ValueError,"common incident child revision unavailable"):
+                        validate_links(db)
+                    db.execute("UPDATE rf_incident_events SET at=? WHERE incident_id=? AND revision=?",(event_at,ids[0],rev))
+                    validate_links(db)
                 saved=verified_backup(store,p/"saved",include_aggregates=False)
                 restored=restore_new(saved,p/"restored")
                 with store.lock,store._db(store.root/"core.db") as db,readonly(restored/"core.db") as copy:

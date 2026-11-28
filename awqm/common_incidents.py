@@ -41,11 +41,22 @@ def _pairs_valid(pairs,radio_at):
         seen.add(tuple(ids))
     return True
 
-def _revision(c,ident,revision,radio_at):
-    return c.execute("""SELECT 1 FROM rf_incidents i JOIN rf_incident_events e
+def _revision(c,ident,revision,radio_at,window_end):
+    # Neighbor evidence is appended at its own observation time, which
+    # can be later than the underlying Radio sample. Bind the immutable
+    # revision to that exact Radio sample and the validated group window,
+    # not to an impossible requirement that the neighbor event predate it.
+    row=c.execute("""SELECT e.evidence FROM rf_incidents i JOIN rf_incident_events e
         ON e.incident_id=i.incident_id WHERE i.incident_id=? AND i.evidence_rev>=?
-        AND e.revision=? AND e.state='PERSISTENT' AND e.at<=? AND i.first_at<=?
-        AND i.last_at>=?""",(ident,revision,revision,radio_at,radio_at,radio_at)).fetchone() is not None
+        AND e.revision=? AND e.state='PERSISTENT' AND e.at>=? AND e.at<=?
+        AND i.first_at<=? AND i.last_at>=?
+        AND (i.evidence_rev>? OR i.evidence=e.evidence)""",
+        (ident,revision,revision,radio_at,window_end,radio_at,radio_at,revision)).fetchone()
+    if row is None:return False
+    try:e=json.loads(row[0])
+    except (ValueError,TypeError,RecursionError):return False
+    return (isinstance(e,dict) and _integer(e.get("observed_at"))
+            and e["observed_at"]==radio_at and e.get("risk_status")=="PERSISTENT")
 
 class CommonIncidents:
     def __init__(self,store):
@@ -100,7 +111,7 @@ class CommonIncidents:
                 rows=[c.execute("""SELECT radio_id,first_at,last_at,evidence_rev,controller,state,ended_at
                     FROM rf_incidents WHERE incident_id=?""",(i,)).fetchone() for i in ids]
                 if any(r is None or r[2]!=radio_at or r[4]!=controller or r[5]!="PERSISTENT"
-                       or r[6] is not None or not _revision(c,i,r[3],radio_at) for i,r in zip(ids,rows)):continue
+                       or r[6] is not None or not _revision(c,i,r[3],radio_at,group["window_end"]) for i,r in zip(ids,rows)):continue
                 physical=[r[0].rsplit(":",1)[0] for r in rows]
                 if len(set(physical))!=len(ids) or len({p.split(":",1)[0] for p in physical})!=1:continue
                 if max(r[1] for r in rows)-min(r[1] for r in rows)>30:continue
@@ -148,7 +159,7 @@ def validate_links(c):
         if ([i for i,_ in children]!=g["incident_ids"] or children!=e.get("children")
                 or (start,end)!=(g["window_start"],g["window_end"])):
             raise ValueError("common incident membership mismatch")
-        if any(not _integer(rev) or rev<1 or not _revision(c,i,rev,at) for i,rev in children):
+        if any(not _integer(rev) or rev<1 or not _revision(c,i,rev,at,end) for i,rev in children):
             raise ValueError("common incident child revision unavailable")
 
 def held_children(c,ids):
