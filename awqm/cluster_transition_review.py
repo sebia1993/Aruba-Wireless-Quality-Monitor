@@ -23,23 +23,28 @@ class ClusterTransitionReview:
         self.result=None
         self.blocked_through=None
         self.last_now=None
+        # Keep a high-water mark even when an incomplete/conflicting
+        # observation invalidates the comparison baseline.
+        self.window_end=None
 
     @staticmethod
     def withheld(reason):
         return {"status":"not_evaluated","reason":reason}
 
     def observe(self,snapshots,frames,radios,quality,now):
-        if self.last_now is not None and now<self.last_now:
-            self.clear()
-        self.last_now=now
         def reset(reason):
             self.previous=None
             self.result=None
             return self.withheld(reason)
+        if self.last_now is not None and now<self.last_now:
+            # A wall-clock rollback is not a new observation epoch.
+            # Preserve the temporal watermark and wait for fresh evidence.
+            return reset("window_replay_or_overlap")
+        self.last_now=now
         by={s.controller:s for s in snapshots}
         if len(self.controllers)<2 or len(by)!=len(snapshots) or set(by)!=self.controllers:
             return reset("complete_cluster_required")
-        times=[];context=[];untils=[];gaps=[]
+        times=[];context=[];untils=[];gaps=[];source_times=[]
         for name,s in sorted(by.items()):
             frame=frames.get(name) or {}
             if (not frame.get("connected") or not s.field_tag or not s.field_connection
@@ -49,6 +54,7 @@ class ClusterTransitionReview:
                 or not 0<=now-s.inventory_at<=660):
                 return reset("matching_attestation_required")
             times.extend((s.observed_at,s.anchor_at))
+            source_times.append((name,s.observed_at,s.anchor_at))
             context.append((name,s.field_tag,s.field_connection,s.field_profile))
             untils.append(s.field_until)
             gaps.append(270 if s.field_profile=="safe" else 90)
@@ -57,6 +63,13 @@ class ClusterTransitionReview:
             return reset("time_unaligned")
         if self.blocked_through is not None and lo<=self.blocked_through:
             return reset("radio_observation_unusable")
+        same_window=self.previous is not None and self.previous[:2]==(lo,hi)
+        if not same_window and self.window_end is not None and lo<=self.window_end:
+            # Do not promote overlapping or older observations to a baseline.
+            # A partially newer window also cannot be replayed after rejection.
+            self.window_end=max(self.window_end,hi)
+            return reset("window_replay_or_overlap")
+        self.window_end=hi if self.window_end is None else max(self.window_end,hi)
         context=tuple(context)
         records={}
         for r in radios:
@@ -85,13 +98,13 @@ class ClusterTransitionReview:
             if len(records)>self.MAX_RADIOS:
                 self.blocked_through=hi
                 return reset("radio_observation_unusable")
-        current=(lo,hi,context,records,min(untils))
+        current=(lo,hi,context,records,min(untils),tuple(source_times))
         previous=self.previous
         if previous is not None and previous[:2]==current[:2]:
             if previous[2]!=context:
-                self.previous=current
-                self.result=None
-                return self.withheld("matching_attestation_required")
+                return reset("matching_attestation_required")
+            if previous[5]!=current[5]:
+                return reset("window_replay_or_overlap")
             if previous[3]!=records:
                 self.blocked_through=hi
                 return reset("radio_observation_unusable")

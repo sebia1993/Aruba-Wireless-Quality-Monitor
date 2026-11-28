@@ -95,3 +95,58 @@ class ClusterTransitionReviewTests(unittest.TestCase):
         later=self.sample(1120,"w2",risk=True)
         bad=([replace(later[0][0],anchor_at=1089),later[0][1]],later[1],later[2])
         self.assertEqual(self.observe(bad,1120)["reason"],"time_unaligned")
+
+    def test_old_window_replay_cannot_recreate_transition(self):
+        before=self.sample(1000,"w1")
+        self.observe(before,1000)
+        after=self.sample(1060,"w2",risk=True)
+        result=self.observe(after,1060)
+        self.assertEqual(result["status"],"transition_observation")
+        self.assertEqual(self.observe(after,1061),result)
+        self.assertEqual(self.observe(before,1062)["reason"],"window_replay_or_overlap")
+        self.assertEqual(self.observe(after,1063)["reason"],"window_replay_or_overlap")
+        # A previously seen frame must not become a new baseline even
+        # after a complete-cluster failure clears the comparison state.
+        self.assertEqual(self.observe((after[0][:1],after[1],after[2]),1064)["reason"],
+                         "complete_cluster_required")
+        self.assertEqual(self.observe(before,1065)["reason"],"window_replay_or_overlap")
+        new_before=self.sample(1120,"w2")
+        self.assertEqual(self.observe(new_before,1120)["reason"],"new_window_required")
+        new_after=self.sample(1180,"w1",risk=True)
+        self.assertEqual(self.observe(new_after,1180)["rows"],
+                         [{"from":"w2","to":"w1","ap_count":1,"radio_count":1}])
+
+    def test_overlap_and_same_envelope_source_time_change(self):
+        before=self.sample(1000,"w1")
+        self.observe(before,1000)
+        overlap=self.sample(1020,"w2")
+        mixed=([replace(overlap[0][0],anchor_at=995),overlap[0][1]],overlap[1],overlap[2])
+        self.assertEqual(self.observe(mixed,1020)["reason"],"window_replay_or_overlap")
+        self.assertEqual(self.observe(overlap,1021)["reason"],"window_replay_or_overlap")
+        after=self.sample(1060,"w1",risk=True)
+        self.assertEqual(self.observe(after,1060)["reason"],"new_window_required")
+        # Identical min/max times do not establish identical source windows.
+        self.review.clear()
+        normal=self.sample(1120,"w2")
+        original=([replace(normal[0][0],anchor_at=1110),normal[0][1]],normal[1],normal[2])
+        changed=([original[0][0],replace(original[0][1],anchor_at=1115)],normal[1],normal[2])
+        self.assertEqual(self.observe(original,1120)["reason"],"new_window_required")
+        self.assertEqual(self.observe(changed,1121)["reason"],"window_replay_or_overlap")
+        self.assertEqual(self.observe(original,1122)["reason"],"window_replay_or_overlap")
+        self.assertEqual(self.observe(self.sample(1180,"w1",risk=True),1180)["reason"],
+                         "new_window_required")
+
+    def test_clock_rollback_withholds_public_evidence_until_fresh_windows(self):
+        before=self.sample(1000,"w1")
+        self.observe(before,1000)
+        after=self.sample(1060,"w2",risk=True)
+        self.assertEqual(self.observe(after,1060)["status"],"transition_observation")
+        withheld=self.observe(before,1059)
+        self.assertEqual(withheld,{"status":"not_evaluated","reason":"window_replay_or_overlap"})
+        self.assertEqual(self.observe(after,1060),withheld)
+        view=DiagnosticView(self.store,lambda:1060)
+        view.publish({"cluster":{"nodes":[],"transition_review":withheld}})
+        self.assertEqual(view.page()["cluster"]["transition_review"],withheld)
+        self.assertEqual(self.observe(self.sample(1120,"w2"),1120)["reason"],"new_window_required")
+        self.assertEqual(self.observe(self.sample(1180,"w1",risk=True),1180)["status"],
+                         "transition_observation")
