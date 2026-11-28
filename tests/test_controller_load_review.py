@@ -364,3 +364,79 @@ class ControllerLoadReviewTests(unittest.TestCase):
             self.assertFalse(history.radio_frames)
         # Same frame must not be accepted once discarded.
         self.assertEqual(review_controller_load("w1",self.frame,self.snapshot,self.radios,self.quality,self.now,history),result)
+
+    def test_same_cohort_after_recovery_with_real_ledger(self):
+        from awqm.quality_ledger import QualityLedger
+        history=ControllerLoadHistory()
+        self.frame["resource_validation"].update(approved_at=100,until=3000)
+        with tempfile.TemporaryDirectory() as root:
+            store=Store(root,mode="diagnostic")
+            ledger=QualityLedger(store)
+            def at(t,risk):
+                snapshot=replace(self.snapshot,observed_at=t,field_until=3000)
+                self.frame["readings"][CPU]=replace(self.frame["readings"][CPU],observed_at=t-10,data=82 if risk else 40)
+                self.frame["readings"][DATAPATH]=replace(self.frame["readings"][DATAPATH],observed_at=t)
+                radios=[replace(r,observed_at=t,utilization=90 if risk else 20,
+                    interference=30 if risk else 2,noise=-95) for r in self.radios]
+                for r in radios:store.save(r)
+                q=ledger.evaluate(radios,[snapshot],t,{r.radio_id:t for r in radios})
+                return review_controller_load("w1",self.frame,snapshot,radios,q,t,history)
+            for t in (1000,1060):self.assertEqual(at(t,True)["status"],"not_evaluated")
+            candidate=at(1120,True)
+            self.assertEqual(candidate["status"],"review_candidate")
+            for t in (1180,1240,1300):self.assertEqual(at(t,False)["status"],"not_evaluated")
+            self.assertEqual(at(1300,False)["status"],"not_evaluated")
+            result=at(1360,False)
+            self.assertEqual((result["status"],result["resolved_at"],result["radio_count"]),
+                ("recovery_observation",1300,3))
+            self.assertEqual((result["risk_observation"]["cpu_percent"],result["cpu_percent"]),(82,40))
+            self.assertEqual(result["risk_observation"]["radio_at"],1120)
+            self.assertFalse(result["verified"])
+            self.assertNotIn("00:11",json.dumps(result))
+            self.assertNotIn("private",json.dumps(result))
+            clock=[1360]
+            view=DiagnosticView(store,lambda:clock[0])
+            view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":result}]}},[])
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["status"],"recovery_observation")
+            # Refresh the publication separately from the evidence expiry.
+            clock[0]=result["valid_until"]-1
+            view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":result}]}},[])
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["status"],"recovery_observation")
+            clock[0]+=1
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["reason"],"stale_or_paused")
+            for t in (1420,1480,1540,1600):
+                self.assertEqual(at(t,False)["status"],"recovery_observation")
+            self.assertEqual(at(1601,False)["status"],"not_evaluated")
+
+    def test_recovery_rejects_missing_staggered_changed_or_new_incidents(self):
+        self.frame["resource_validation"].update(approved_at=100,until=3000)
+        def at(h,t,status,mode=None,resource_offset=10):
+            snapshot=replace(self.snapshot,observed_at=t,field_until=3000,field_profile="standard")
+            self.frame["readings"][CPU]=replace(self.frame["readings"][CPU],
+                observed_at=t-resource_offset,data=82 if status=="PERSISTENT" else 40)
+            self.frame["readings"][DATAPATH]=replace(self.frame["readings"][DATAPATH],observed_at=t)
+            radios=[replace(r,observed_at=t,utilization=90 if status=="PERSISTENT" else 20,
+                    interference=30 if status=="PERSISTENT" else 2,noise=-95,
+                    epoch="changed" if mode=="epoch" and i==0 else r.epoch) for i,r in enumerate(self.radios)]
+            if mode=="missing":radios=radios[:-1]
+            quality={r.radio_id:dict(self.quality[r.radio_id],observed_at=t,valid_until=3000,
+                status=("RECOVERING" if mode=="staggered" and i==0 else status),
+                incident_id=None if status=="NORMAL" else ("%032x"%(i+1)),
+                incident_first_at=900) for i,r in enumerate(radios)}
+            if mode=="new":quality[radios[0].radio_id]["incident_id"]="f"*32
+            return review_controller_load("w1",self.frame,snapshot,radios,quality,t,h)
+        for mode in ("missing","staggered","epoch","new"):
+            with self.subTest(mode=mode):
+                h=ControllerLoadHistory()
+                self.assertEqual(at(h,1000,"PERSISTENT")["status"],"review_candidate")
+                self.assertEqual(at(h,1060,"RESOLVED",mode)["status"],"not_evaluated")
+                self.assertIsNone(h.recovery)
+                self.assertEqual(at(h,1120,"NORMAL")["status"],"not_evaluated")
+        h=ControllerLoadHistory()
+        self.assertEqual(at(h,1000,"PERSISTENT")["status"],"review_candidate")
+        self.assertEqual(at(h,1060,"RESOLVED")["status"],"not_evaluated")
+        # A cached CPU reading at the resolution boundary is not post-risk.
+        self.assertEqual(at(h,1080,"NORMAL",resource_offset=20)["status"],"not_evaluated")
+        self.assertEqual(at(h,1090,"NORMAL")["status"],"recovery_observation")
+        self.assertEqual(at(h,1190,"NORMAL")["status"],"not_evaluated")
+        self.assertIsNone(h.recovery)

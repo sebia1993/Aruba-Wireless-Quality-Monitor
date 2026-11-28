@@ -139,7 +139,7 @@ class DiagnosticView:
                 meta["cluster"]=deepcopy(meta["cluster"])
                 for node in meta["cluster"].get("nodes",[]):
                     review=node.get("load_review")
-                    if review and review.get("status")=="review_candidate":
+                    if review and review.get("status") in ("review_candidate","recovery_observation"):
                         until=review.pop("valid_until",None)
                         if meta.get("paused") or until is None or now>=until or any(not 0<=now-review[k]<=90 for k in ("cpu_at","datapath_at","radio_at")):
                             node["load_review"]={"status":"not_evaluated","reason":"stale_or_paused"}
