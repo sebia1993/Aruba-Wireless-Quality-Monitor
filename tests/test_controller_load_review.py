@@ -219,3 +219,81 @@ class ControllerLoadReviewTests(unittest.TestCase):
             clock[0]=1002
             self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"],{"status":"not_evaluated","reason":"stale_or_paused"})
             self.assertEqual(candidate["valid_until"],1002)
+
+    def test_exact_prior_radio_cohort_comparison(self):
+        self.frame["resource_validation"].update(approved_at=100,until=3000)
+        def evaluate(history,t,prior=False,missing=False,changed=False,skew=30):
+            snapshot=replace(self.snapshot,observed_at=t,field_until=3000)
+            self.frame["readings"][CPU]=replace(self.frame["readings"][CPU],
+                observed_at=t-skew,data=42 if prior else 82)
+            self.frame["readings"][DATAPATH]=replace(self.frame["readings"][DATAPATH],observed_at=t)
+            radios=[replace(r,observed_at=t,epoch="different" if changed and i==0 else r.epoch,
+                utilization=20 if prior and i<2 else 90,
+                interference=2 if prior and i<2 else 30) for i,r in enumerate(self.radios)]
+            if missing:radios=radios[:-1]
+            quality={r.radio_id:dict(self.quality[r.radio_id],observed_at=t,valid_until=3000,
+                status="NORMAL" if prior and i<2 else "PERSISTENT",
+                incident_id=None if prior and i<2 else "private",incident_first_at=1600)
+                for i,r in enumerate(radios)}
+            return review_controller_load("w1",self.frame,snapshot,radios,quality,t,history)
+        history=ControllerLoadHistory()
+        self.assertEqual(evaluate(history,1300,prior=True)["reason"],"cpu_screen_not_met")
+        result=evaluate(history,2000)
+        self.assertEqual(result["rf_baseline"],"observed")
+        self.assertEqual(result["rf_baseline_observation"],{"radio_at":1300,"radio_count":3,
+            "prior_positive_risk_radio_count":1,"prior_policy_normal_radio_count":2,
+            "current_positive_risk_radio_count":3})
+        self.assertEqual(result["confidence"],"low")
+        self.assertNotIn("00:11",json.dumps(result));self.assertNotIn("private",json.dumps(result))
+        with tempfile.TemporaryDirectory() as root:
+            clock=[2000]
+            view=DiagnosticView(Store(root,mode="diagnostic"),lambda:clock[0])
+            view.publish({"cluster":{"nodes":[{"controller":"w1","load_review":result}]}},[])
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["rf_baseline_observation"],
+                             result["rf_baseline_observation"])
+            clock[0]=result["valid_until"]
+            self.assertEqual(view.page()["cluster"]["nodes"][0]["load_review"]["status"],"not_evaluated")
+        # Same resource comparison remains available, but do not substitute
+        # an older apparently favorable cohort for a missing or changed one.
+        for mode in ("missing","changed","outside"):
+            with self.subTest(mode=mode):
+                history=ControllerLoadHistory()
+                evaluate(history,1260,prior=True)
+                evaluate(history,1300 if mode!="outside" else 1301,prior=True,
+                         missing=mode=="missing",changed=mode=="changed")
+                if mode=="outside":
+                    # Use a fresh history containing only a pair outside the
+                    # five-minute upper boundary.
+                    history=ControllerLoadHistory()
+                    evaluate(history,1301,prior=True)
+                result=evaluate(history,2000)
+                self.assertEqual(result["rf_baseline"],"unavailable")
+                self.assertIsNone(result["rf_baseline_observation"])
+                self.assertEqual(result["confidence"],"low")
+
+    def test_radio_history_bounds_alignment_conflict_and_scope(self):
+        history=ControllerLoadHistory()
+        history.context(("scope",),1400)
+        prior={"private-radio":("epoch","5GHz",44,False,True)}
+        current={"private-radio":("epoch","5GHz",44,True,False)}
+        baseline={"risk_first_at":1600,"cpu_at":1270,"datapath_at":1300}
+        self.assertTrue(history.record_radio_snapshot(1269,prior))
+        self.assertIsNone(history.before_risk_radio(baseline,current))
+        self.assertTrue(history.record_radio_snapshot(1270,prior))
+        self.assertEqual(history.before_risk_radio(baseline,current)["radio_at"],1270)
+        self.assertTrue(history.record_radio_snapshot(1300,prior))
+        self.assertEqual(history.before_risk_radio(baseline,current)["radio_at"],1300)
+        self.assertFalse(history.record_radio_snapshot(1300,current))
+        self.assertFalse(history.radio_frames)
+        self.assertFalse(history.record_radio_snapshot(1299,prior))
+        self.assertTrue(history.record_radio_snapshot(1301,prior))
+        self.assertIsNone(history.before_risk_radio(baseline,current))
+        for t in range(1302,1400):history.record_radio_snapshot(t,prior)
+        self.assertEqual(len(history.radio_frames),history.MAX_RADIO_FRAMES)
+        self.assertFalse(history.record_radio_snapshot(1400,{str(i):prior["private-radio"]
+            for i in range(history.MAX_RADIOS_PER_FRAME+1)}))
+        self.assertFalse(history.radio_frames)
+        history.context(("changed",),1400)
+        self.assertTrue(history.record_radio_snapshot(1300,prior))
+        history.context(("changed",),3200)
+        self.assertFalse(history.radio_frames)

@@ -2,8 +2,8 @@
 
 Only current, locally attested Radio risk on distinct physical APs with an
 unambiguous AAC and a matching resource-approved connection is eligible.
-No new SSH, raw device identifiers, grouping or historical persistence.
-A bounded volatile resource baseline is optional; it is not an RF baseline.
+No new SSH, public raw device identifiers, grouping or historical persistence.
+Bounded volatile resource and matched Radio comparison evidence is optional.
 """
 import hashlib,json,re
 from .model import number
@@ -16,10 +16,13 @@ class ControllerLoadHistory:
     """Per-controller, bounded volatile resource observations (not an archive).
 
     Never cross connection/approval/CPU inventory changes or wall-clock
-    rollback. No AP or Station identifiers, no persisted resource history.
+    rollback. Radio identities are private in bounded process memory only;
+    no Station identities, raw identifiers in output, or persisted history.
     """
     MAX_AGE=1800
     MAX_PAIRS=256
+    MAX_RADIO_FRAMES=32
+    MAX_RADIOS_PER_FRAME=4096
 
     def __init__(self):
         self.clear()
@@ -30,6 +33,8 @@ class ControllerLoadHistory:
         self.last_now=None
         self.pairs={}
         self.blocked_through=None
+        self.radio_frames={}
+        self.radio_blocked_through=None
 
     def context(self,scope,now):
         if self.scope!=scope or (self.last_now is not None and now<self.last_now):
@@ -38,11 +43,14 @@ class ControllerLoadHistory:
         self.last_now=now
         self.pairs={k:v for k,v in self.pairs.items()
                     if all(0<=now-t<=self.MAX_AGE for t in k)}
+        self.radio_frames={t:v for t,v in self.radio_frames.items()
+                           if 0<=now-t<=self.MAX_AGE}
 
     def record(self,cpu_at,cpu_value,dp):
         inventory=tuple((r["id"],r["type"]) for r in dp["data"]["rows"])
         if self.inventory!=inventory:
             self.pairs.clear()
+            self.radio_frames.clear()
             self.inventory=inventory
         key=(cpu_at,dp["observed_at"])
         if self.blocked_through is not None and min(key)<=self.blocked_through:
@@ -68,11 +76,55 @@ class ControllerLoadHistory:
                 # comparison segment only when both readings are newer.
                 self.blocked_through=max(max(key),max(max(k) for k in self.pairs))
                 self.pairs.clear()
+                self.radio_frames.clear()
                 return False
         self.pairs[key]=v
         if len(self.pairs)>self.MAX_PAIRS:
             self.pairs.pop(min(self.pairs,key=lambda k:(max(k),k)))
         return True
+
+    def record_radio_snapshot(self,at,records):
+        """Only valid, committed, attested same-snapshot observations.
+        
+        Reject conflicting replays instead of joining two partial views.
+        A frame that exceeds the bounded capacity is not sampled or truncated.
+        """
+        if self.radio_blocked_through is not None and at<=self.radio_blocked_through:
+            return False
+        if records is None or len(records)>self.MAX_RADIOS_PER_FRAME or (
+            at in self.radio_frames and self.radio_frames[at]!=records):
+            self.radio_blocked_through=max([at,*self.radio_frames])
+            self.radio_frames.clear()
+            return False
+        self.radio_frames[at]=dict(records)
+        if len(self.radio_frames)>self.MAX_RADIO_FRAMES:
+            del self.radio_frames[min(self.radio_frames)]
+        return True
+
+    def before_risk_radio(self,baseline,current):
+        """Compare the exact current cohort against one aligned prior frame.
+
+        Do not choose a favorable older Radio frame if the latest aligned
+        frame lacks any contributor or has a changed physical context.
+        """
+        if baseline is None or not current:return None
+        lo,hi=baseline["risk_first_at"]-900,baseline["risk_first_at"]-300
+        resource_times=(baseline["cpu_at"],baseline["datapath_at"])
+        eligible=[t for t in self.radio_frames if lo<=t<=hi
+                  and max(t,*resource_times)-min(t,*resource_times)<=30]
+        if not eligible:return None
+        at=max(eligible)
+        prior=self.radio_frames[at]
+        if any(key not in prior or prior[key][:3]!=value[:3]
+               for key,value in current.items()):
+            return None
+        # Tuples contain epoch, band, channel, observed positive risk and
+        # policy-normal flag. Only aggregate counts cross the view boundary.
+        observations=[prior[key] for key in current]
+        return {"radio_at":at,"radio_count":len(current),
+                "prior_positive_risk_radio_count":sum(row[3] for row in observations),
+                "prior_policy_normal_radio_count":sum(row[4] for row in observations),
+                "current_positive_risk_radio_count":sum(row[3] for row in current.values())}
 
     def before_risk(self,starts,radio_at):
         if not starts or any(type(t) is not int or not 0<=t<=radio_at for t in starts):
@@ -121,11 +173,11 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now,history=
         return withheld("time_unaligned")
     if history is not None and not history.record(cpu.observed_at,cpu_value,dp):
         return withheld("resource_observation_conflict")
-    if cpu_value<70:return withheld("cpu_screen_not_met")
     # The CPU threshold is the existing collection-protection threshold,
     # not a vendor fault threshold. Datapath values are observations only;
     # no approved Datapath fault threshold exists.
     aps=set();radio_ids=set();normal_radios={};risk_starts=[];expires=min(snapshot.field_until,dp["valid_until"],min(times)+91)
+    rf_records={};rf_conflict=False
     for r in radios:
         if (r.controller!=controller or r.source!="aos8-cli-unvalidated"
             or r.observed_at!=snapshot.observed_at or not r.valid
@@ -136,16 +188,31 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now,history=
         if (q.get("scope")!="local_operator_attested_radio" or q.get("observed_at")!=r.observed_at
             or q.get("approval")!=snapshot.field_tag[:12] or not now<q.get("valid_until",0)):
             continue
-        if (q.get("status")=="PERSISTENT" and q.get("incident_id")
-            and (r.utilization>=75 or r.interference>=30 or r.noise>-80)):
+        positive=r.utilization>=75 or r.interference>=30 or r.noise>-80
+        normal=(q.get("status")=="NORMAL" and not q.get("incident_id")
+                and r.utilization<50 and r.interference<10 and r.noise<=-90)
+        if history is not None and q.get("status") in (
+            "NORMAL","WATCH","DETECTED","PERSISTENT","RECOVERING","RESOLVED"):
+            record=(r.epoch,r.band,r.channel,positive,normal)
+            if r.radio_id in rf_records and rf_records[r.radio_id]!=record:
+                rf_conflict=True
+            # Bound the temporary map too; an oversized snapshot cannot
+            # become a deceptively complete comparison through truncation.
+            elif len(rf_records)<history.MAX_RADIOS_PER_FRAME or r.radio_id in rf_records:
+                rf_records[r.radio_id]=record
+            else:rf_conflict=True
+        if q.get("status")=="PERSISTENT" and q.get("incident_id") and positive:
             aps.add(r.ap_id);radio_ids.add(r.radio_id)
             risk_starts.append(q.get("incident_first_at"))
             expires=min(expires,q["valid_until"])
-        elif (q.get("status")=="NORMAL" and not q.get("incident_id")
-            and r.utilization<50 and r.interference<10 and r.noise<=-90):
+        elif normal:
             # A normal observed Radio on another AP is limited contrary
             # evidence, not proof that the entire AP or controller is healthy.
             normal_radios[r.radio_id]=(r.ap_id,q["valid_until"])
+    if history is not None:
+        rf_recorded=history.record_radio_snapshot(snapshot.observed_at,None if rf_conflict else rf_records)
+    else:rf_recorded=False
+    if cpu_value<70:return withheld("cpu_screen_not_met")
     if len(aps)<2:return withheld("distinct_persistent_aps_required")
     other_normals=[(ap,until) for ap,until in normal_radios.values() if ap not in aps]
     if other_normals:
@@ -154,6 +221,9 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now,history=
              "other_ap_count":len({ap for ap,_ in other_normals}),
              "normal_radio_count":len(other_normals)}
     baseline=history.before_risk(risk_starts,snapshot.observed_at) if history is not None else None
+    rf_baseline=None
+    if rf_recorded and all(key in rf_records for key in radio_ids):
+        rf_baseline=history.before_risk_radio(baseline,{key:rf_records[key] for key in radio_ids})
     return {"status":"review_candidate","code":"CL01","confidence":"low",
             "cpu_percent":cpu_value,"cpu_at":cpu.observed_at,
             "datapath_max_1s_percent":dp["data"]["max_1s_percent"],
@@ -161,6 +231,8 @@ def review_controller_load(controller,frame,snapshot,radios,quality,now,history=
             "datapath_at":dp["observed_at"],"radio_at":snapshot.observed_at,
             "ap_count":len(aps),"radio_count":len(radio_ids),"valid_until":expires,
             "baseline":"observed" if baseline is not None else "unavailable",
-            "baseline_observation":baseline,"datapath_threshold":"unvalidated",
+            "baseline_observation":baseline,
+            "rf_baseline":"observed" if rf_baseline is not None else "unavailable",
+            "rf_baseline_observation":rf_baseline,"datapath_threshold":"unvalidated",
             "counter_evidence":counter,
             "service_impact":"unverified","verified":False}
