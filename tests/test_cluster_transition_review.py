@@ -6,6 +6,8 @@ from awqm.cluster_transition_review import ClusterTransitionReview
 from awqm.diagnostic_view import DiagnosticView
 from awqm.quality_ledger import QualityLedger
 from awqm.storage import Store
+from awqm.cluster import MEMBERSHIP,group_membership
+from awqm.worker import Reading
 
 
 class ClusterTransitionReviewTests(unittest.TestCase):
@@ -150,3 +152,62 @@ class ClusterTransitionReviewTests(unittest.TestCase):
         self.assertEqual(self.observe(self.sample(1120,"w2"),1120)["reason"],"new_window_required")
         self.assertEqual(self.observe(self.sample(1180,"w1",risk=True),1180)["status"],
                          "transition_observation")
+
+    def membership(self,at,*,peer_state="CONNECTED",omit=False,skew=0):
+        targets={"w1":"192.0.2.1","w2":"192.0.2.2"}
+        for name,address in targets.items():
+            peer=next(n for n in targets if n!=name)
+            raw=("Cluster Info Table\n------------------\n"
+                 "Type IPv4 Address Priority Connection-Type STATUS\n"
+                 "---- --------------- -------- --------------- ------\n"
+                 f"self {address} 128 N/A CONNECTED (Member)\n")
+            if not (omit and name=="w1"):
+                raw+=f"peer {targets[peer]} 128 L2-Connected {peer_state if name=='w1' else 'CONNECTED'}\n"
+            self.frames[name]["readings"]={MEMBERSHIP:Reading(MEMBERSHIP,"success",
+                at+skew if name=="w1" else at,group_membership(raw))}
+        return targets
+
+    def with_membership(self,sample,now,**kwargs):
+        targets=self.membership(now,**kwargs)
+        return self.review.observe(sample[0],self.frames,sample[1],sample[2],now,targets=targets)
+
+    def test_independent_membership_comparison_and_publication(self):
+        self.with_membership(self.sample(1000,"w1"),1000)
+        after=self.sample(1060,"w2",risk=True)
+        result=self.with_membership(after,1060,peer_state="DISCONNECTED")
+        evidence=result["membership_context"]
+        self.assertEqual(evidence,{"status":"observed","scope":"field_unvalidated_cluster_observations",
+            "prior_start":1000,"prior_end":1000,"current_start":1060,"current_end":1060,
+            "directional_observations":4,"changed_observations":1,"current_peer_self_disagreements":1})
+        self.assertEqual(result["cause_assessment"],"withheld_epoch_change")
+        self.assertFalse(result["verified"])
+        view=DiagnosticView(self.store,lambda:1060)
+        view.publish({"cluster":{"nodes":[],"transition_review":result}})
+        public=view.page()["cluster"]["transition_review"]
+        self.assertEqual(public["membership_context"],evidence)
+        self.assertNotIn("192.0.2.",json.dumps(public))
+        changed=self.with_membership(after,1060)
+        self.assertEqual(changed["status"],"transition_observation")
+        self.assertEqual(changed["membership_context"]["reason"],"membership_observation_changed")
+        self.assertEqual(self.with_membership(after,1060,peer_state="DISCONNECTED")["membership_context"],
+                         changed["membership_context"])
+
+    def test_incomplete_unaligned_and_overlapping_membership_not_compared(self):
+        for at,options in ((1000,{"omit":True}),(1120,{"skew":-31})):
+            with self.subTest(options=options):
+                self.review.clear()
+                self.with_membership(self.sample(at,"w1"),at)
+                result=self.with_membership(self.sample(at+60,"w2",risk=True),at+60,**options)
+                self.assertEqual(result["status"],"transition_observation")
+                self.assertEqual(result["membership_context"],{"status":"not_evaluated",
+                    "reason":"complete_aligned_membership_required"})
+        self.review.clear()
+        self.with_membership(self.sample(1240,"w1"),1240)
+        result=self.with_membership(self.sample(1270,"w2",risk=True),1270,skew=-30)
+        self.assertEqual(result["status"],"transition_observation")
+        self.assertEqual(result["membership_context"]["status"],"not_evaluated")
+        self.review.clear()
+        self.with_membership(self.sample(1300,"w1"),1300)
+        result=self.with_membership(self.sample(1360,"w2",risk=True),1360)
+        self.assertEqual(result["membership_context"]["changed_observations"],0)
+        self.assertEqual(result["cause_assessment"],"withheld_epoch_change")

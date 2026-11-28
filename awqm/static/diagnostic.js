@@ -478,6 +478,10 @@ function clusterPanel(d){
     if(transition.status==="transition_observation"){
       c.append(el("p",`이전 ${kst(transition.prior_start)} ~ ${kst(transition.prior_end)} / 이후 ${kst(transition.current_start)} ~ ${kst(transition.current_end)}`),
         table(["이전 WLC","이후 WLC","물리 AP","Radio"],transition.rows.map(r=>[r.from,r.to,r.ap_count,r.radio_count])));
+      const membership=transition.membership_context;
+      if(membership?.status==="observed"){
+        c.append(el("p",`별도 C03 멤버십 참고 관측 (현장 미검증): 이전 ${kst(membership.prior_start)} ~ ${kst(membership.prior_end)} / 이후 ${kst(membership.current_start)} ~ ${kst(membership.current_end)}. 자체·방향별 Peer 상태 ${membership.directional_observations}개 중 변경 ${membership.changed_observations}개, 현재 자체/Peer 불일치 ${membership.current_peer_self_disagreements}개. 변경이 없어도 Failover 배제 불가.`));
+      }else if(membership){c.append(el("p","C03 멤버십 비교 제한: "+(membership.reason==="membership_observation_changed"?"같은 구간의 관측 변경":"전체 WLC의 정합한 별도 관측 필요")));}
     }else{
       const labels={complete_cluster_required:"전체 클러스터 관측 필요",matching_attestation_required:"동일 승인·연결 필요",time_unaligned:"시각 불일치",radio_observation_unusable:"Radio 관측 상충 또는 한도 초과",window_replay_or_overlap:"이전·중첩 관측 또는 시계 역행 · 새 관측 구간 필요",new_window_required:"새 비교 관측 필요",no_matched_change_observed:"해당 변경 미관측",stale_or_paused:"관측 만료/정지"};
       c.append(el("p",labels[transition.reason]||"미확인"));

@@ -398,7 +398,8 @@ class Engine:
                 self.anchor_views,summaries=reconcile_anchors(radios,self.cluster_frames,int(self.wall())) if not self.error and not self.paused else ({},{})
                 if not self.error and not self.paused and not self.simulation:
                     self.cluster_view['transition_review']=self.cluster_transition_review.observe(
-                        active,self.cluster_frames,radios,self.field_quality,int(self.wall()))
+                        active,self.cluster_frames,radios,self.field_quality,int(self.wall()),
+                        targets=self.cluster_monitor.targets)
                 else:
                     self.cluster_transition_review.clear()
                 snapshots_by_controller={s.controller:s for s in active}

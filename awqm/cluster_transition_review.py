@@ -9,6 +9,7 @@ cause, or a verified root cause. No new CLI, persistence or raw IDs.
 import re
 from collections import defaultdict
 from .controller_load_review import AP_ID
+from .cluster import MEMBERSHIP
 
 
 class ClusterTransitionReview:
@@ -31,7 +32,43 @@ class ClusterTransitionReview:
     def withheld(reason):
         return {"status":"not_evaluated","reason":reason}
 
-    def observe(self,snapshots,frames,radios,quality,now):
+    def _membership_frame(self,frames,targets,lo,hi,now):
+        """Existing C03 observations only; no field validation or cause claim."""
+        if not targets or set(targets)!=self.controllers or len(set(targets.values()))!=len(targets):
+            return None
+        reverse={v:k for k,v in targets.items()}
+        times=[];states={}
+        for source,address in sorted(targets.items()):
+            reading=(frames.get(source) or {}).get("readings",{}).get(MEMBERSHIP)
+            if not reading or reading.status!="success" or not 0<=now-reading.observed_at<=120:
+                return None
+            rows={r["address"]:r for r in reading.data}
+            if len(rows)!=len(reading.data) or set(rows)!=set(reverse):
+                return None
+            for addr,row in rows.items():
+                if row["type"]!=("self" if addr==address else "peer") or row["state"]=="UNKNOWN":
+                    return None
+                states[(source,reverse[addr])]=row["state"]
+            times.append(reading.observed_at)
+        if max(hi,*times)-min(lo,*times)>30:
+            return None
+        return (tuple(times),states)
+
+    @staticmethod
+    def _membership_comparison(previous,current):
+        old,new=previous[6],current[6]
+        if old is None or new is None or max(previous[1],*old[0])>=min(current[0],*new[0]):
+            return {"status":"not_evaluated","reason":"complete_aligned_membership_required"}
+        changes=sum(old[1][key]!=value for key,value in new[1].items())
+        disagreements=sum(state!=new[1][(target,target)]
+                          for (source,target),state in new[1].items() if source!=target)
+        return {"status":"observed","scope":"field_unvalidated_cluster_observations",
+                "prior_start":min(old[0]),"prior_end":max(old[0]),
+                "current_start":min(new[0]),"current_end":max(new[0]),
+                "directional_observations":len(new[1]),"changed_observations":changes,
+                "current_peer_self_disagreements":disagreements}
+
+    def observe(self,snapshots,frames,radios,quality,now,targets=None):
         def reset(reason):
             self.previous=None
             self.result=None
@@ -98,7 +135,8 @@ class ClusterTransitionReview:
             if len(records)>self.MAX_RADIOS:
                 self.blocked_through=hi
                 return reset("radio_observation_unusable")
-        current=(lo,hi,context,records,min(untils),tuple(source_times))
+        membership=self._membership_frame(frames,targets,lo,hi,now)
+        current=(lo,hi,context,records,min(untils),tuple(source_times),membership)
         previous=self.previous
         if previous is not None and previous[:2]==current[:2]:
             if previous[2]!=context:
@@ -108,6 +146,13 @@ class ClusterTransitionReview:
             if previous[3]!=records:
                 self.blocked_through=hi
                 return reset("radio_observation_unusable")
+            if previous[6]!=membership:
+                # Do not replace a same-window membership observation.
+                # Keep the independently valid RF observation.
+                self.previous=previous[:6]+(None,)
+                if self.result:
+                    self.result=dict(self.result,membership_context={
+                        "status":"not_evaluated","reason":"membership_observation_changed"})
             if self.result and now<min(self.result["valid_until"],current[4]):
                 return dict(self.result,valid_until=min(self.result["valid_until"],current[4]))
             return self.withheld("new_window_required")
@@ -138,6 +183,7 @@ class ClusterTransitionReview:
             "rows":[{"from":a,"to":b,"ap_count":len(g["aps"]),"radio_count":g["radios"]}
                     for (a,b),g in sorted(groups.items())],
             "valid_until":min(previous[4],current[4],lo+91),
+            "membership_context":self._membership_comparison(previous,current),
             "cause_assessment":"withheld_epoch_change",
             "service_impact":"unverified","verified":False}
         return dict(self.result)
